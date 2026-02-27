@@ -1,0 +1,9 @@
+language:
+  - rust
+  - markdown
+
+ls_specific_settings:
+  rust:
+    ls_path: /home/vikke/.cargo/bin/rust-analyzer
+  markdown:
+    ls_path: /snap/bin/marksman
