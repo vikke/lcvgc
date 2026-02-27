@@ -1,3 +1,3 @@
 fn main() {
-    println!("Hello, world!");
+    println!("lcvgc - Live CV Gate Coder");
 }

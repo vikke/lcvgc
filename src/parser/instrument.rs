@@ -1,0 +1,239 @@
+use nom::{
+    bytes::complete::tag,
+    IResult,
+};
+
+use crate::ast::instrument::{CcMapping, InstrumentDef, InstrumentNote};
+use crate::parser::common::{identifier, note_name, parse_u8, ws, ws1};
+
+/// Parse `device <identifier>`
+fn parse_device(input: &str) -> IResult<&str, &str> {
+    let (input, _) = tag("device")(input)?;
+    let (input, _) = ws1(input)?;
+    identifier(input)
+}
+
+/// Parse `channel <u8>`
+fn parse_channel(input: &str) -> IResult<&str, u8> {
+    let (input, _) = tag("channel")(input)?;
+    let (input, _) = ws1(input)?;
+    parse_u8(input)
+}
+
+/// Parse `gate_normal <u8>`
+fn parse_gate_normal(input: &str) -> IResult<&str, u8> {
+    let (input, _) = tag("gate_normal")(input)?;
+    let (input, _) = ws1(input)?;
+    parse_u8(input)
+}
+
+/// Parse `gate_staccato <u8>`
+fn parse_gate_staccato(input: &str) -> IResult<&str, u8> {
+    let (input, _) = tag("gate_staccato")(input)?;
+    let (input, _) = ws1(input)?;
+    parse_u8(input)
+}
+
+/// Parse `note <note_name><octave>`
+fn parse_note(input: &str) -> IResult<&str, InstrumentNote> {
+    let (input, _) = tag("note")(input)?;
+    let (input, _) = ws1(input)?;
+    let (input, name) = note_name(input)?;
+    let (input, octave) = parse_u8(input)?;
+    Ok((input, InstrumentNote { name, octave }))
+}
+
+/// Parse `cc <alias> <cc_number>`
+fn parse_cc(input: &str) -> IResult<&str, CcMapping> {
+    let (input, _) = tag("cc")(input)?;
+    let (input, _) = ws1(input)?;
+    let (input, alias) = identifier(input)?;
+    let (input, _) = ws1(input)?;
+    let (input, cc_number) = parse_u8(input)?;
+    Ok((
+        input,
+        CcMapping {
+            alias: alias.to_string(),
+            cc_number,
+        },
+    ))
+}
+
+/// Property parsed from inside an instrument block.
+enum InstrumentProperty {
+    Device(String),
+    Channel(u8),
+    Note(InstrumentNote),
+    GateNormal(u8),
+    GateStaccato(u8),
+    Cc(CcMapping),
+}
+
+/// Parse a single instrument property line.
+fn parse_property(input: &str) -> IResult<&str, InstrumentProperty> {
+    if let Ok((rest, dev)) = parse_device(input) {
+        return Ok((rest, InstrumentProperty::Device(dev.to_string())));
+    }
+    if let Ok((rest, ch)) = parse_channel(input) {
+        return Ok((rest, InstrumentProperty::Channel(ch)));
+    }
+    if let Ok((rest, note)) = parse_note(input) {
+        return Ok((rest, InstrumentProperty::Note(note)));
+    }
+    if let Ok((rest, gn)) = parse_gate_normal(input) {
+        return Ok((rest, InstrumentProperty::GateNormal(gn)));
+    }
+    if let Ok((rest, gs)) = parse_gate_staccato(input) {
+        return Ok((rest, InstrumentProperty::GateStaccato(gs)));
+    }
+    if let Ok((rest, cc)) = parse_cc(input) {
+        return Ok((rest, InstrumentProperty::Cc(cc)));
+    }
+    Err(nom::Err::Error(nom::error::Error::new(
+        input,
+        nom::error::ErrorKind::Alt,
+    )))
+}
+
+/// Parse a full `instrument <name> { ... }` block.
+pub fn parse_instrument(input: &str) -> IResult<&str, InstrumentDef> {
+    let (input, _) = ws(input)?;
+    let (input, _) = tag("instrument")(input)?;
+    let (input, _) = ws1(input)?;
+    let (input, name) = identifier(input)?;
+    let (input, _) = ws(input)?;
+    let (input, _) = tag("{")(input)?;
+
+    let mut device = None;
+    let mut channel = None;
+    let mut note = None;
+    let mut gate_normal = None;
+    let mut gate_staccato = None;
+    let mut cc_mappings = Vec::new();
+
+    let mut rest = input;
+    loop {
+        let (input, _) = ws(rest)?;
+        if let Ok((input, _)) = tag::<&str, &str, nom::error::Error<&str>>("}")(input) {
+            rest = input;
+            break;
+        }
+        let (input, prop) = parse_property(input)?;
+        match prop {
+            InstrumentProperty::Device(d) => device = Some(d),
+            InstrumentProperty::Channel(c) => channel = Some(c),
+            InstrumentProperty::Note(n) => note = Some(n),
+            InstrumentProperty::GateNormal(g) => gate_normal = Some(g),
+            InstrumentProperty::GateStaccato(g) => gate_staccato = Some(g),
+            InstrumentProperty::Cc(cc) => cc_mappings.push(cc),
+        }
+        rest = input;
+    }
+
+    let device = device.ok_or_else(|| {
+        nom::Err::Failure(nom::error::Error::new(rest, nom::error::ErrorKind::Tag))
+    })?;
+    let channel = channel.ok_or_else(|| {
+        nom::Err::Failure(nom::error::Error::new(rest, nom::error::ErrorKind::Tag))
+    })?;
+
+    Ok((
+        rest,
+        InstrumentDef {
+            name: name.to_string(),
+            device,
+            channel,
+            note,
+            gate_normal,
+            gate_staccato,
+            cc_mappings,
+        },
+    ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ast::common::NoteName;
+
+    #[test]
+    fn test_full_instrument() {
+        let input = r#"instrument bass {
+  device mutant_brain
+  channel 1
+  gate_normal 80
+  gate_staccato 40
+  cc cutoff 74
+  cc resonance 71
+}"#;
+        let (rest, inst) = parse_instrument(input).unwrap();
+        assert_eq!(rest.trim(), "");
+        assert_eq!(inst.name, "bass");
+        assert_eq!(inst.device, "mutant_brain");
+        assert_eq!(inst.channel, 1);
+        assert_eq!(inst.note, None);
+        assert_eq!(inst.gate_normal, Some(80));
+        assert_eq!(inst.gate_staccato, Some(40));
+        assert_eq!(inst.cc_mappings.len(), 2);
+        assert_eq!(inst.cc_mappings[0].alias, "cutoff");
+        assert_eq!(inst.cc_mappings[0].cc_number, 74);
+        assert_eq!(inst.cc_mappings[1].alias, "resonance");
+        assert_eq!(inst.cc_mappings[1].cc_number, 71);
+    }
+
+    #[test]
+    fn test_minimal_instrument() {
+        let input = r#"instrument synth {
+  device mb
+  channel 3
+}"#;
+        let (rest, inst) = parse_instrument(input).unwrap();
+        assert_eq!(rest.trim(), "");
+        assert_eq!(inst.name, "synth");
+        assert_eq!(inst.device, "mb");
+        assert_eq!(inst.channel, 3);
+        assert_eq!(inst.note, None);
+        assert_eq!(inst.gate_normal, None);
+        assert_eq!(inst.gate_staccato, None);
+        assert!(inst.cc_mappings.is_empty());
+    }
+
+    #[test]
+    fn test_drum_instrument_with_note() {
+        let input = r#"instrument bd {
+  device mutant_brain
+  channel 10
+  note c2
+  gate_normal 50
+  gate_staccato 20
+}"#;
+        let (rest, inst) = parse_instrument(input).unwrap();
+        assert_eq!(rest.trim(), "");
+        assert_eq!(inst.name, "bd");
+        assert_eq!(inst.channel, 10);
+        let note = inst.note.unwrap();
+        assert_eq!(note.name, NoteName::C);
+        assert_eq!(note.octave, 2);
+    }
+
+    #[test]
+    fn test_arbitrary_property_order() {
+        let input = r#"instrument lead {
+  gate_staccato 30
+  cc vibrato 1
+  channel 2
+  gate_normal 90
+  device mb
+}"#;
+        let (rest, inst) = parse_instrument(input).unwrap();
+        assert_eq!(rest.trim(), "");
+        assert_eq!(inst.name, "lead");
+        assert_eq!(inst.device, "mb");
+        assert_eq!(inst.channel, 2);
+        assert_eq!(inst.gate_normal, Some(90));
+        assert_eq!(inst.gate_staccato, Some(30));
+        assert_eq!(inst.cc_mappings.len(), 1);
+        assert_eq!(inst.cc_mappings[0].alias, "vibrato");
+        assert_eq!(inst.cc_mappings[0].cc_number, 1);
+    }
+}
