@@ -4,6 +4,7 @@
 <!-- vim-markdown-toc GFM -->
 
 * [Overview](#overview)
+* [Startup Options](#startup-options)
 * [1. Device Definition (device)](#1-device-definition-device)
 * [2. Instrument Definition (instrument)](#2-instrument-definition-instrument)
     * [Default Gate Ratio Values](#default-gate-ratio-values)
@@ -88,6 +89,41 @@ lcvgc is a live coding engine that describes MIDI sequences in a text-based DSL 
 It supports sequences for everything from modular synths (CV/Gate) to MIDI synths in general.
 
 The file extension is `.cvg`.
+
+---
+
+## Startup Options
+
+```
+lcvgc [OPTIONS]
+
+OPTIONS:
+  --file <path>          DSL file (.cvg) to load on startup
+  --port <N>             LSP server listen port. Default: 5555
+  --midi-device <name>   MIDI output device name. Omit for system default
+  --log-level <level>    Log level (error, warn, info, debug). Default: info
+  --config <path>        Config file path. Default: ~/.config/lcvgc/config.toml
+  -V, --version          Show version
+  -h, --help             Show help
+```
+
+**Examples:**
+
+```bash
+# Start with default settings
+$ lcvgc
+
+# Load a file on startup
+$ lcvgc --file my_song.cvg
+
+# Specify port and MIDI device
+$ lcvgc --port 7777 --midi-device "IAC Driver Bus 1"
+
+# Start with debug logging
+$ lcvgc --file live.cvg --log-level debug
+```
+
+When `--file` is specified, all blocks in the file are automatically eval'd on startup. This is useful for setting up an initial state without using `:LcvgcEval` from Neovim.
 
 ---
 
