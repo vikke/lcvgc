@@ -1,7 +1,4 @@
-mod ast;
 mod cli;
-mod error;
-mod parser;
 
 use clap::Parser;
 use cli::Cli;

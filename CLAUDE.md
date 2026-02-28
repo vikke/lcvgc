@@ -14,7 +14,10 @@
 
 - 調査や分析は、sub agent を起動し、そちらに任せる事。sub agent は、 @./tmp/ に調査や分析を行なった結果を markdown で出力すること。
 - 作った `git worktree` は `git worktree remove` で最後に削除する事。
-- `commit message` は日本語で3種類程度提案する事。 conventional commits を守る事。
+- commit message
+    - `commit message` は日本語で3種類程度提案する事。 
+    - conventional commits を守る事。
+    - タイトルと本文で構成する事。
 
 ## 実装
 
@@ -29,3 +32,12 @@
     - 日本語ドキュメント: *.ja.md
     - 英語ドキュメント: *.md
 - 翻訳は、日本語400行程度に対して、1 sub agentを起動して並列実行で処理を行なう事。1 sub agent 1 section を担当させ、`git worktree` を上手く使って作業分担する事。
+
+## **厳守**: 再発防止注意事項
+
+- 失敗をした場合には、このセクションにどうしたら繰替えさないかを追記していくこと。
+- コミット前に `cargo build --release` で警告ゼロを確認する事。警告が残っている状態でコミットしない事。
+- コミット前に `cargo test` で全テストパスを確認する事。
+- モジュール構成（`lib.rs` / `main.rs`）を変更したら、双方の整合性を必ず確認する事。
+
+
