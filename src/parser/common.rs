@@ -9,7 +9,7 @@ use nom::{
 
 use crate::ast::common::*;
 
-const RESERVED_KEYWORDS: &[&str] = &[
+pub(crate) const RESERVED_KEYWORDS: &[&str] = &[
     "device",
     "instrument",
     "kit",

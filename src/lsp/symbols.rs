@@ -1,0 +1,2 @@
+/// ドキュメントシンボルプロバイダ
+pub struct DocumentSymbolProvider;

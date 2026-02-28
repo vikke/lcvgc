@@ -1,4 +1,4 @@
-use clap::Parser;
+use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 
 const VERSION: &str = concat!(env!("CARGO_PKG_VERSION"), " (", env!("GIT_HASH"), ")");
@@ -9,11 +9,14 @@ const VERSION: &str = concat!(env!("CARGO_PKG_VERSION"), " (", env!("GIT_HASH"),
 #[derive(Parser, Debug)]
 #[command(name = "lcvgc", version = VERSION)]
 pub struct Cli {
+    #[command(subcommand)]
+    pub command: Option<Commands>,
+
     /// 起動時に読み込むDSLファイル (.cvg)
     #[arg(long)]
     pub file: Option<PathBuf>,
 
-    /// LSPサーバーのリッスンポート
+    /// TCPサーバーのリッスンポート
     #[arg(long, default_value_t = 5555)]
     pub port: u16,
 
@@ -30,6 +33,12 @@ pub struct Cli {
     pub config: Option<PathBuf>,
 }
 
+#[derive(Subcommand, Debug)]
+pub enum Commands {
+    /// LSPサーバーをstdio通信で起動
+    Lsp,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -42,6 +51,7 @@ mod tests {
         assert!(cli.file.is_none());
         assert!(cli.midi_device.is_none());
         assert!(cli.config.is_none());
+        assert!(cli.command.is_none());
     }
 
     #[test]
@@ -78,8 +88,13 @@ mod tests {
     }
 
     #[test]
+    fn test_lsp_subcommand() {
+        let cli = Cli::parse_from(["lcvgc", "lsp"]);
+        assert!(matches!(cli.command, Some(Commands::Lsp)));
+    }
+
+    #[test]
     fn test_version_contains_git_hash() {
-        // VERSION should be like "0.1.0 (abc1234)"
         assert!(VERSION.contains('('));
         assert!(VERSION.contains(')'));
     }

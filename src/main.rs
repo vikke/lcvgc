@@ -3,14 +3,20 @@ mod cli;
 use std::sync::Arc;
 
 use clap::Parser;
-use cli::Cli;
+use cli::{Cli, Commands};
 use lcvgc::engine::evaluator::Evaluator;
+use lcvgc::lsp::run_lsp;
 use lcvgc::server::run_server;
 use tokio::sync::Mutex;
 
 #[tokio::main]
 async fn main() {
     let cli = Cli::parse();
+
+    if let Some(Commands::Lsp) = cli.command {
+        run_lsp().await;
+        return;
+    }
 
     println!("lcvgc v{} 起動中...", env!("CARGO_PKG_VERSION"));
     println!("  ポート: {}", cli.port);

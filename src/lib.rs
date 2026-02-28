@@ -3,4 +3,5 @@ pub mod engine;
 pub mod error;
 pub mod midi;
 pub mod parser;
+pub mod lsp;
 pub mod server;
