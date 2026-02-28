@@ -158,6 +158,7 @@ mod tests {
         }
     }
 
+    #[allow(dead_code)]
     fn note_off(note: u8) -> MidiMessage {
         MidiMessage::NoteOff {
             channel: 0,

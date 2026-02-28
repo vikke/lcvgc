@@ -31,6 +31,10 @@ pub struct Cli {
     /// 設定ファイルパス
     #[arg(long)]
     pub config: Option<PathBuf>,
+
+    /// ファイル変更を監視してホットリロードする対象ディレクトリ
+    #[arg(long)]
+    pub watch: Option<PathBuf>,
 }
 
 #[derive(Subcommand, Debug)]

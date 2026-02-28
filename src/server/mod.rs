@@ -5,6 +5,7 @@ use std::sync::Arc;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::TcpListener;
 use tokio::sync::Mutex;
+use tracing::info;
 
 use crate::engine::evaluator::Evaluator;
 use handler::handle_request;
@@ -16,11 +17,11 @@ pub async fn run_server(
     port: u16,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let listener = TcpListener::bind(format!("127.0.0.1:{}", port)).await?;
-    eprintln!("lcvgc server listening on port {}", port);
+    info!("lcvgc server listening on port {}", port);
 
     loop {
         let (stream, addr) = listener.accept().await?;
-        eprintln!("Client connected: {}", addr);
+        info!("Client connected: {}", addr);
         let ev = evaluator.clone();
 
         tokio::spawn(async move {
@@ -42,7 +43,7 @@ pub async fn run_server(
                     break;
                 }
             }
-            eprintln!("Client disconnected: {}", addr);
+            info!("Client disconnected: {}", addr);
         });
     }
 }

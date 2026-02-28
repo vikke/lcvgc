@@ -10,3 +10,4 @@ pub mod scene_runner;
 pub mod session_runner;
 pub mod shuffle;
 pub mod state;
+pub mod watcher;
