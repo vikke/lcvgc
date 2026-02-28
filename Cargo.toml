@@ -12,6 +12,7 @@ nom = "7"
 rand = "0.8"
 serde = { version = "1", features = ["derive"] }
 toml = "0.8"
+midir = "0.10"
 thiserror = "2"
 
 [dev-dependencies]

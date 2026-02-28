@@ -1,5 +1,6 @@
 use crate::engine::error::EngineError;
 use crate::midi::message::MidiMessage;
+use crate::midi::port::PortManager;
 
 /// MIDI送信の抽象trait（テスト時にモック差し替え可能）
 pub trait MidiSink: Send {
@@ -16,6 +17,45 @@ impl MidiSink for MockSink {
     fn send(&mut self, msg: &MidiMessage) -> Result<(), EngineError> {
         self.sent.push(msg.clone());
         Ok(())
+    }
+}
+
+/// midir経由の実MIDIポート送信
+pub struct MidirSink {
+    port_manager: PortManager,
+    /// 送信先の論理名
+    target: String,
+}
+
+impl MidirSink {
+    /// 新しいMidirSinkを作成する
+    ///
+    /// port_manager: 接続済みのPortManager
+    /// target: 送信先の論理名（PortManagerに登録済みであること）
+    pub fn new(port_manager: PortManager, target: String) -> Self {
+        MidirSink {
+            port_manager,
+            target,
+        }
+    }
+
+    /// 内部のPortManagerへの参照を返す
+    pub fn port_manager(&self) -> &PortManager {
+        &self.port_manager
+    }
+
+    /// 内部のPortManagerへの可変参照を返す
+    pub fn port_manager_mut(&mut self) -> &mut PortManager {
+        &mut self.port_manager
+    }
+}
+
+impl MidiSink for MidirSink {
+    fn send(&mut self, msg: &MidiMessage) -> Result<(), EngineError> {
+        let bytes = msg.to_bytes();
+        self.port_manager
+            .send(&self.target, &bytes)
+            .map_err(|e| EngineError::Config(e.to_string()))
     }
 }
 

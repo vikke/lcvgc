@@ -33,10 +33,10 @@
 - [x] レガート処理（gate_percent=100 → off=0）
 - [x] MIDIメッセージ型（NoteOn/NoteOff/CC/ProgramChange + to_bytes）
 - [x] CC補間計算（線形・指数）
-- [ ] `midir` クレート導入・MIDIポート列挙（要 libasound2-dev / クロスコンパイル対応）
-- [ ] MIDIポート接続・切断管理
-- [ ] 確率トリガー実装
-- [ ] マルチノート同時送信（コード）
+- [x] `midir` クレート導入・MIDIポート列挙（要 libasound2-dev / クロスコンパイル対応）
+- [x] MIDIポート接続・切断管理
+- [x] 確率トリガー実装
+- [x] マルチノート同時送信（コード）
 
 ## Phase 3: シーケンサー＆状態管理
 

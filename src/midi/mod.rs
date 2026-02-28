@@ -1,7 +1,10 @@
 pub mod cc;
+pub mod chord;
 pub mod gate;
 pub mod message;
 pub mod note;
+pub mod port;
+pub mod probability;
 pub mod velocity;
 
 #[derive(Debug, thiserror::Error)]
