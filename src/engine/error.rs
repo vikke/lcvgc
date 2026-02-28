@@ -14,6 +14,8 @@ pub enum EngineError {
     UnknownSession(String),
     #[error("設定エラー: {0}")]
     Config(String),
+    #[error("パースエラー: {0}")]
+    ParseError(String),
     #[error("IOエラー: {0}")]
     Io(#[from] std::io::Error),
 }

@@ -154,6 +154,23 @@ impl Evaluator {
     pub fn bpm(&self) -> f64 {
         self.clock.bpm()
     }
+
+    /// ソースコード文字列を全ブロック評価する
+    pub fn eval_source(&mut self, source: &str) -> Result<Vec<EvalResult>, EngineError> {
+        let (_, blocks) = crate::parser::parse_source(source)
+            .map_err(|e| EngineError::ParseError(e.to_string()))?;
+        let mut results = Vec::new();
+        for block in blocks {
+            results.push(self.eval_block(block)?);
+        }
+        Ok(results)
+    }
+
+    /// ファイルを読み込んで全ブロックを評価する
+    pub fn load_file(&mut self, path: &str) -> Result<Vec<EvalResult>, EngineError> {
+        let source = std::fs::read_to_string(path)?;
+        self.eval_source(&source)
+    }
 }
 
 #[cfg(test)]
@@ -399,5 +416,42 @@ mod tests {
             }))
             .unwrap();
         assert_eq!(result, EvalResult::IncludeRequested("other.lcvgc".into()));
+    }
+
+    #[test]
+    fn eval_source_multiple_blocks() {
+        let mut ev = Evaluator::new(120.0);
+        let source = r#"
+tempo 140
+
+device mb {
+  port "Mutant Brain"
+}
+"#;
+        let results = ev.eval_source(source).unwrap();
+        assert_eq!(results.len(), 2);
+        assert!(matches!(results[0], EvalResult::TempoChanged(140.0)));
+        assert!(matches!(results[1], EvalResult::Registered { .. }));
+    }
+
+    #[test]
+    fn eval_source_empty() {
+        let mut ev = Evaluator::new(120.0);
+        let results = ev.eval_source("").unwrap();
+        assert!(results.is_empty());
+    }
+
+    #[test]
+    fn eval_source_parse_error() {
+        let mut ev = Evaluator::new(120.0);
+        let result = ev.eval_source("invalid !@# syntax");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn load_file_not_found() {
+        let mut ev = Evaluator::new(120.0);
+        let result = ev.load_file("/nonexistent/path.cvg");
+        assert!(result.is_err());
     }
 }
