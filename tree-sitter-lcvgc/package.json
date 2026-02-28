@@ -1,0 +1,35 @@
+{
+  "name": "tree-sitter-lcvgc",
+  "version": "0.1.0",
+  "description": "Tree-sitter grammar for the lcvgc DSL",
+  "main": "bindings/node",
+  "keywords": [
+    "tree-sitter",
+    "parser",
+    "lcvgc",
+    "midi",
+    "music"
+  ],
+  "license": "MIT",
+  "dependencies": {
+    "nan": "^2.18.0"
+  },
+  "devDependencies": {
+    "tree-sitter-cli": "^0.22.0"
+  },
+  "scripts": {
+    "generate": "tree-sitter generate",
+    "test": "tree-sitter test",
+    "parse": "tree-sitter parse"
+  },
+  "tree-sitter": [
+    {
+      "scope": "source.lcvgc",
+      "file-types": [
+        "lcvgc"
+      ],
+      "highlights": "queries/highlights.scm",
+      "injection-regex": "lcvgc"
+    }
+  ]
+}
