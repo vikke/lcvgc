@@ -9,7 +9,11 @@ edition = "2021"
 clap = { version = "4", features = ["derive"] }
 ctrlc = "3"
 nom = "7"
+rand = "0.8"
+serde = { version = "1", features = ["derive"] }
+toml = "0.8"
 thiserror = "2"
 
 [dev-dependencies]
 pretty_assertions = "1"
+tempfile = "3"
