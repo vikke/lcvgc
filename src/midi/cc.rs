@@ -59,7 +59,7 @@ mod tests {
 
     #[test]
     fn linear_steps_0() {
-        assert_eq!(interpolate_linear(0, 127, 0), vec![]);
+        assert_eq!(interpolate_linear(0, 127, 0), Vec::<u8>::new());
     }
 
     #[test]
@@ -94,7 +94,7 @@ mod tests {
 
     #[test]
     fn exponential_steps_0() {
-        assert_eq!(interpolate_exponential(0, 100, 0), vec![]);
+        assert_eq!(interpolate_exponential(0, 100, 0), Vec::<u8>::new());
     }
 
     #[test]

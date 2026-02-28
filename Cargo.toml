@@ -13,7 +13,9 @@ rand = "0.8"
 serde = { version = "1", features = ["derive"] }
 toml = "0.8"
 midir = "0.10"
+serde_json = "1"
 thiserror = "2"
+tokio = { version = "1", features = ["full"] }
 
 [dev-dependencies]
 pretty_assertions = "1"

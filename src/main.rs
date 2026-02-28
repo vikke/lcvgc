@@ -1,27 +1,16 @@
 mod cli;
 
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Condvar, Mutex};
+use std::sync::Arc;
 
 use clap::Parser;
 use cli::Cli;
+use lcvgc::engine::evaluator::Evaluator;
+use lcvgc::server::run_server;
+use tokio::sync::Mutex;
 
-fn main() {
+#[tokio::main]
+async fn main() {
     let cli = Cli::parse();
-
-    let running = Arc::new(AtomicBool::new(true));
-    let pair = Arc::new((Mutex::new(false), Condvar::new()));
-
-    let running_clone = Arc::clone(&running);
-    let pair_clone = Arc::clone(&pair);
-    ctrlc::set_handler(move || {
-        running_clone.store(false, Ordering::SeqCst);
-        let (lock, cvar) = &*pair_clone;
-        let mut shutdown = lock.lock().unwrap();
-        *shutdown = true;
-        cvar.notify_one();
-    })
-    .expect("Ctrl+Cハンドラの設定に失敗");
 
     println!("lcvgc v{} 起動中...", env!("CARGO_PKG_VERSION"));
     println!("  ポート: {}", cli.port);
@@ -32,13 +21,20 @@ fn main() {
     if let Some(ref device) = cli.midi_device {
         println!("  MIDIデバイス: {}", device);
     }
-    println!("Ctrl+C で終了します");
 
-    let (lock, cvar) = &*pair;
-    let mut shutdown = lock.lock().unwrap();
-    while !*shutdown {
-        shutdown = cvar.wait(shutdown).unwrap();
+    let evaluator = Arc::new(Mutex::new(Evaluator::new(120.0)));
+
+    if let Some(ref file) = cli.file {
+        let mut ev = evaluator.lock().await;
+        match ev.load_file(&file.to_string_lossy()) {
+            Ok(results) => println!("  {} ブロックを評価しました", results.len()),
+            Err(e) => eprintln!("  ファイル読み込みエラー: {}", e),
+        }
     }
 
-    println!("\nlcvgc を終了します");
+    println!("Ctrl+C で終了します");
+
+    if let Err(e) = run_server(evaluator, cli.port).await {
+        eprintln!("サーバーエラー: {}", e);
+    }
 }
