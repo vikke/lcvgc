@@ -7,6 +7,8 @@ edition = "2021"
 
 [dependencies]
 clap = { version = "4", features = ["derive"] }
+cpal = "0.15"
+crossbeam-channel = "0.5"
 ctrlc = "3"
 nom = "7"
 rand = "0.8"
@@ -24,3 +26,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 [dev-dependencies]
 pretty_assertions = "1"
 tempfile = "3"
+
+[[bin]]
+name = "lcvgc-mic"
+path = "src/bin/lcvgc_mic/main.rs"
