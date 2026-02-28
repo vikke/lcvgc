@@ -7,7 +7,7 @@ const VERSION: &str = concat!(env!("CARGO_PKG_VERSION"), " (", env!("GIT_HASH"),
 ///
 /// テキストベースのDSLでMIDIシーケンスを記述し、リアルタイムに評価・再生するライブコーディングエンジン
 #[derive(Parser, Debug)]
-#[command(name = "lcvgc", version = VERSION, arg_required_else_help = true)]
+#[command(name = "lcvgc", version = VERSION)]
 pub struct Cli {
     /// 起動時に読み込むDSLファイル (.cvg)
     #[arg(long)]
@@ -35,9 +35,13 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_no_args_shows_help() {
-        let result = Cli::try_parse_from(["lcvgc"]);
-        assert!(result.is_err(), "引数なしではヘルプ表示のためエラーになるべき");
+    fn test_no_args_uses_defaults() {
+        let cli = Cli::parse_from(["lcvgc"]);
+        assert_eq!(cli.port, 5555);
+        assert_eq!(cli.log_level, "info");
+        assert!(cli.file.is_none());
+        assert!(cli.midi_device.is_none());
+        assert!(cli.config.is_none());
     }
 
     #[test]
