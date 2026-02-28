@@ -16,6 +16,7 @@
 - 作った `git worktree` は `git worktree remove` で最後に削除する事。
 - commit message
     - `commit message` は日本語で3種類程度提案する事。 
+    - 推奨するパターンを提示する事。他の選ばれなかったバターンは選ばれなかった理由と強みを出力し、こちらの選択の為の情報を出す事。
     - conventional commits を守る事。
     - タイトルと本文で構成する事。
 
