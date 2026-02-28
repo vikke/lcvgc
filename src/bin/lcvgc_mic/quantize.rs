@@ -12,10 +12,19 @@ pub fn freq_to_midi(freq: f32) -> u8 {
 }
 
 /// Convert MIDI note number to DSL note name (e.g. "C4", "D#5").
+#[allow(dead_code)]
 pub fn midi_to_note_name(midi: u8) -> String {
     let note_index = (midi % 12) as usize;
     let octave = (midi as i32 / 12) - 1;
     format!("{}{}", NOTE_NAMES[note_index], octave)
+}
+
+/// Format a MIDI note as DSL text: "c:4:8" (lowercase name, colon-separated octave and duration).
+pub fn format_dsl_note(midi: u8, duration: &str) -> String {
+    let note_index = (midi % 12) as usize;
+    let octave = (midi as i32 / 12) - 1;
+    let name_lower = NOTE_NAMES[note_index].to_lowercase();
+    format!("{}:{}:{}", name_lower, octave, duration)
 }
 
 /// Quantize a duration in milliseconds to the nearest grid division.
@@ -111,6 +120,21 @@ mod tests {
         // At 120 BPM, a half note = 1000ms
         let result = quantize_duration(1000.0, "1/4", 120.0);
         assert_eq!(result, "2");
+    }
+
+    #[test]
+    fn test_format_dsl_note_c4_eighth() {
+        assert_eq!(format_dsl_note(60, "8"), "c:4:8");
+    }
+
+    #[test]
+    fn test_format_dsl_note_a4_quarter() {
+        assert_eq!(format_dsl_note(69, "4"), "a:4:4");
+    }
+
+    #[test]
+    fn test_format_dsl_note_d_sharp_5() {
+        assert_eq!(format_dsl_note(75, "16"), "d#:5:16");
     }
 
     #[test]

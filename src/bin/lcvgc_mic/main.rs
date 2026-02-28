@@ -7,8 +7,10 @@ use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use crossbeam_channel::{bounded, Receiver};
 use std::time::Instant;
 
+use std::io::Write;
+
 use pitch::McLeodDetector;
-use quantize::{freq_to_midi, midi_to_note_name, quantize_duration};
+use quantize::{format_dsl_note, freq_to_midi, quantize_duration};
 use scale::ScaleFilter;
 
 #[derive(Parser, Debug)]
@@ -163,8 +165,9 @@ fn main() {
                                 let duration_ms = note_onset.elapsed().as_millis() as f64;
                                 let dur =
                                     quantize_duration(duration_ms, &cli.grid, cli.bpm);
-                                let name = midi_to_note_name(prev);
-                                print!("{}{} ", name, dur);
+                                let dsl = format_dsl_note(prev, &dur);
+                                print!("{} ", dsl);
+                                let _ = std::io::stdout().flush();
                             }
                             last_note = Some(midi);
                             note_onset = Instant::now();
@@ -174,8 +177,9 @@ fn main() {
                     // Silence detected, emit previous note
                     let duration_ms = note_onset.elapsed().as_millis() as f64;
                     let dur = quantize_duration(duration_ms, &cli.grid, cli.bpm);
-                    let name = midi_to_note_name(prev);
-                    println!("{}{}", name, dur);
+                    let dsl = format_dsl_note(prev, &dur);
+                    println!("{}", dsl);
+                    let _ = std::io::stdout().flush();
                 }
             }
             Err(_) => break,
