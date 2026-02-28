@@ -1,6 +1,7 @@
 ## serena
 
 - **厳守**: claude code を起動したら、activate & onbording を自動で行なう事。
+- **厳守**: claude code でpromptを指示されたら、promptを実行する前に、activate & onbording を自動で行なう事。
 
 ## 思考
 
@@ -13,7 +14,12 @@
 ## 行動
 
 - 調査や分析は、sub agent を起動し、そちらに任せる事。sub agent は、 @./tmp/ に調査や分析を行なった結果を markdown で出力すること。
-- 作った `git worktree` は `git worktree remove` で最後に削除する事。
+- `git worktree` の活用
+    - 複数のsub agentで並列処理を行なう場合は、 `git worktree` を使う事。
+    - 作業結果を `copy` で、`worktree` から `current directory` に取り込まない。
+    - 一度、conventional commits で、タイトル、本文付きでcommitし、それから、作業元の branch が rebase で取り込む事。
+        - この場合は、作業を止めたくないので、一番良いと思うcommit messageを採用して。
+    - 作った `git worktree` は `git worktree remove -f ` で最後に削除する事。
 - commit message
     - `commit message` は日本語で3種類程度提案する事。 
     - 推奨するパターンを提示する事。他の選ばれなかったバターンは選ばれなかった理由と強みを出力し、こちらの選択の為の情報を出す事。
