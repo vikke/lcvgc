@@ -14,6 +14,9 @@
 ## 行動
 
 - 調査や分析は、sub agent を起動し、そちらに任せる事。sub agent は、 @./tmp/ に調査や分析を行なった結果を markdown で出力すること。
+- branch の運用
+    - promptからbranchの名前を考え、まずbranchを作成し、そこのbranchで作業する事。
+    - 作業が全て終わったら、mainにmergeするか、こちらに聞く事。 **絶対守る事**: 勝手に merge しない事。
 - `git worktree` の活用
     - 複数のsub agentで並列処理を行なう場合は、 `git worktree` を使う事。
     - 作業結果を `copy` で、`worktree` から `current directory` に取り込まない。
