@@ -64,21 +64,14 @@
     * [10.1 Scene Playback](#101-scene-playback)
     * [10.2 Session Playback](#102-session-playback)
     * [10.3 Stop](#103-stop)
-* [11. Melody Input via Microphone (lcvgc-mic)](#11-melody-input-via-microphone-lcvgc-mic)
-    * [11.1 Architecture](#111-architecture)
-    * [11.2 Command-line Options](#112-command-line-options)
-    * [11.3 Output Format](#113-output-format)
-    * [11.4 Neovim Integration](#114-neovim-integration)
-    * [11.5 Cargo Dependencies (lcvgc-mic)](#115-cargo-dependencies-lcvgc-mic)
-    * [11.6 Implementation Priority](#116-implementation-priority)
-* [12. Error Handling](#12-error-handling)
-    * [12.1 eval Failure](#121-eval-failure)
-    * [12.2 Undefined References](#122-undefined-references)
-    * [12.3 Deletion Operations](#123-deletion-operations)
-    * [12.4 Internal Engine Panics](#124-internal-engine-panics)
-    * [12.5 MIDI Output Errors](#125-midi-output-errors)
-    * [12.6 Neovim Disconnection](#126-neovim-disconnection)
-* [13. Grammar Rules Summary](#13-grammar-rules-summary)
+* [11. Error Handling](#11-error-handling)
+    * [11.1 eval Failure](#111-eval-failure)
+    * [11.2 Undefined References](#112-undefined-references)
+    * [11.3 Deletion Operations](#113-deletion-operations)
+    * [11.4 Internal Engine Panics](#114-internal-engine-panics)
+    * [11.5 MIDI Output Errors](#115-midi-output-errors)
+    * [11.6 Neovim Disconnection](#116-neovim-disconnection)
+* [12. Grammar Rules Summary](#12-grammar-rules-summary)
 
 <!-- vim-markdown-toc -->
 
@@ -1183,94 +1176,15 @@ stop drums_a
 
 ---
 
-## 11. Melody Input via Microphone (lcvgc-mic)
-
-Detects pitch from humming or microphone input and inserts it directly into a Neovim buffer as DSL note name text. Implemented as a separate binary (`lcvgc-mic`) from the main engine.
-
-### 11.1 Architecture
-
-```
-Microphone → lcvgc-mic (pitch detection) → stdout (note name text) → Inserted into Neovim buffer
-```
-
-lcvgc-mic operates independently without depending on the engine. Output conforms to the lcvgc DSL note name format.
-
-### 11.2 Command-line Options
-
-```bash
-lcvgc-mic [options]
-
-Options:
-  --quantize <N>       Minimum note unit (4, 8, 16). Default: 8
-  --threshold <0-1>    Volume threshold. Below this is treated as rest. Default: 0.3
-  --device <name>      Audio input device name. Omit for system default
-  --key <note>         Reference key. Corrects out-of-scale notes to the nearest scale note. Omit for no correction
-  --scale <type>       Used in combination with --key. Default: minor
-```
-
-### 11.3 Output Format
-
-Outputs lcvgc DSL note names to stdout. Conforms to shorthand notation, outputting octave and duration only when they change.
-
-```bash
-$ lcvgc-mic --quantize 8 --key c --scale minor
-c:3:8 d eb f::4 g::2 r:8 ab g f eb::4 c::2
-```
-
-- Outputs note names when pitch is detected
-- Outputs `r` during silent sections
-- Duration is quantized to the specified unit
-- When `--key` / `--scale` are specified, detected pitches are corrected to the nearest note in the scale
-
-### 11.4 Neovim Integration
-
-The Neovim plugin launches `lcvgc-mic` as a job and inserts the output at the cursor position.
-
-If the clip at the cursor position has `[scale ...]` specified, `--key` and `--scale` are automatically added. Explicit specification overrides this.
-
-```
-clip melody_a [bars 4] [scale c minor] {
-  lead |                     ← Place cursor here
-  :LcvgcMicStart             ← --key c --scale minor is auto-added
-  (humming away♪)            ← Automatically corrected to C minor scale
-  :LcvgcMicStop
-  lead c:3:8 d eb f::4 g::2  ← Only scale-internal note names are input
-}
-
-// In a clip without scale, no scale correction
-clip melody_b [bars 4] {
-  lead |
-  :LcvgcMicStart             ← No correction
-}
-
-// Explicit override
-:LcvgcMicStart --key D --scale dorian
-```
-
-### 11.5 Cargo Dependencies (lcvgc-mic)
-
-```toml
-[dependencies]
-cpal = "0.15"               # Audio input
-pitch-detection = "0.3"     # Pitch detection (McLeod algorithm)
-clap = { version = "4", features = ["derive"] }
-```
-
-### 11.6 Implementation Priority
-
-Phase 4 and later. Work begins after the main engine and Neovim plugin are complete.
-
----
-
-## 12. Error Handling
+## 11. Error Handling
 
 Basic principle: **Never stop the music.** All errors are "notify but do not affect playback."
 
-### 12.1 eval Failure
+### 11.1 eval Failure
 
 The engine's internal state is not modified at all. Playback continues with the previous state. The error is only displayed in the Neovim eval result window.
 
-### 12.2 Undefined References
+### 11.2 Undefined References
 
 If a scene references a clip name that has not been eval'd yet, only that slot is silent. Other clips still play. If that clip is eval'd later, it starts playing from the beginning of the next loop.
 
@@ -1282,25 +1196,25 @@ scene verse {
 }
 ```
 
-### 12.3 Deletion Operations
+### 11.3 Deletion Operations
 
 There is no delete operation. Only overwriting. To empty something, eval an empty clip.
 
-### 12.4 Internal Engine Panics
+### 11.4 Internal Engine Panics
 
 Rust panics are caught, maintaining the MIDI clock and current playback state. A stack trace is output to the log.
 
-### 12.5 MIDI Output Errors
+### 11.5 MIDI Output Errors
 
 If a MIDI port disappears (e.g., USB disconnection), output to that device is skipped while other devices continue playing. When the port returns, automatic reconnection is attempted.
 
-### 12.6 Neovim Disconnection
+### 11.6 Neovim Disconnection
 
 The engine continues playback as-is. Restarting Neovim and reconnecting allows coding to continue from where it left off.
 
 ---
 
-## 13. Grammar Rules Summary
+## 12. Grammar Rules Summary
 
 - Each block (device, instrument, kit, clip, scene, session, tempo, play, stop, include, var) can be independently parsed and eval'd
 - Eval'ing a block with the same name overwrites it

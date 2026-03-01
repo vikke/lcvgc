@@ -7,8 +7,6 @@ edition = "2021"
 
 [dependencies]
 clap = { version = "4", features = ["derive"] }
-cpal = "0.15"
-crossbeam-channel = "0.5"
 ctrlc = "3"
 nom = "7"
 rand = "0.8"
@@ -31,7 +29,3 @@ tempfile = "3"
 [[bench]]
 name = "parser_bench"
 harness = false
-
-[[bin]]
-name = "lcvgc-mic"
-path = "src/bin/lcvgc_mic/main.rs"

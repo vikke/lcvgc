@@ -1,14 +1,15 @@
 # lcvgc Makefile
 #
 # ターゲット:
-#   Linux (ネイティブ): lcvgc daemon + LSP + lcvgc-mic
-#   Windows (クロスコンパイル): lcvgc.exe + lcvgc-mic.exe
+#   Linux (ネイティブ): lcvgc daemon + LSP
+#   Windows (クロスコンパイル): lcvgc.exe
 #
 # 前提条件 (Windows クロスコンパイル):
-#   sudo apt install gcc-mingw-w64-x86-64
-#   rustup target add x86_64-pc-windows-gnu
+#   cargo install cross --git https://github.com/cross-rs/cross
+#   Docker Desktop WSL Integration を有効化
 
 CARGO        := cargo
+CROSS        := cross
 VERSION      := $(shell grep '^version' Cargo.toml | head -1 | sed 's/.*"\(.*\)"/\1/')
 RELEASE_DIR  := target/release
 WIN_TARGET   := x86_64-pc-windows-gnu
@@ -23,17 +24,15 @@ all: build
 
 ## ── ビルド ──────────────────────────────────────────
 
-# Linux ネイティブ (daemon + mic)
+# Linux ネイティブ
 build:
 	$(CARGO) build --release
 	@echo "✓ $(RELEASE_DIR)/lcvgc"
-	@echo "✓ $(RELEASE_DIR)/lcvgc-mic"
 
-# Windows クロスコンパイル (daemon + mic)
+# Windows クロスコンパイル (cross + Docker)
 build-win:
-	$(CARGO) build --release --target $(WIN_TARGET)
+	$(CROSS) build --release --target $(WIN_TARGET)
 	@echo "✓ $(WIN_DIR)/lcvgc.exe"
-	@echo "✓ $(WIN_DIR)/lcvgc-mic.exe"
 
 # 両プラットフォーム
 build-all: build build-win
@@ -47,10 +46,6 @@ test:
 # 統合テストのみ
 test-integration:
 	$(CARGO) test --test integration
-
-# lcvgc-mic テストのみ
-test-mic:
-	$(CARGO) test --bin lcvgc-mic
 
 # 全テスト (警告チェック含む)
 test-all: lint test
@@ -81,18 +76,19 @@ fmt-check:
 dist: build build-win
 	@mkdir -p $(DIST_DIR)/linux $(DIST_DIR)/windows
 	cp $(RELEASE_DIR)/lcvgc $(DIST_DIR)/linux/
-	cp $(RELEASE_DIR)/lcvgc-mic $(DIST_DIR)/linux/
 	cp $(WIN_DIR)/lcvgc.exe $(DIST_DIR)/windows/
-	cp $(WIN_DIR)/lcvgc-mic.exe $(DIST_DIR)/windows/
 	@echo "✓ dist/ に配布ファイルを作成しました"
 
 ## ── セットアップ ────────────────────────────────────
 
 # Windows クロスコンパイル環境セットアップ
 setup-win:
+	cargo install cross --git https://github.com/cross-rs/cross
 	rustup target add $(WIN_TARGET)
-	@echo "MinGW ツールチェインが必要です:"
-	@echo "  sudo apt install gcc-mingw-w64-x86-64"
+	@echo ""
+	@echo "✓ cross インストール完了"
+	@echo "  Docker Desktop の WSL Integration が有効であることを確認してください"
+	@echo "  Docker Desktop → Settings → Resources → WSL Integration → Ubuntu"
 
 # Tree-sitter 文法生成
 tree-sitter-generate:
@@ -127,12 +123,11 @@ help:
 	@echo ""
 	@echo "ビルド:"
 	@echo "  make build       Linux ネイティブビルド"
-	@echo "  make build-win   Windows クロスコンパイル (.exe)"
+	@echo "  make build-win   Windows クロスコンパイル (cross + Docker)"
 	@echo "  make build-all   両プラットフォーム"
 	@echo ""
 	@echo "テスト:"
 	@echo "  make test        全テスト実行"
-	@echo "  make test-mic    lcvgc-mic テストのみ"
 	@echo "  make test-all    lint + テスト"
 	@echo "  make bench       ベンチマーク実行"
 	@echo ""
@@ -149,5 +144,5 @@ help:
 	@echo "  make lsp          LSP サーバー起動"
 	@echo ""
 	@echo "セットアップ:"
-	@echo "  make setup-win   Windows クロスコンパイル環境構築"
+	@echo "  make setup-win   cross + Docker 環境構築"
 	@echo "  make clean       ビルド成果物削除"
