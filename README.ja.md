@@ -14,12 +14,10 @@
   - Debian/Ubuntu: `sudo apt install libasound2-dev`
   - Fedora/RHEL: `sudo dnf install alsa-lib-devel`
 
-### ビルド
+### インストール
 
 ```sh
-git clone https://github.com/vikke/lcvgc.git
-cd lcvgc
-cargo build --release
+cargo install --git https://github.com/vikke/lcvgc
 ```
 
 ## 関連プロジェクト

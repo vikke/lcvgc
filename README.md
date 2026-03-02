@@ -14,12 +14,10 @@ A live coding toolkit supporting everything from modular synths (MIDI to CV) to 
   - Debian/Ubuntu: `sudo apt install libasound2-dev`
   - Fedora/RHEL: `sudo dnf install alsa-lib-devel`
 
-### Build
+### Install
 
 ```sh
-git clone https://github.com/vikke/lcvgc.git
-cd lcvgc
-cargo build --release
+cargo install --git https://github.com/vikke/lcvgc
 ```
 
 ## Related Projects
