@@ -54,16 +54,25 @@ fn parse_instrument_prop(input: &str) -> IResult<&str, InstrumentProp> {
     }
 }
 
-/// Parse comma-separated properties inside `{ ... }`.
+/// Parse properties inside `{ ... }`, separated by commas and/or whitespace.
+///
+/// Supports both comma-separated (`channel 10, note c2`) and
+/// newline-separated (one property per line) formats, as well as
+/// any mix of the two.
 fn parse_instrument_props(input: &str) -> IResult<&str, Vec<InstrumentProp>> {
     let (input, first) = parse_instrument_prop(input)?;
     let mut props = vec![first];
     let mut input = input;
     loop {
-        let trimmed = ws(input)?.0;
-        if let Ok((rest, _)) = char::<&str, nom::error::Error<&str>>(',')(trimmed) {
-            let (rest, _) = ws(rest)?;
-            let (rest, prop) = parse_instrument_prop(rest)?;
+        let (trimmed, _) = ws(input)?;
+        // Skip optional comma
+        let trimmed = if let Ok((rest, _)) = char::<&str, nom::error::Error<&str>>(',')(trimmed) {
+            ws(rest)?.0
+        } else {
+            trimmed
+        };
+        // Try to parse the next property; stop if none found
+        if let Ok((rest, prop)) = parse_instrument_prop(trimmed) {
             props.push(prop);
             input = rest;
         } else {
@@ -228,6 +237,65 @@ mod tests {
         assert_eq!(kit.instruments[0].note.name, NoteName::Fs);
         assert_eq!(kit.instruments[1].note.name, NoteName::As);
         assert_eq!(kit.instruments[2].note.name, NoteName::Ds);
+    }
+
+    /// 改行区切り（カンマなし）のkit定義がパースできることを検証する。
+    /// tree-sitter文法と一貫した構文をサポートする。
+    #[test]
+    fn test_kit_with_newline_separated_props() {
+        let input = r#"kit tr808 {
+  device my_synth
+  kick {
+    channel 10
+    note c2
+  }
+  snare {
+    channel 10
+    note d2
+  }
+  hihat {
+    channel 10
+    note f#2
+  }
+}"#;
+        let (rest, kit) = parse_kit(input).unwrap();
+        assert_eq!(rest, "");
+        assert_eq!(kit.name, "tr808");
+        assert_eq!(kit.device, "my_synth");
+        assert_eq!(kit.instruments.len(), 3);
+
+        let kick = &kit.instruments[0];
+        assert_eq!(kick.name, "kick");
+        assert_eq!(kick.channel, 10);
+        assert_eq!(kick.note, KitInstrumentNote { name: NoteName::C, octave: 2 });
+
+        let snare = &kit.instruments[1];
+        assert_eq!(snare.name, "snare");
+        assert_eq!(snare.channel, 10);
+        assert_eq!(snare.note, KitInstrumentNote { name: NoteName::D, octave: 2 });
+
+        let hihat = &kit.instruments[2];
+        assert_eq!(hihat.name, "hihat");
+        assert_eq!(hihat.channel, 10);
+        assert_eq!(hihat.note, KitInstrumentNote { name: NoteName::Fs, octave: 2 });
+    }
+
+    /// カンマと改行が混在するkit定義がパースできることを検証する。
+    #[test]
+    fn test_kit_with_mixed_separators() {
+        let input = r#"kit mixed {
+  device dev
+  kick { channel 10, note c2 }
+  snare {
+    channel 10
+    note d2
+  }
+}"#;
+        let (rest, kit) = parse_kit(input).unwrap();
+        assert_eq!(rest, "");
+        assert_eq!(kit.instruments.len(), 2);
+        assert_eq!(kit.instruments[0].name, "kick");
+        assert_eq!(kit.instruments[1].name, "snare");
     }
 
     #[test]
