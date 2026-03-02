@@ -1,7 +1,7 @@
-use crate::ast::common::NoteName;
-use crate::ast::instrument::InstrumentDef;
-use crate::ast::scale::ScaleType;
-use crate::lsp::diatonic;
+use lcvgc_core::ast::common::NoteName;
+use lcvgc_core::ast::instrument::InstrumentDef;
+use lcvgc_core::ast::scale::ScaleType;
+use crate::diatonic;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct CompletionItem {
@@ -117,7 +117,7 @@ impl CompletionProvider {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ast::instrument::CcMapping;
+    use lcvgc_core::ast::instrument::CcMapping;
 
     #[test]
     fn test_keyword_completions_count() {

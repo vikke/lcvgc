@@ -1,5 +1,5 @@
-use crate::engine::registry::Registry;
-use crate::lsp::span_parser::{span_parse_source, SpanError, SpannedBlock};
+use lcvgc_core::engine::registry::Registry;
+use crate::span_parser::{span_parse_source, SpanError, SpannedBlock};
 
 /// LSP用ドキュメント解析器
 pub struct LspAnalyzer {
@@ -61,7 +61,7 @@ impl LspAnalyzer {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ast::Block;
+    use lcvgc_core::ast::Block;
 
     #[test]
     fn new_is_empty() {

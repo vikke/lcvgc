@@ -1,6 +1,6 @@
-/// evalコマンドディスパッチャ
-///
-/// DSLのBlockをレジストリ・クロック・ステートに振り分けて評価する。
+//! evalコマンドディスパッチャ
+//!
+//! DSLのBlockをレジストリ・クロック・ステートに振り分けて評価する。
 
 use crate::ast::playback::PlayTarget;
 use crate::ast::Block;

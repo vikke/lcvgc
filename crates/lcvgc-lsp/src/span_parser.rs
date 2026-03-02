@@ -1,5 +1,5 @@
-use crate::ast::Block;
-use crate::parser::parse_block;
+use lcvgc_core::ast::Block;
+use lcvgc_core::parser::parse_block;
 
 /// Skip a nested block comment (`/* ... */`) and return the remaining input.
 ///

@@ -845,6 +845,16 @@ name = "lcvgc"
 version = "0.1.0"
 dependencies = [
  "clap",
+ "lcvgc-core",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
+name = "lcvgc-core"
+version = "0.1.0"
+dependencies = [
  "criterion",
  "ctrlc",
  "midir",
@@ -858,6 +868,17 @@ dependencies = [
  "thiserror",
  "tokio",
  "toml",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
+name = "lcvgc-lsp"
+version = "0.1.0"
+dependencies = [
+ "lcvgc-core",
+ "serde_json",
+ "tokio",
  "tower-lsp",
  "tracing",
  "tracing-subscriber",

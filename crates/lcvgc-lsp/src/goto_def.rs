@@ -1,5 +1,5 @@
-use crate::ast::Block;
-use crate::lsp::span_parser::{Span, SpannedBlock};
+use lcvgc_core::ast::Block;
+use crate::span_parser::{Span, SpannedBlock};
 
 pub struct GotoDefinitionProvider;
 
@@ -28,14 +28,14 @@ impl GotoDefinitionProvider {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ast::clip::{ClipBody, ClipDef, PitchedClipBody};
-    use crate::ast::device::DeviceDef;
-    use crate::ast::instrument::InstrumentDef;
-    use crate::ast::scene::SceneDef;
-    use crate::ast::tempo::Tempo;
-    use crate::ast::var::VarDef;
-    use crate::lsp::span_parser::{Span, SpannedBlock};
-    use crate::parser::clip_options::ClipOptions;
+    use lcvgc_core::ast::clip::{ClipBody, ClipDef, PitchedClipBody};
+    use lcvgc_core::ast::device::DeviceDef;
+    use lcvgc_core::ast::instrument::InstrumentDef;
+    use lcvgc_core::ast::scene::SceneDef;
+    use lcvgc_core::ast::tempo::Tempo;
+    use lcvgc_core::ast::var::VarDef;
+    use crate::span_parser::{Span, SpannedBlock};
+    use lcvgc_core::parser::clip_options::ClipOptions;
 
     fn device_block(name: &str, span: Span, name_span: Option<Span>) -> SpannedBlock {
         SpannedBlock {

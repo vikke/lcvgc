@@ -1,0 +1,27 @@
+[package]
+name = "lcvgc-core"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+ctrlc = "3"
+nom = "7"
+rand = "0.8"
+serde = { version = "1", features = ["derive"] }
+toml = "0.8"
+midir = "0.10"
+serde_json = "1"
+thiserror = "2"
+tokio = { version = "1", features = ["full"] }
+notify = "7"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+[dev-dependencies]
+criterion = { version = "0.5", features = ["html_reports"] }
+pretty_assertions = "1"
+tempfile = "3"
+
+[[bench]]
+name = "parser_bench"
+harness = false

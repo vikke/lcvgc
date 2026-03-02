@@ -1,9 +1,9 @@
-/// 統合テスト: DSLソース → パース → 評価 → MIDI出力のE2Eフロー
+//! 統合テスト: DSLソース → パース → 評価 → MIDI出力のE2Eフロー
 
-use lcvgc::engine::compiler::compile_clip;
-use lcvgc::engine::evaluator::{EvalResult, Evaluator};
-use lcvgc::engine::midi_sink::{MidiSink, MockSink};
-use lcvgc::midi::message::MidiMessage;
+use lcvgc_core::engine::compiler::compile_clip;
+use lcvgc_core::engine::evaluator::{EvalResult, Evaluator};
+use lcvgc_core::engine::midi_sink::{MidiSink, MockSink};
+use lcvgc_core::midi::message::MidiMessage;
 
 /// DSLソースを評価して結果を返す
 fn eval(source: &str) -> Vec<EvalResult> {

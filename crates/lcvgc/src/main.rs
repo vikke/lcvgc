@@ -3,14 +3,17 @@ mod cli;
 use std::sync::Arc;
 
 use clap::Parser;
-use cli::{Cli, Commands};
-use lcvgc::engine::evaluator::Evaluator;
-use lcvgc::engine::watcher::{run_hot_reload, WatcherConfig};
-use lcvgc::lsp::run_lsp;
-use lcvgc::server::run_server;
+use cli::Cli;
+use lcvgc_core::engine::evaluator::Evaluator;
+use lcvgc_core::engine::watcher::{run_hot_reload, WatcherConfig};
+use lcvgc_core::server::run_server;
 use tokio::sync::Mutex;
 use tracing::{error, info};
 
+/// tracing初期化
+///
+/// # Arguments
+/// * `log_level` - ログレベル文字列 (e.g. "info", "debug")
 fn init_tracing(log_level: &str) {
     use tracing_subscriber::EnvFilter;
     let filter = EnvFilter::try_new(log_level)
@@ -23,11 +26,6 @@ fn init_tracing(log_level: &str) {
 #[tokio::main]
 async fn main() {
     let cli = Cli::parse();
-
-    if let Some(Commands::Lsp) = cli.command {
-        run_lsp().await;
-        return;
-    }
 
     init_tracing(&cli.log_level);
 

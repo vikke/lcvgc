@@ -35,11 +35,7 @@ pub fn calculate_gate(note_duration_ms: u64, gate_percent: u8) -> GateResult {
 
     if off < 5 {
         let off = 5;
-        let on = if note_duration_ms >= 5 {
-            note_duration_ms - 5
-        } else {
-            0
-        };
+        let on = note_duration_ms.saturating_sub(5);
         GateResult {
             on_duration_ms: on,
             off_duration_ms: off,

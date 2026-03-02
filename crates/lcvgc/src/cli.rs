@@ -1,4 +1,4 @@
-use clap::{Parser, Subcommand};
+use clap::Parser;
 use std::path::PathBuf;
 
 const VERSION: &str = concat!(env!("CARGO_PKG_VERSION"), " (", env!("GIT_HASH"), ")");
@@ -9,9 +9,6 @@ const VERSION: &str = concat!(env!("CARGO_PKG_VERSION"), " (", env!("GIT_HASH"),
 #[derive(Parser, Debug)]
 #[command(name = "lcvgc", version = VERSION)]
 pub struct Cli {
-    #[command(subcommand)]
-    pub command: Option<Commands>,
-
     /// 起動時に読み込むDSLファイル (.cvg)
     #[arg(long)]
     pub file: Option<PathBuf>,
@@ -37,11 +34,6 @@ pub struct Cli {
     pub watch: Option<PathBuf>,
 }
 
-#[derive(Subcommand, Debug)]
-pub enum Commands {
-    /// LSPサーバーをstdio通信で起動
-    Lsp,
-}
 
 #[cfg(test)]
 mod tests {
@@ -55,7 +47,6 @@ mod tests {
         assert!(cli.file.is_none());
         assert!(cli.midi_device.is_none());
         assert!(cli.config.is_none());
-        assert!(cli.command.is_none());
     }
 
     #[test]
@@ -89,12 +80,6 @@ mod tests {
         assert_eq!(cli.midi_device.unwrap(), "IAC Driver Bus 1");
         assert_eq!(cli.log_level, "debug");
         assert!(cli.config.is_some());
-    }
-
-    #[test]
-    fn test_lsp_subcommand() {
-        let cli = Cli::parse_from(["lcvgc", "lsp"]);
-        assert!(matches!(cli.command, Some(Commands::Lsp)));
     }
 
     #[test]

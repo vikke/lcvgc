@@ -5,10 +5,10 @@ use tower_lsp::jsonrpc::Result;
 use tower_lsp::lsp_types::*;
 use tower_lsp::{Client, LanguageServer};
 
-use crate::ast::Block;
-use crate::lsp::analyzer::LspAnalyzer;
-use crate::lsp::completion::{CompletionKind, CompletionProvider};
-use crate::lsp::diagnostic::DiagnosticProvider;
+use lcvgc_core::ast::Block;
+use crate::analyzer::LspAnalyzer;
+use crate::completion::{CompletionKind, CompletionProvider};
+use crate::diagnostic::DiagnosticProvider;
 
 pub struct Backend {
     client: Client,
@@ -37,10 +37,10 @@ impl Backend {
                 Diagnostic {
                     range,
                     severity: Some(match d.severity {
-                        crate::lsp::diagnostic::DiagnosticSeverity::Error => {
+                        crate::diagnostic::DiagnosticSeverity::Error => {
                             DiagnosticSeverity::ERROR
                         }
-                        crate::lsp::diagnostic::DiagnosticSeverity::Warning => {
+                        crate::diagnostic::DiagnosticSeverity::Warning => {
                             DiagnosticSeverity::WARNING
                         }
                     }),
@@ -462,7 +462,7 @@ mod tests {
 
     #[test]
     fn map_block_symbol_kind_device() {
-        use crate::ast::device::DeviceDef;
+        use lcvgc_core::ast::device::DeviceDef;
         let block = Block::Device(DeviceDef {
             name: "d".into(),
             port: "p".into(),
@@ -472,8 +472,8 @@ mod tests {
 
     #[test]
     fn map_block_symbol_kind_clip() {
-        use crate::ast::clip::{ClipBody, ClipDef, PitchedClipBody};
-        use crate::parser::clip_options::ClipOptions;
+        use lcvgc_core::ast::clip::{ClipBody, ClipDef, PitchedClipBody};
+        use lcvgc_core::parser::clip_options::ClipOptions;
         let block = Block::Clip(ClipDef {
             name: "c".into(),
             options: ClipOptions::default(),
@@ -487,7 +487,7 @@ mod tests {
 
     #[test]
     fn map_block_symbol_kind_tempo() {
-        use crate::ast::tempo::Tempo;
+        use lcvgc_core::ast::tempo::Tempo;
         let block = Block::Tempo(Tempo::Absolute(120));
         assert_eq!(map_block_to_symbol_kind(&block), SymbolKind::CONSTANT);
     }

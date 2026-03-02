@@ -31,9 +31,9 @@ pub fn connect(port_name: &str) -> Result<MidiOutputConnection, MidiError> {
 }
 
 /// ポート一覧から名前に一致するポートを探す
-fn find_port<'a>(
+fn find_port(
     output: &MidiOutput,
-    ports: &'a [MidiOutputPort],
+    ports: &[MidiOutputPort],
     name: &str,
 ) -> Result<MidiOutputPort, MidiError> {
     for port in ports {

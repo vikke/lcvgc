@@ -1,9 +1,9 @@
 /// 診断プロバイダ（パースエラー＋未定義参照）
-use crate::ast::clip::ClipBody;
-use crate::ast::scene::SceneEntry;
-use crate::ast::Block;
-use crate::engine::registry::Registry;
-use crate::lsp::span_parser::{Span, SpanError, SpannedBlock};
+use lcvgc_core::ast::clip::ClipBody;
+use lcvgc_core::ast::scene::SceneEntry;
+use lcvgc_core::ast::Block;
+use lcvgc_core::engine::registry::Registry;
+use crate::span_parser::{Span, SpanError, SpannedBlock};
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Diagnostic {
@@ -102,12 +102,12 @@ impl DiagnosticProvider {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ast::clip::{ClipBody, ClipDef, PitchedClipBody, PitchedLine};
-    use crate::ast::instrument::InstrumentDef;
-    use crate::ast::scene::{SceneDef, SceneEntry, ShuffleCandidate};
-    use crate::ast::session::{SessionDef, SessionEntry, SessionRepeat};
-    use crate::ast::tempo::Tempo;
-    use crate::parser::clip_options::ClipOptions;
+    use lcvgc_core::ast::clip::{ClipBody, ClipDef, PitchedClipBody, PitchedLine};
+    use lcvgc_core::ast::instrument::InstrumentDef;
+    use lcvgc_core::ast::scene::{SceneDef, SceneEntry, ShuffleCandidate};
+    use lcvgc_core::ast::session::{SessionDef, SessionEntry, SessionRepeat};
+    use lcvgc_core::ast::tempo::Tempo;
+    use lcvgc_core::parser::clip_options::ClipOptions;
 
     fn make_span(start: usize, end: usize) -> Span {
         Span { start, end }

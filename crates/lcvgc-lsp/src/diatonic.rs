@@ -1,5 +1,5 @@
-use crate::ast::common::NoteName;
-use crate::ast::scale::ScaleType;
+use lcvgc_core::ast::common::NoteName;
+use lcvgc_core::ast::scale::ScaleType;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct DiatonicChord {

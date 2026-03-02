@@ -1,6 +1,6 @@
-use crate::ast::clip::ClipBody;
-use crate::ast::Block;
-use crate::lsp::span_parser::SpannedBlock;
+use lcvgc_core::ast::clip::ClipBody;
+use lcvgc_core::ast::Block;
+use crate::span_parser::SpannedBlock;
 
 pub struct HoverProvider;
 
@@ -72,20 +72,20 @@ impl HoverProvider {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ast::clip::{ClipBody, ClipDef, PitchedClipBody};
-    use crate::ast::common::NoteName;
-    use crate::ast::device::DeviceDef;
-    use crate::ast::include::IncludeDef;
-    use crate::ast::instrument::{CcMapping, InstrumentDef};
-    use crate::ast::kit::{KitDef, KitInstrument, KitInstrumentNote};
-    use crate::ast::playback::{PlayCommand, PlayTarget, RepeatSpec, StopCommand};
-    use crate::ast::scale::{ScaleDef, ScaleType};
-    use crate::ast::scene::SceneDef;
-    use crate::ast::session::SessionDef;
-    use crate::ast::tempo::Tempo;
-    use crate::ast::var::VarDef;
-    use crate::lsp::span_parser::{Span, SpannedBlock};
-    use crate::parser::clip_options::ClipOptions;
+    use lcvgc_core::ast::clip::{ClipBody, ClipDef, PitchedClipBody};
+    use lcvgc_core::ast::common::NoteName;
+    use lcvgc_core::ast::device::DeviceDef;
+    use lcvgc_core::ast::include::IncludeDef;
+    use lcvgc_core::ast::instrument::{CcMapping, InstrumentDef};
+    use lcvgc_core::ast::kit::{KitDef, KitInstrument, KitInstrumentNote};
+    use lcvgc_core::ast::playback::{PlayCommand, PlayTarget, RepeatSpec, StopCommand};
+    use lcvgc_core::ast::scale::{ScaleDef, ScaleType};
+    use lcvgc_core::ast::scene::SceneDef;
+    use lcvgc_core::ast::session::SessionDef;
+    use lcvgc_core::ast::tempo::Tempo;
+    use lcvgc_core::ast::var::VarDef;
+    use crate::span_parser::{Span, SpannedBlock};
+    use lcvgc_core::parser::clip_options::ClipOptions;
 
     fn sb(block: Block) -> SpannedBlock {
         SpannedBlock {

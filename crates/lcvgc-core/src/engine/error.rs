@@ -74,7 +74,7 @@ mod tests {
 
     #[test]
     fn from_io_error() {
-        let io_err = std::io::Error::new(std::io::ErrorKind::Other, "test");
+        let io_err = std::io::Error::other("test");
         let e: EngineError = io_err.into();
         assert!(matches!(e, EngineError::Io(_)));
     }
