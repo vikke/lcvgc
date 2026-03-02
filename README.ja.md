@@ -17,7 +17,8 @@
 ### インストール
 
 ```sh
-cargo install --git https://github.com/vikke/lcvgc
+cargo install --git https://github.com/vikke/lcvgc lcvgc
+cargo install --git https://github.com/vikke/lcvgc lcvgc-lsp
 ```
 
 ## 関連プロジェクト

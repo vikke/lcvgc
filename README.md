@@ -17,7 +17,8 @@ A live coding toolkit supporting everything from modular synths (MIDI to CV) to 
 ### Install
 
 ```sh
-cargo install --git https://github.com/vikke/lcvgc
+cargo install --git https://github.com/vikke/lcvgc lcvgc
+cargo install --git https://github.com/vikke/lcvgc lcvgc-lsp
 ```
 
 ## Related Projects
