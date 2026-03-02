@@ -37,11 +37,12 @@ pub(crate) const RESERVED_KEYWORDS: &[&str] = &[
     "loop",
 ];
 
-/// Consume whitespace and comments.
+/// Consume whitespace and comments (line comments `//` and block comments `/* */`).
 pub fn ws(input: &str) -> IResult<&str, ()> {
     let (input, _) = many0(alt((
         value((), multispace1),
         value((), line_comment),
+        value((), block_comment),
     )))(input)?;
     Ok((input, ()))
 }
@@ -51,6 +52,42 @@ fn line_comment(input: &str) -> IResult<&str, &str> {
     let (input, _) = tag("//")(input)?;
     let (input, comment) = take_while(|c| c != '\n')(input)?;
     Ok((input, comment))
+}
+
+/// Parse a block comment: `/* ... */` with nested comment support.
+///
+/// Supports arbitrary nesting depth (e.g. `/* outer /* inner */ outer */`).
+///
+/// # Returns
+/// - `Ok((remaining, ()))` on success
+/// - `Err` if the opening `/*` is not found or comments are not properly closed
+fn block_comment(input: &str) -> IResult<&str, ()> {
+    let (input, _) = tag("/*")(input)?;
+    let mut remaining = input;
+    let mut depth: u32 = 1;
+    while depth > 0 {
+        let open = remaining.find("/*");
+        let close = remaining.find("*/");
+        match (open, close) {
+            // Found both: process whichever comes first
+            (Some(o), Some(c)) if o < c => {
+                depth += 1;
+                remaining = &remaining[o + 2..];
+            }
+            (_, Some(c)) => {
+                depth -= 1;
+                remaining = &remaining[c + 2..];
+            }
+            // No closing `*/` found: unclosed comment
+            (_, None) => {
+                return Err(nom::Err::Error(nom::error::Error::new(
+                    input,
+                    nom::error::ErrorKind::Tag,
+                )));
+            }
+        }
+    }
+    Ok((remaining, ()))
 }
 
 /// Parse an identifier (letters, digits, underscores; must start with letter or underscore).
@@ -285,5 +322,52 @@ mod tests {
         assert!(is_reserved("clip"));
         assert!(!is_reserved("bass"));
         assert!(!is_reserved("tr808"));
+    }
+
+    #[test]
+    fn test_block_comment_simple() {
+        assert_eq!(ws("/* comment */rest"), Ok(("rest", ())));
+    }
+
+    #[test]
+    fn test_block_comment_multiline() {
+        assert_eq!(ws("/* line1\nline2\nline3 */rest"), Ok(("rest", ())));
+    }
+
+    #[test]
+    fn test_block_comment_nested() {
+        assert_eq!(ws("/* outer /* inner */ outer */rest"), Ok(("rest", ())));
+    }
+
+    #[test]
+    fn test_block_comment_deeply_nested() {
+        assert_eq!(
+            ws("/* a /* b /* c */ b */ a */rest"),
+            Ok(("rest", ()))
+        );
+    }
+
+    #[test]
+    fn test_block_comment_with_whitespace() {
+        assert_eq!(ws("  /* comment */  rest"), Ok(("rest", ())));
+    }
+
+    #[test]
+    fn test_block_comment_unclosed_fails() {
+        // Unclosed block comment should fail, leaving input unconsumed
+        assert_eq!(ws("/* unclosed"), Ok(("/* unclosed", ())));
+    }
+
+    #[test]
+    fn test_block_comment_with_line_comment_inside() {
+        assert_eq!(ws("/* contains // line comment */rest"), Ok(("rest", ())));
+    }
+
+    #[test]
+    fn test_mixed_line_and_block_comments() {
+        assert_eq!(
+            ws("// line\n/* block */rest"),
+            Ok(("rest", ()))
+        );
     }
 }

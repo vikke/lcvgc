@@ -1223,7 +1223,7 @@ The engine continues playback as-is. Restarting Neovim and reconnecting allows c
 - Exceeding bars results in truncation with a warning, not an error
 - `>N` allows forced jumping to the beginning of a bar
 - Lines with the same instrument name are concatenated (multi-line notation). The number of bars per line is unrestricted
-- Comments use `//` to end of line
+- Comments use `//` to end of line, or `/* ... */` for block comments (nesting supported)
 - Note names are all lowercase: `c c# db d d# eb e f f# gb g g# ab a a# bb b`
 - Octave and duration for pitched instruments carry over from the previous value (defaults at clip start are o4, :4). Maintained across lines
 - Both single notes and chord names use a unified 3-section format with `:` separators (`c:3:8`, `cm7:4:2`). `::` omits octave and changes only duration (`c::8`, `cm7::1`)

@@ -1,6 +1,36 @@
 use crate::ast::Block;
 use crate::parser::parse_block;
 
+/// Skip a nested block comment (`/* ... */`) and return the remaining input.
+///
+/// Supports arbitrary nesting (e.g. `/* outer /* inner */ outer */`).
+///
+/// # Arguments
+/// * `input` - Input string starting with `/*`
+///
+/// # Returns
+/// - `Some(remaining)` if the comment was properly closed
+/// - `None` if the comment is unclosed
+fn skip_block_comment(input: &str) -> Option<&str> {
+    let mut remaining = &input[2..]; // skip opening `/*`
+    let mut depth: u32 = 1;
+    while depth > 0 {
+        let open = remaining.find("/*");
+        let close = remaining.find("*/")?;
+        match open {
+            Some(o) if o < close => {
+                depth += 1;
+                remaining = &remaining[o + 2..];
+            }
+            _ => {
+                depth -= 1;
+                remaining = &remaining[close + 2..];
+            }
+        }
+    }
+    Some(remaining)
+}
+
 /// ソース内のバイトオフセット範囲
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Span {
@@ -77,15 +107,27 @@ pub fn span_parse_source(source: &str) -> ParseOutcome {
     let mut remaining = source;
 
     loop {
-        // Skip whitespace/comments
+        // Skip whitespace and comments (line `//` and block `/* */`)
         remaining = remaining.trim_start();
-        // Also skip comment lines
-        while remaining.starts_with("//") {
-            if let Some(nl) = remaining.find('\n') {
-                remaining = &remaining[nl + 1..];
+        loop {
+            if remaining.starts_with("//") {
+                // Line comment: skip to end of line
+                if let Some(nl) = remaining.find('\n') {
+                    remaining = &remaining[nl + 1..];
+                } else {
+                    remaining = "";
+                }
+                remaining = remaining.trim_start();
+            } else if remaining.starts_with("/*") {
+                // Block comment: skip with nesting support
+                if let Some(end) = skip_block_comment(remaining) {
+                    remaining = end;
+                } else {
+                    // Unclosed block comment: treat rest as comment
+                    remaining = "";
+                }
                 remaining = remaining.trim_start();
             } else {
-                remaining = "";
                 break;
             }
         }
@@ -264,6 +306,38 @@ mod tests {
     #[test]
     fn comment_lines_skipped() {
         let src = "// comment\ntempo 120";
+        let out = span_parse_source(src);
+        assert_eq!(out.blocks.len(), 1);
+        assert!(out.errors.is_empty());
+    }
+
+    #[test]
+    fn block_comment_skipped() {
+        let src = "/* block comment */tempo 120";
+        let out = span_parse_source(src);
+        assert_eq!(out.blocks.len(), 1);
+        assert!(out.errors.is_empty());
+    }
+
+    #[test]
+    fn block_comment_multiline_skipped() {
+        let src = "/* line1\nline2\nline3 */\ntempo 120";
+        let out = span_parse_source(src);
+        assert_eq!(out.blocks.len(), 1);
+        assert!(out.errors.is_empty());
+    }
+
+    #[test]
+    fn nested_block_comment_skipped() {
+        let src = "/* outer /* inner */ outer */\ntempo 120";
+        let out = span_parse_source(src);
+        assert_eq!(out.blocks.len(), 1);
+        assert!(out.errors.is_empty());
+    }
+
+    #[test]
+    fn mixed_comments_skipped() {
+        let src = "// line comment\n/* block */\ntempo 120";
         let out = span_parse_source(src);
         assert_eq!(out.blocks.len(), 1);
         assert!(out.errors.is_empty());
