@@ -112,6 +112,149 @@ impl CompletionProvider {
             })
             .collect()
     }
+
+    /// device ブロック内で有効なキーワード
+    pub fn device_body_completions() -> Vec<CompletionItem> {
+        vec![CompletionItem {
+            label: "port".to_string(),
+            detail: Some("MIDIポート名".to_string()),
+            kind: CompletionKind::Keyword,
+        }]
+    }
+
+    /// instrument ブロック内で有効なキーワード
+    pub fn instrument_body_completions() -> Vec<CompletionItem> {
+        [
+            ("device", "MIDIデバイス参照"),
+            ("channel", "MIDIチャンネル (1-16)"),
+            ("note", "固定ノート (ドラム用)"),
+            ("gate_normal", "通常Gate比率 (%)"),
+            ("gate_staccato", "スタッカートGate比率 (%)"),
+            ("cc", "CCマッピング (エイリアス CC番号)"),
+            ("var", "ローカル変数定義"),
+        ]
+        .iter()
+        .map(|(kw, detail)| CompletionItem {
+            label: kw.to_string(),
+            detail: Some(detail.to_string()),
+            kind: CompletionKind::Keyword,
+        })
+        .collect()
+    }
+
+    /// kit ブロック内で有効なキーワード
+    pub fn kit_body_completions() -> Vec<CompletionItem> {
+        vec![CompletionItem {
+            label: "device".to_string(),
+            detail: Some("MIDIデバイス参照".to_string()),
+            kind: CompletionKind::Keyword,
+        }]
+    }
+
+    /// clip オプションのキーワード
+    pub fn clip_option_completions() -> Vec<CompletionItem> {
+        [
+            ("bars", "小節数"),
+            ("time", "拍子 (例: 3/4)"),
+            ("scale", "スケール指定"),
+        ]
+        .iter()
+        .map(|(kw, detail)| CompletionItem {
+            label: kw.to_string(),
+            detail: Some(detail.to_string()),
+            kind: CompletionKind::Keyword,
+        })
+        .collect()
+    }
+
+    /// drum clip 内で有効なキーワード
+    pub fn drum_clip_body_completions() -> Vec<CompletionItem> {
+        vec![
+            CompletionItem {
+                label: "use".to_string(),
+                detail: Some("ドラムキット参照".to_string()),
+                kind: CompletionKind::Keyword,
+            },
+            CompletionItem {
+                label: "resolution".to_string(),
+                detail: Some("ステップ解像度 (例: 16)".to_string()),
+                kind: CompletionKind::Keyword,
+            },
+        ]
+    }
+
+    /// scene ブロック内で有効な追加キーワード
+    pub fn scene_body_keyword_completions() -> Vec<CompletionItem> {
+        vec![CompletionItem {
+            label: "tempo".to_string(),
+            detail: Some("テンポ変化 (絶対値 or +N)".to_string()),
+            kind: CompletionKind::Keyword,
+        }]
+    }
+
+    /// session エントリのオプション
+    pub fn session_entry_option_completions() -> Vec<CompletionItem> {
+        vec![
+            CompletionItem {
+                label: "repeat".to_string(),
+                detail: Some("繰り返し回数".to_string()),
+                kind: CompletionKind::Keyword,
+            },
+            CompletionItem {
+                label: "loop".to_string(),
+                detail: Some("無限ループ".to_string()),
+                kind: CompletionKind::Keyword,
+            },
+        ]
+    }
+
+    /// scale タイプの補完
+    pub fn scale_type_completions() -> Vec<CompletionItem> {
+        [
+            ("major", "メジャー"),
+            ("minor", "ナチュラルマイナー"),
+            ("harmonic_minor", "ハーモニックマイナー"),
+            ("melodic_minor", "メロディックマイナー"),
+            ("dorian", "ドリアン"),
+            ("phrygian", "フリジアン"),
+            ("lydian", "リディアン"),
+            ("mixolydian", "ミクソリディアン"),
+            ("locrian", "ロクリアン"),
+        ]
+        .iter()
+        .map(|(name, detail)| CompletionItem {
+            label: name.to_string(),
+            detail: Some(detail.to_string()),
+            kind: CompletionKind::Keyword,
+        })
+        .collect()
+    }
+
+    /// play の後のターゲット補完
+    pub fn play_keyword_completions() -> Vec<CompletionItem> {
+        vec![CompletionItem {
+            label: "session".to_string(),
+            detail: Some("セッション再生".to_string()),
+            kind: CompletionKind::Keyword,
+        }]
+    }
+
+    /// アルペジオ方向の補完
+    pub fn arpeggio_direction_completions() -> Vec<CompletionItem> {
+        [
+            ("up", "上昇"),
+            ("down", "下降"),
+            ("updown", "上昇→下降"),
+            ("random", "ランダム"),
+        ]
+        .iter()
+        .map(|(dir, detail)| CompletionItem {
+            label: dir.to_string(),
+            detail: Some(detail.to_string()),
+            kind: CompletionKind::Keyword,
+        })
+        .collect()
+    }
 }
 
 #[cfg(test)]

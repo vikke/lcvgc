@@ -107,6 +107,42 @@ impl Registry {
     pub fn scale(&self) -> Option<&ScaleDef> {
         self.scale.as_ref()
     }
+
+    pub fn device_names(&self) -> Vec<String> {
+        self.devices.keys().cloned().collect()
+    }
+
+    pub fn instrument_names(&self) -> Vec<String> {
+        self.instruments.keys().cloned().collect()
+    }
+
+    pub fn kit_names(&self) -> Vec<String> {
+        self.kits.keys().cloned().collect()
+    }
+
+    pub fn clip_names(&self) -> Vec<String> {
+        self.clips.keys().cloned().collect()
+    }
+
+    pub fn scene_names(&self) -> Vec<String> {
+        self.scenes.keys().cloned().collect()
+    }
+
+    pub fn session_names(&self) -> Vec<String> {
+        self.sessions.keys().cloned().collect()
+    }
+
+    pub fn var_names(&self) -> Vec<String> {
+        self.variables.keys().cloned().collect()
+    }
+
+    pub fn instruments(&self) -> &HashMap<String, InstrumentDef> {
+        &self.instruments
+    }
+
+    pub fn kits(&self) -> &HashMap<String, KitDef> {
+        &self.kits
+    }
 }
 
 #[cfg(test)]
