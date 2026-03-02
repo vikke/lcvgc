@@ -180,6 +180,8 @@ enum CompletionContext {
     AfterBlockKeyword,
     /// device ブロック内の行頭
     DeviceBody,
+    /// device 内 "port " の後: MIDIポート名を提案
+    DeviceAfterPort,
     /// instrument ブロック内の行頭
     InstrumentBody,
     /// instrument 内 "device " の後: デバイス名を提案
@@ -431,8 +433,7 @@ fn determine_device_context(trimmed: &str) -> CompletionContext {
         return CompletionContext::DeviceBody;
     }
     if trimmed.starts_with("port ") {
-        // "port " の後は文字列 → 補完なし
-        return CompletionContext::AfterBlockKeyword;
+        return CompletionContext::DeviceAfterPort;
     }
     CompletionContext::DeviceBody
 }
@@ -562,6 +563,8 @@ fn build_completion_items(
         }
 
         CompletionContext::DeviceBody => CompletionProvider::device_body_completions(),
+
+        CompletionContext::DeviceAfterPort => CompletionProvider::midi_port_completions(),
 
         CompletionContext::InstrumentBody => CompletionProvider::instrument_body_completions(),
 
@@ -1163,6 +1166,15 @@ mod tests {
         assert_eq!(
             determine_completion_context(src, src.len()),
             CompletionContext::DeviceBody
+        );
+    }
+
+    #[test]
+    fn ctx_device_after_port() {
+        let src = "device synth {\n  port ";
+        assert_eq!(
+            determine_completion_context(src, src.len()),
+            CompletionContext::DeviceAfterPort
         );
     }
 

@@ -122,6 +122,22 @@ impl CompletionProvider {
         }]
     }
 
+    /// 利用可能なMIDI出力ポートを列挙して補完候補にする
+    pub fn midi_port_completions() -> Vec<CompletionItem> {
+        let ports = match lcvgc_core::midi::port::list_ports() {
+            Ok(p) => p,
+            Err(_) => return vec![],
+        };
+        ports
+            .into_iter()
+            .map(|name| CompletionItem {
+                label: name,
+                detail: Some("MIDI出力ポート".to_string()),
+                kind: CompletionKind::Identifier,
+            })
+            .collect()
+    }
+
     /// instrument ブロック内で有効なキーワード
     pub fn instrument_body_completions() -> Vec<CompletionItem> {
         [
@@ -347,5 +363,15 @@ mod tests {
     fn test_identifier_completions_empty() {
         let items = CompletionProvider::identifier_completions(&[], "clip");
         assert!(items.is_empty());
+    }
+
+    #[test]
+    fn test_midi_port_completions_returns_vec() {
+        // list_ports() が成功しても失敗しても panic しないことを確認
+        let items = CompletionProvider::midi_port_completions();
+        for item in &items {
+            assert_eq!(item.detail, Some("MIDI出力ポート".to_string()));
+            assert_eq!(item.kind, CompletionKind::Identifier);
+        }
     }
 }
