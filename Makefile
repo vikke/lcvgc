@@ -7,7 +7,7 @@ VERSION      := $(shell grep '^version' Cargo.toml | head -1 | sed 's/.*"\(.*\)"
 RELEASE_DIR  := target/release
 
 .PHONY: all build test test-integration test-all bench lint fmt fmt-check \
-        clean install lsp run run-watch tree-sitter-generate help
+        clean install lsp run run-watch help
 
 # デフォルト: ネイティブビルド
 all: build
@@ -60,9 +60,6 @@ run-watch:
 	$(CARGO) run --release -- --watch .
 
 ## ── その他 ──────────────────────────────────────────
-
-tree-sitter-generate:
-	cd tree-sitter-lcvgc && npx tree-sitter generate
 
 clean:
 	$(CARGO) clean
