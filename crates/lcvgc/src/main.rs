@@ -6,6 +6,7 @@ use clap::Parser;
 use cli::Cli;
 use lcvgc_core::engine::evaluator::Evaluator;
 use lcvgc_core::engine::watcher::{run_hot_reload, WatcherConfig};
+use lcvgc_core::midi::monitor::{log_startup_ports, run_port_monitor, PortMonitorConfig};
 use lcvgc_core::server::run_server;
 use tokio::sync::Mutex;
 use tracing::{error, info};
@@ -38,6 +39,14 @@ async fn main() {
     if let Some(ref device) = cli.midi_device {
         info!("  MIDIデバイス: {}", device);
     }
+
+    // 起動時MIDIポート一覧表示
+    log_startup_ports();
+
+    // MIDIポートホットプラグ監視
+    tokio::spawn(async {
+        run_port_monitor(PortMonitorConfig::default()).await;
+    });
 
     let evaluator = Arc::new(Mutex::new(Evaluator::new(120.0)));
 

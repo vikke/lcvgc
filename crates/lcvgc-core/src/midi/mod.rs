@@ -3,6 +3,7 @@ pub mod chord;
 pub mod gate;
 pub mod message;
 pub mod note;
+pub mod monitor;
 pub mod port;
 pub mod probability;
 pub mod velocity;
