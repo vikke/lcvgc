@@ -13,6 +13,16 @@ pub enum Request {
     /// ステータス問い合わせ
     #[serde(rename = "status")]
     Status,
+    /// MIDIポート一覧
+    #[serde(rename = "list_ports")]
+    ListPorts,
+}
+
+/// MIDIポート情報
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
+pub struct PortInfo {
+    pub name: String,
+    pub direction: String,
 }
 
 /// サーバーからのレスポンス
@@ -23,6 +33,8 @@ pub struct Response {
     pub message: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ports: Option<Vec<PortInfo>>,
 }
 
 impl Response {
@@ -32,6 +44,7 @@ impl Response {
             success: true,
             message: Some(message.into()),
             error: None,
+            ports: None,
         }
     }
 
@@ -41,6 +54,17 @@ impl Response {
             success: false,
             message: None,
             error: Some(error.into()),
+            ports: None,
+        }
+    }
+
+    /// ポート一覧レスポンス
+    pub fn ports(ports: Vec<PortInfo>) -> Self {
+        Self {
+            success: true,
+            message: None,
+            error: None,
+            ports: Some(ports),
         }
     }
 }
@@ -115,5 +139,49 @@ mod tests {
         assert!(!resp.success);
         assert!(resp.message.is_none());
         assert_eq!(resp.error.as_deref(), Some("fail"));
+    }
+
+    #[test]
+    fn deserialize_list_ports_request() {
+        let json = r#"{"type":"list_ports"}"#;
+        let req: Request = serde_json::from_str(json).unwrap();
+        assert!(matches!(req, Request::ListPorts));
+    }
+
+    #[test]
+    fn serialize_ports_response() {
+        let resp = Response::ports(vec![
+            PortInfo {
+                name: "Synth:0".to_string(),
+                direction: "out".to_string(),
+            },
+            PortInfo {
+                name: "Controller:0".to_string(),
+                direction: "in".to_string(),
+            },
+        ]);
+        let json = serde_json::to_string(&resp).unwrap();
+        assert!(json.contains("\"success\":true"));
+        assert!(json.contains("\"ports\""));
+        assert!(json.contains("\"direction\":\"out\""));
+        assert!(json.contains("\"direction\":\"in\""));
+        assert!(!json.contains("\"message\""));
+        assert!(!json.contains("\"error\""));
+    }
+
+    #[test]
+    fn ports_response_content() {
+        let ports = vec![PortInfo {
+            name: "Test:0".to_string(),
+            direction: "out".to_string(),
+        }];
+        let resp = Response::ports(ports);
+        assert!(resp.success);
+        assert!(resp.message.is_none());
+        assert!(resp.error.is_none());
+        let port_list = resp.ports.unwrap();
+        assert_eq!(port_list.len(), 1);
+        assert_eq!(port_list[0].name, "Test:0");
+        assert_eq!(port_list[0].direction, "out");
     }
 }

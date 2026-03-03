@@ -3,7 +3,9 @@ use tokio::sync::Mutex;
 
 use crate::engine::evaluator::Evaluator;
 
-use super::protocol::{Request, Response};
+use crate::midi;
+
+use super::protocol::{PortInfo, Request, Response};
 
 /// リクエストを処理してレスポンスを返す
 pub async fn handle_request(evaluator: &Arc<Mutex<Evaluator>>, request: Request) -> Response {
@@ -36,6 +38,25 @@ pub async fn handle_request(evaluator: &Arc<Mutex<Evaluator>>, request: Request)
                 ev.bpm(),
                 ev.state().state()
             ))
+        }
+        Request::ListPorts => {
+            match (midi::port::list_ports(), midi::port::list_input_ports()) {
+                (Ok(outputs), Ok(inputs)) => {
+                    let mut ports: Vec<PortInfo> = outputs
+                        .into_iter()
+                        .map(|name| PortInfo {
+                            name,
+                            direction: "out".to_string(),
+                        })
+                        .collect();
+                    ports.extend(inputs.into_iter().map(|name| PortInfo {
+                        name,
+                        direction: "in".to_string(),
+                    }));
+                    Response::ports(ports)
+                }
+                (Err(e), _) | (_, Err(e)) => Response::err(e.to_string()),
+            }
         }
     }
 }
@@ -86,5 +107,15 @@ mod tests {
         let msg = resp.message.unwrap();
         assert!(msg.contains("BPM: 120.0"));
         assert!(msg.contains("Stopped"));
+    }
+
+    #[tokio::test]
+    #[ignore] // 実MIDIハードウェアが必要
+    async fn handle_list_ports() {
+        let ev = Arc::new(Mutex::new(Evaluator::new(120.0)));
+        let req = Request::ListPorts;
+        let resp = handle_request(&ev, req).await;
+        assert!(resp.success);
+        assert!(resp.ports.is_some());
     }
 }

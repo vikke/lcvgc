@@ -6,6 +6,7 @@
 * [概要](#概要)
 * [起動オプション](#起動オプション)
 * [1. デバイス定義 (device)](#1-デバイス定義-device)
+    * [1.1 利用可能なMIDIポートの確認 (list_ports)](#11-利用可能なmidiポートの確認-list_ports)
 * [2. 楽器定義 (instrument)](#2-楽器定義-instrument)
     * [Gate比率のデフォルト値](#gate比率のデフォルト値)
 * [3. キット定義 (kit)](#3-キット定義-kit)
@@ -133,6 +134,37 @@ device volca_keys {
   port "volca keys"
 }
 ```
+
+### 1.1 利用可能なMIDIポートの確認 (list_ports)
+
+`device` の `port` に指定するポート名は、OS上でMIDIデバイスとして認識されている名前と一致している必要がある。利用可能なMIDIポートの一覧は、エンジンのJSONプロトコルで `list_ports` コマンドを送信して取得できる。
+
+**リクエスト:**
+
+```json
+{"type": "list_ports"}
+```
+
+**レスポンス:**
+
+```json
+{
+  "success": true,
+  "ports": [
+    {"name": "Mutant Brain:Mutant Brain MIDI 1 28:0", "direction": "out"},
+    {"name": "volca keys:volca keys MIDI 1 24:0", "direction": "out"},
+    {"name": "Mutant Brain:Mutant Brain MIDI 1 28:0", "direction": "in"},
+    {"name": "nanoKONTROL2:nanoKONTROL2 MIDI 1 32:0", "direction": "in"}
+  ]
+}
+```
+
+| フィールド | 型 | 説明 |
+|-----------|------|------|
+| `name` | string | OS上のMIDIポート名。`device` の `port` にそのまま指定できる |
+| `direction` | string | `"out"` = MIDI出力ポート、`"in"` = MIDI入力ポート |
+
+Neovimプラグインは `device` ブロック内の `port` 補完時にエンジンへ `list_ports` を送信し、取得したポート名を補完候補として提示する。エンジンとエディタが別ホスト（例: エディタはWSL2、エンジンはWindows Native）で動作する構成でも、エンジン側の実際のMIDIポートが取得できる。`device` の `port` には `direction: "out"` のポート名を指定する。
 
 ---
 

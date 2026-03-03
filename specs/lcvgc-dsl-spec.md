@@ -6,6 +6,7 @@
 * [Overview](#overview)
 * [Startup Options](#startup-options)
 * [1. Device Definition (device)](#1-device-definition-device)
+    * [1.1 Listing Available MIDI Ports (list_ports)](#11-listing-available-midi-ports-list_ports)
 * [2. Instrument Definition (instrument)](#2-instrument-definition-instrument)
     * [Default Gate Ratio Values](#default-gate-ratio-values)
 * [3. Kit Definition (kit)](#3-kit-definition-kit)
@@ -133,6 +134,37 @@ device volca_keys {
   port "volca keys"
 }
 ```
+
+### 1.1 Listing Available MIDI Ports (list_ports)
+
+The port name specified in a `device`'s `port` field must match a name recognized as a MIDI device by the OS. You can retrieve a list of available MIDI ports by sending the `list_ports` command via the engine's JSON protocol.
+
+**Request:**
+
+```json
+{"type": "list_ports"}
+```
+
+**Response:**
+
+```json
+{
+  "success": true,
+  "ports": [
+    {"name": "Mutant Brain:Mutant Brain MIDI 1 28:0", "direction": "out"},
+    {"name": "volca keys:volca keys MIDI 1 24:0", "direction": "out"},
+    {"name": "Mutant Brain:Mutant Brain MIDI 1 28:0", "direction": "in"},
+    {"name": "nanoKONTROL2:nanoKONTROL2 MIDI 1 32:0", "direction": "in"}
+  ]
+}
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `name` | string | OS MIDI port name. Can be used directly in a `device`'s `port` field |
+| `direction` | string | `"out"` = MIDI output port, `"in"` = MIDI input port |
+
+The Neovim plugin sends `list_ports` to the engine when completing the `port` field inside a `device` block, and presents the returned port names as completion candidates. This works even when the engine and editor run on different hosts (e.g., editor on WSL2, engine on Windows Native), since the port list comes from the engine's actual MIDI environment. Use port names with `direction: "out"` for the `device`'s `port` field.
 
 ---
 

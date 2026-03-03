@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use midir::{MidiOutput, MidiOutputConnection, MidiOutputPort};
+use midir::{MidiInput, MidiOutput, MidiOutputConnection, MidiOutputPort};
 
 use crate::midi::MidiError;
 
@@ -12,6 +12,21 @@ pub fn list_ports() -> Result<Vec<String>, MidiError> {
     let mut names = Vec::with_capacity(ports.len());
     for port in &ports {
         let name = output
+            .port_name(port)
+            .map_err(|e| MidiError::ConnectionError(e.to_string()))?;
+        names.push(name);
+    }
+    Ok(names)
+}
+
+/// 利用可能なMIDI入力ポートを列挙する
+pub fn list_input_ports() -> Result<Vec<String>, MidiError> {
+    let input = MidiInput::new("lcvgc-list")
+        .map_err(|e| MidiError::ConnectionError(e.to_string()))?;
+    let ports = input.ports();
+    let mut names = Vec::with_capacity(ports.len());
+    for port in &ports {
+        let name = input
             .port_name(port)
             .map_err(|e| MidiError::ConnectionError(e.to_string()))?;
         names.push(name);
@@ -138,6 +153,13 @@ mod tests {
     #[ignore] // 実MIDIハードウェアが必要
     fn list_ports_returns_ok() {
         let result = list_ports();
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    #[ignore] // 実MIDIハードウェアが必要
+    fn list_input_ports_returns_ok() {
+        let result = list_input_ports();
         assert!(result.is_ok());
     }
 
