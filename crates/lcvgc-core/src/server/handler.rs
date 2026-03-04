@@ -89,7 +89,7 @@ pub async fn handle_request(evaluator: &Arc<Mutex<Evaluator>>, request: Request)
             analyzer.update(source);
             let info = analyzer
                 .block_at_offset(offset)
-                .and_then(|sb| HoverProvider::hover_content(sb))
+                .and_then(HoverProvider::hover_content)
                 .map(|content| LspHoverInfo { content });
             Response::lsp(LspResult::Hover { info })
         }

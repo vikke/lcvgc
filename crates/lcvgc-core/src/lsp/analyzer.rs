@@ -21,6 +21,12 @@ pub struct LspAnalyzer {
     source: String,
 }
 
+impl Default for LspAnalyzer {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl LspAnalyzer {
     /// 空の解析器を生成する
     ///
