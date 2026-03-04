@@ -3,5 +3,4 @@ resolver = "2"
 members = [
     "crates/lcvgc-core",
     "crates/lcvgc",
-    "crates/lcvgc-lsp",
 ]
