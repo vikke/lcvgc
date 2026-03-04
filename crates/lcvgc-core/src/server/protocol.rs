@@ -16,6 +16,21 @@ pub enum Request {
     /// MIDIポート一覧
     #[serde(rename = "list_ports")]
     ListPorts,
+    /// LSP補完リクエスト
+    #[serde(rename = "lsp_completion")]
+    LspCompletion { source: String, offset: usize },
+    /// LSPホバーリクエスト
+    #[serde(rename = "lsp_hover")]
+    LspHover { source: String, offset: usize },
+    /// LSP診断リクエスト
+    #[serde(rename = "lsp_diagnostics")]
+    LspDiagnostics { source: String },
+    /// LSP定義ジャンプリクエスト
+    #[serde(rename = "lsp_goto_definition")]
+    LspGotoDefinition { source: String, offset: usize },
+    /// LSPドキュメントシンボルリクエスト
+    #[serde(rename = "lsp_document_symbols")]
+    LspDocumentSymbols { source: String },
 }
 
 /// MIDIポート情報
@@ -23,6 +38,68 @@ pub enum Request {
 pub struct PortInfo {
     pub name: String,
     pub direction: String,
+}
+
+/// LSP補完アイテム
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
+pub struct LspCompletionItem {
+    pub label: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
+    pub kind: String,
+}
+
+/// LSPホバー情報
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
+pub struct LspHoverInfo {
+    pub content: String,
+}
+
+/// LSP診断アイテム
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
+pub struct LspDiagnosticItem {
+    pub start_line: u32,
+    pub start_col: u32,
+    pub end_line: u32,
+    pub end_col: u32,
+    pub message: String,
+    pub severity: String,
+}
+
+/// LSP位置スパン
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
+pub struct LspLocationSpan {
+    pub start_line: u32,
+    pub start_col: u32,
+    pub end_line: u32,
+    pub end_col: u32,
+}
+
+/// LSPシンボルアイテム
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
+pub struct LspSymbolItem {
+    pub name: String,
+    pub kind: String,
+    pub start_line: u32,
+    pub start_col: u32,
+    pub end_line: u32,
+    pub end_col: u32,
+}
+
+/// LSP結果
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
+#[serde(tag = "type")]
+pub enum LspResult {
+    #[serde(rename = "completion")]
+    Completion { items: Vec<LspCompletionItem> },
+    #[serde(rename = "hover")]
+    Hover { info: Option<LspHoverInfo> },
+    #[serde(rename = "diagnostics")]
+    Diagnostics { items: Vec<LspDiagnosticItem> },
+    #[serde(rename = "goto_definition")]
+    GotoDefinition { location: Option<LspLocationSpan> },
+    #[serde(rename = "document_symbols")]
+    DocumentSymbols { items: Vec<LspSymbolItem> },
 }
 
 /// サーバーからのレスポンス
@@ -35,6 +112,9 @@ pub struct Response {
     pub error: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ports: Option<Vec<PortInfo>>,
+    /// LSP結果
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub lsp: Option<LspResult>,
 }
 
 impl Response {
@@ -45,6 +125,7 @@ impl Response {
             message: Some(message.into()),
             error: None,
             ports: None,
+            lsp: None,
         }
     }
 
@@ -55,6 +136,7 @@ impl Response {
             message: None,
             error: Some(error.into()),
             ports: None,
+            lsp: None,
         }
     }
 
@@ -65,6 +147,18 @@ impl Response {
             message: None,
             error: None,
             ports: Some(ports),
+            lsp: None,
+        }
+    }
+
+    /// LSP結果レスポンス
+    pub fn lsp(result: LspResult) -> Self {
+        Self {
+            success: true,
+            message: None,
+            error: None,
+            ports: None,
+            lsp: Some(result),
         }
     }
 }
@@ -167,6 +261,104 @@ mod tests {
         assert!(json.contains("\"direction\":\"in\""));
         assert!(!json.contains("\"message\""));
         assert!(!json.contains("\"error\""));
+    }
+
+    #[test]
+    fn response_ok_has_no_lsp() {
+        let resp = Response::ok("hello");
+        assert!(resp.lsp.is_none());
+    }
+
+    #[test]
+    fn response_err_has_no_lsp() {
+        let resp = Response::err("fail");
+        assert!(resp.lsp.is_none());
+    }
+
+    #[test]
+    fn deserialize_lsp_completion_request() {
+        let json = r#"{"type":"lsp_completion","source":"tempo 120","offset":5}"#;
+        let req: Request = serde_json::from_str(json).unwrap();
+        match req {
+            Request::LspCompletion { source, offset } => {
+                assert_eq!(source, "tempo 120");
+                assert_eq!(offset, 5);
+            }
+            _ => panic!("Expected LspCompletion"),
+        }
+    }
+
+    #[test]
+    fn deserialize_lsp_hover_request() {
+        let json = r#"{"type":"lsp_hover","source":"tempo 120","offset":3}"#;
+        let req: Request = serde_json::from_str(json).unwrap();
+        match req {
+            Request::LspHover { source, offset } => {
+                assert_eq!(source, "tempo 120");
+                assert_eq!(offset, 3);
+            }
+            _ => panic!("Expected LspHover"),
+        }
+    }
+
+    #[test]
+    fn deserialize_lsp_diagnostics_request() {
+        let json = r#"{"type":"lsp_diagnostics","source":"tempo 120"}"#;
+        let req: Request = serde_json::from_str(json).unwrap();
+        match req {
+            Request::LspDiagnostics { source } => assert_eq!(source, "tempo 120"),
+            _ => panic!("Expected LspDiagnostics"),
+        }
+    }
+
+    #[test]
+    fn deserialize_lsp_goto_definition_request() {
+        let json = r#"{"type":"lsp_goto_definition","source":"tempo 120","offset":0}"#;
+        let req: Request = serde_json::from_str(json).unwrap();
+        match req {
+            Request::LspGotoDefinition { source, offset } => {
+                assert_eq!(source, "tempo 120");
+                assert_eq!(offset, 0);
+            }
+            _ => panic!("Expected LspGotoDefinition"),
+        }
+    }
+
+    #[test]
+    fn deserialize_lsp_document_symbols_request() {
+        let json = r#"{"type":"lsp_document_symbols","source":"tempo 120"}"#;
+        let req: Request = serde_json::from_str(json).unwrap();
+        match req {
+            Request::LspDocumentSymbols { source } => assert_eq!(source, "tempo 120"),
+            _ => panic!("Expected LspDocumentSymbols"),
+        }
+    }
+
+    #[test]
+    fn serialize_lsp_completion_response() {
+        let result = LspResult::Completion {
+            items: vec![LspCompletionItem {
+                label: "tempo".to_string(),
+                detail: None,
+                kind: "Keyword".to_string(),
+            }],
+        };
+        let resp = Response::lsp(result);
+        let json = serde_json::to_string(&resp).unwrap();
+        assert!(json.contains("\"success\":true"));
+        assert!(json.contains("\"lsp\""));
+        assert!(json.contains("\"tempo\""));
+    }
+
+    #[test]
+    fn lsp_response_fields() {
+        let result = LspResult::Hover { info: None };
+        let resp = Response::lsp(result);
+        assert!(resp.success);
+        assert!(resp.message.is_none());
+        assert!(resp.error.is_none());
+        assert!(resp.ports.is_none());
+        assert!(resp.lsp.is_some());
     }
 
     #[test]
