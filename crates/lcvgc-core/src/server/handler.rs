@@ -217,4 +217,107 @@ mod tests {
         assert!(resp.success);
         assert!(resp.ports.is_some());
     }
+
+    /// トップレベルでのLSP補完リクエストでキーワード補完が返ることを検証する
+    #[tokio::test]
+    async fn handle_lsp_completion_toplevel() {
+        let ev = Arc::new(Mutex::new(Evaluator::new(120.0)));
+        let req = Request::LspCompletion {
+            source: "".into(),
+            offset: 0,
+        };
+        let resp = handle_request(&ev, req).await;
+        assert!(resp.success);
+        let lsp = resp.lsp.unwrap();
+        match lsp {
+            super::super::protocol::LspResult::Completion { items } => {
+                assert!(!items.is_empty());
+                // トップレベルではキーワード補完が返る
+                assert!(items.iter().any(|i| i.label == "tempo"));
+                assert!(items.iter().any(|i| i.label == "device"));
+            }
+            _ => panic!("Expected Completion"),
+        }
+    }
+
+    /// tempoキーワードのLSPホバーで値を含む情報が返ることを検証する
+    #[tokio::test]
+    async fn handle_lsp_hover_tempo() {
+        let ev = Arc::new(Mutex::new(Evaluator::new(120.0)));
+        let req = Request::LspHover {
+            source: "tempo 120".into(),
+            offset: 3,
+        };
+        let resp = handle_request(&ev, req).await;
+        assert!(resp.success);
+        let lsp = resp.lsp.unwrap();
+        match lsp {
+            super::super::protocol::LspResult::Hover { info } => {
+                assert!(info.is_some());
+                assert!(info.unwrap().content.contains("120"));
+            }
+            _ => panic!("Expected Hover"),
+        }
+    }
+
+    /// 有効なDSLソースのLSP診断リクエストで診断アイテムが空であることを検証する
+    #[tokio::test]
+    async fn handle_lsp_diagnostics_valid() {
+        let ev = Arc::new(Mutex::new(Evaluator::new(120.0)));
+        let req = Request::LspDiagnostics {
+            source: "tempo 120".into(),
+        };
+        let resp = handle_request(&ev, req).await;
+        assert!(resp.success);
+        let lsp = resp.lsp.unwrap();
+        match lsp {
+            super::super::protocol::LspResult::Diagnostics { items } => {
+                assert!(items.is_empty());
+            }
+            _ => panic!("Expected Diagnostics"),
+        }
+    }
+
+    /// instrument内でdevice参照のLSP定義ジャンプが定義箇所を返すことを検証する
+    #[tokio::test]
+    async fn handle_lsp_goto_definition_device() {
+        let ev = Arc::new(Mutex::new(Evaluator::new(120.0)));
+        let source = "device synth {\n  port \"IAC\"\n}\ninstrument bass {\n  device synth\n  channel 1\n}";
+        let req = Request::LspGotoDefinition {
+            source: source.into(),
+            // "synth" in instrument block at offset ~55
+            offset: source.find("device synth\n  channel").unwrap() + 7,
+        };
+        let resp = handle_request(&ev, req).await;
+        assert!(resp.success);
+        let lsp = resp.lsp.unwrap();
+        match lsp {
+            super::super::protocol::LspResult::GotoDefinition { location } => {
+                assert!(location.is_some());
+                let loc = location.unwrap();
+                // device synth is at line 0
+                assert_eq!(loc.start_line, 0);
+            }
+            _ => panic!("Expected GotoDefinition"),
+        }
+    }
+
+    /// tempoを含むDSLのLSPドキュメントシンボルでTempoシンボルが返ることを検証する
+    #[tokio::test]
+    async fn handle_lsp_document_symbols_tempo() {
+        let ev = Arc::new(Mutex::new(Evaluator::new(120.0)));
+        let req = Request::LspDocumentSymbols {
+            source: "tempo 120".into(),
+        };
+        let resp = handle_request(&ev, req).await;
+        assert!(resp.success);
+        let lsp = resp.lsp.unwrap();
+        match lsp {
+            super::super::protocol::LspResult::DocumentSymbols { items } => {
+                assert_eq!(items.len(), 1);
+                assert_eq!(items[0].kind, "Tempo");
+            }
+            _ => panic!("Expected DocumentSymbols"),
+        }
+    }
 }
