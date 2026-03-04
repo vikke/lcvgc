@@ -16,19 +16,12 @@
 
 ### インストール
 
-midi portの付いているpc.
 ```sh
 cargo install --git https://github.com/vikke/lcvgc lcvgc
 ```
 
-lspを走らせるpc.
-```sh
-cargo install --git https://github.com/vikke/lcvgc lcvgc-lsp
-```
-
-これは、例えば、WSL2 on Windows の場合、 WSL2 から midi port を見るのは手続きが必要で面倒な場合がある。
-こういった場合、`lcvgc(エンジン)` 自体は Windows 上で、nvim で使う`lcvgc-lsp(lsp)` は WSL2 の Linux から実行する。
-macのように両方を1台の上で行なえるなら、両方のコマンドを実行してインストールすれば良い。
+LSP機能はlcvgcデーモンに統合されています。エンジンとLSPを別々にインストールする必要はありません。
+WSL2 on Windowsの場合、Windows上でlcvgcを実行し、Neovimプラグイン(lcvgc.nvim)からTCP接続してください。
 
 ## 関連プロジェクト
 

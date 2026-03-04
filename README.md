@@ -14,21 +14,14 @@ A live coding toolkit supporting sequences for modular synths (MIDI to CV) throu
   - Debian/Ubuntu: `sudo apt install libasound2-dev`
   - Fedora/RHEL: `sudo dnf install alsa-lib-devel`
 
-### Install
+### Installation
 
-On a PC with MIDI ports:
 ```sh
 cargo install --git https://github.com/vikke/lcvgc lcvgc
 ```
 
-On a PC where the LSP will run:
-```sh
-cargo install --git https://github.com/vikke/lcvgc lcvgc-lsp
-```
-
-For example, with WSL2 on Windows, accessing MIDI ports from WSL2 can require extra steps and be cumbersome.
-In such cases, run `lcvgc` (the engine) on Windows, and run `lcvgc-lsp` (the LSP) from Linux on WSL2 for use with Neovim.
-If both can run on a single machine, such as on macOS, simply install both commands.
+LSP features are integrated into the lcvgc daemon. There is no need to install the engine and LSP separately.
+For WSL2 on Windows, run lcvgc on Windows and connect from the Neovim plugin (lcvgc.nvim) via TCP.
 
 ## Related Projects
 
