@@ -88,6 +88,29 @@ fn quality_name(quality: &str) -> &str {
 
 const DEGREE_LABELS: [&str; 7] = ["I", "II", "III", "IV", "V", "VI", "VII"];
 
+/// スケールの各音の絶対セミトーン値（0-11）を返す
+///
+/// # Arguments
+/// * `root` - スケールのルート音
+/// * `scale_type` - スケールタイプ
+///
+/// # Returns
+/// スケール構成音の絶対セミトーン値（7個）
+pub fn scale_note_semitones(root: NoteName, scale_type: ScaleType) -> Vec<u8> {
+    let intervals = scale_intervals(scale_type);
+    let root_semi = note_to_semitone(root);
+    intervals.iter().map(|&i| (root_semi + i) % 12).collect()
+}
+
+/// 指定セミトーン値がスケール内の何度かを返す（0-indexed）
+///
+/// # Returns
+/// スケール内であれば Some(degree_index) (0=I, 1=II, ...)、スケール外なら None
+pub fn scale_degree_of(semitone: u8, root: NoteName, scale_type: ScaleType) -> Option<usize> {
+    let semitones = scale_note_semitones(root, scale_type);
+    semitones.iter().position(|&s| s == semitone % 12)
+}
+
 pub fn diatonic_chords(root: NoteName, scale_type: ScaleType) -> Vec<DiatonicChord> {
     let intervals = scale_intervals(scale_type);
     let root_semi = note_to_semitone(root);
@@ -209,5 +232,42 @@ mod tests {
     fn test_diatonic_always_7() {
         let chords = diatonic_chords(NoteName::Fs, ScaleType::Lydian);
         assert_eq!(chords.len(), 7);
+    }
+
+    #[test]
+    fn test_scale_note_semitones_c_major() {
+        let semitones = scale_note_semitones(NoteName::C, ScaleType::Major);
+        assert_eq!(semitones, vec![0, 2, 4, 5, 7, 9, 11]);
+    }
+
+    #[test]
+    fn test_scale_note_semitones_a_minor() {
+        let semitones = scale_note_semitones(NoteName::A, ScaleType::Minor);
+        // A=9, intervals=[0,2,3,5,7,8,10] → [9,11,0,2,4,5,7]
+        assert_eq!(semitones, vec![9, 11, 0, 2, 4, 5, 7]);
+    }
+
+    #[test]
+    fn test_scale_note_semitones_count() {
+        let semitones = scale_note_semitones(NoteName::Eb, ScaleType::Dorian);
+        assert_eq!(semitones.len(), 7);
+    }
+
+    #[test]
+    fn test_scale_degree_of_in_scale() {
+        // C major: C=0 is degree I (index 0)
+        assert_eq!(scale_degree_of(0, NoteName::C, ScaleType::Major), Some(0));
+        // C major: D=2 is degree II (index 1)
+        assert_eq!(scale_degree_of(2, NoteName::C, ScaleType::Major), Some(1));
+        // C major: B=11 is degree VII (index 6)
+        assert_eq!(scale_degree_of(11, NoteName::C, ScaleType::Major), Some(6));
+    }
+
+    #[test]
+    fn test_scale_degree_of_out_of_scale() {
+        // C major: C#=1 is not in scale
+        assert_eq!(scale_degree_of(1, NoteName::C, ScaleType::Major), None);
+        // C major: F#=6 is not in scale
+        assert_eq!(scale_degree_of(6, NoteName::C, ScaleType::Major), None);
     }
 }

@@ -1,4 +1,6 @@
 use super::completion::{CompletionKind, CompletionItem, CompletionProvider};
+use crate::ast::common::NoteName;
+use crate::ast::scale::ScaleType;
 use crate::engine::registry::Registry;
 
 /// カーソル位置のコンテキスト
@@ -23,7 +25,10 @@ pub enum CompletionContext {
     /// kit 内 "device " の後: デバイス名を提案
     KitAfterDevice,
     /// clip ブロック内の行頭（pitched）: 楽器名を提案
-    PitchedClipBody,
+    /// clip-levelのスケール指定がある場合はスケール情報を保持
+    PitchedClipBody {
+        clip_scale: Option<(NoteName, ScaleType)>,
+    },
     /// clip ブロック内の行頭（drum）: use/resolution + kit楽器名
     DrumClipBody,
     /// clip 内 "use " の後: キット名を提案
@@ -157,6 +162,93 @@ pub fn clip_has_use(source: &str, brace_pos: usize, cursor_offset: usize) -> boo
         let trimmed = line.trim();
         trimmed.starts_with("use ")
     })
+}
+
+/// 文字列からノート名をパースする（簡易版）
+fn parse_note_name_str(s: &str) -> Option<NoteName> {
+    let s = s.trim().to_lowercase();
+    match s.as_str() {
+        "c#" => Some(NoteName::Cs),
+        "db" => Some(NoteName::Db),
+        "d#" => Some(NoteName::Ds),
+        "eb" => Some(NoteName::Eb),
+        "f#" => Some(NoteName::Fs),
+        "gb" => Some(NoteName::Gb),
+        "g#" => Some(NoteName::Gs),
+        "ab" => Some(NoteName::Ab),
+        "a#" => Some(NoteName::As),
+        "bb" => Some(NoteName::Bb),
+        "c" => Some(NoteName::C),
+        "d" => Some(NoteName::D),
+        "e" => Some(NoteName::E),
+        "f" => Some(NoteName::F),
+        "g" => Some(NoteName::G),
+        "a" => Some(NoteName::A),
+        "b" => Some(NoteName::B),
+        _ => None,
+    }
+}
+
+/// 文字列からスケールタイプをパースする（簡易版）
+fn parse_scale_type_str(s: &str) -> Option<ScaleType> {
+    let s = s.trim().to_lowercase();
+    match s.as_str() {
+        "major" => Some(ScaleType::Major),
+        "minor" => Some(ScaleType::Minor),
+        "harmonic_minor" => Some(ScaleType::HarmonicMinor),
+        "melodic_minor" => Some(ScaleType::MelodicMinor),
+        "dorian" => Some(ScaleType::Dorian),
+        "phrygian" => Some(ScaleType::Phrygian),
+        "lydian" => Some(ScaleType::Lydian),
+        "mixolydian" => Some(ScaleType::Mixolydian),
+        "locrian" => Some(ScaleType::Locrian),
+        _ => None,
+    }
+}
+
+/// クリップヘッダーからスケール指定を抽出する
+///
+/// brace_pos の前のテキストから `[scale <note> <type>]` を探す。
+pub fn extract_clip_scale(source: &str, brace_pos: usize) -> Option<(NoteName, ScaleType)> {
+    let header = &source[..brace_pos];
+    // 最後の行を取得（clip名やオプションが書かれている行）
+    let last_line = header.lines().last()?;
+    // [scale ...] パターンを探す
+    let bracket_start = last_line.find('[')?;
+    let bracket_end = last_line.rfind(']')?;
+    if bracket_start >= bracket_end {
+        return None;
+    }
+    let options_text = &last_line[bracket_start + 1..bracket_end];
+    // "scale <note> <type>" を含むオプションを探す
+    // 複数の [] がある場合もあるので、全体から "scale " を探す
+    // ただし header 全体から探す方が安全
+    let header_lower = header.to_lowercase();
+    for segment in header_lower.split('[') {
+        let segment = segment.split(']').next().unwrap_or("");
+        let trimmed = segment.trim();
+        if trimmed.starts_with("scale ") {
+            let rest = trimmed.strip_prefix("scale ")?.trim();
+            let parts: Vec<&str> = rest.split_whitespace().collect();
+            if parts.len() >= 2 {
+                let root = parse_note_name_str(parts[0])?;
+                let scale_type = parse_scale_type_str(parts[1])?;
+                return Some((root, scale_type));
+            }
+        }
+    }
+    // options_text からも試す（フォールバック）
+    let options_trimmed = options_text.trim().to_lowercase();
+    if options_trimmed.starts_with("scale ") {
+        let rest = options_trimmed.strip_prefix("scale ")?.trim();
+        let parts: Vec<&str> = rest.split_whitespace().collect();
+        if parts.len() >= 2 {
+            let root = parse_note_name_str(parts[0])?;
+            let scale_type = parse_scale_type_str(parts[1])?;
+            return Some((root, scale_type));
+        }
+    }
+    None
 }
 
 /// カーソル位置の補完コンテキストを判定する
@@ -335,7 +427,8 @@ fn determine_clip_context(
         if clip_has_use(source, brace_pos, cursor_offset) {
             return CompletionContext::DrumClipBody;
         }
-        return CompletionContext::PitchedClipBody;
+        let clip_scale = extract_clip_scale(source, brace_pos);
+        return CompletionContext::PitchedClipBody { clip_scale };
     }
     if trimmed.starts_with("use ") {
         return CompletionContext::ClipAfterUse;
@@ -346,7 +439,8 @@ fn determine_clip_context(
     if clip_has_use(source, brace_pos, cursor_offset) {
         CompletionContext::DrumClipBody
     } else {
-        CompletionContext::PitchedClipBody
+        let clip_scale = extract_clip_scale(source, brace_pos);
+        CompletionContext::PitchedClipBody { clip_scale }
     }
 }
 
@@ -407,18 +501,24 @@ pub fn build_completion_items(
             CompletionProvider::identifier_completions(&registry.device_names(), "device")
         }
 
-        CompletionContext::PitchedClipBody => {
+        CompletionContext::PitchedClipBody { clip_scale } => {
             let mut items = CompletionProvider::identifier_completions(
                 &registry.instrument_names(),
                 "instrument",
             );
-            items.extend(CompletionProvider::note_completions());
-            // ダイアトニックコード（scale設定がある場合）
-            if let Some(scale) = registry.scale() {
-                items.extend(CompletionProvider::diatonic_completions(
-                    scale.root,
-                    scale.scale_type,
-                ));
+            // clip-level scale > global scale の優先度でスケール解決
+            let effective_scale = clip_scale
+                .as_ref()
+                .map(|(r, s)| (*r, *s))
+                .or_else(|| registry.scale().map(|s| (s.root, s.scale_type)));
+            if let Some((root, scale_type)) = effective_scale {
+                // スケールがある場合: スケール内の音を優先表示
+                items.extend(CompletionProvider::scale_note_completions(root, scale_type));
+                // ダイアトニックコード
+                items.extend(CompletionProvider::diatonic_completions(root, scale_type));
+            } else {
+                // スケールがない場合: 従来通り全音表示
+                items.extend(CompletionProvider::note_completions());
             }
             items
         }
@@ -814,7 +914,7 @@ mod tests {
         let src = "clip bass_a [bars 1] {\n  ";
         assert_eq!(
             determine_completion_context(src, src.len()),
-            CompletionContext::PitchedClipBody
+            CompletionContext::PitchedClipBody { clip_scale: None }
         );
     }
 
@@ -907,5 +1007,71 @@ mod tests {
         // offset 1 in "a b" is space, but backward search finds 'a'
         // Use a string where space is surrounded by spaces
         assert_eq!(word_at_offset(" a ", 0), None);
+    }
+
+    // --- extract_clip_scale tests ---
+
+    #[test]
+    fn extract_clip_scale_with_scale() {
+        let src = "clip bass_a [scale c major] {";
+        let brace_pos = src.rfind('{').unwrap();
+        let result = extract_clip_scale(src, brace_pos);
+        assert_eq!(result, Some((NoteName::C, ScaleType::Major)));
+    }
+
+    #[test]
+    fn extract_clip_scale_minor() {
+        let src = "clip lead [scale a minor] {";
+        let brace_pos = src.rfind('{').unwrap();
+        let result = extract_clip_scale(src, brace_pos);
+        assert_eq!(result, Some((NoteName::A, ScaleType::Minor)));
+    }
+
+    #[test]
+    fn extract_clip_scale_with_bars() {
+        let src = "clip bass_a [bars 2] [scale eb dorian] {";
+        let brace_pos = src.rfind('{').unwrap();
+        let result = extract_clip_scale(src, brace_pos);
+        assert_eq!(result, Some((NoteName::Eb, ScaleType::Dorian)));
+    }
+
+    #[test]
+    fn extract_clip_scale_no_scale() {
+        let src = "clip bass_a [bars 1] {";
+        let brace_pos = src.rfind('{').unwrap();
+        let result = extract_clip_scale(src, brace_pos);
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn extract_clip_scale_no_options() {
+        let src = "clip bass_a {";
+        let brace_pos = src.rfind('{').unwrap();
+        let result = extract_clip_scale(src, brace_pos);
+        assert_eq!(result, None);
+    }
+
+    // --- PitchedClipBody with scale context tests ---
+
+    #[test]
+    fn ctx_pitched_clip_body_with_scale() {
+        let src = "clip bass_a [scale c major] {\n  ";
+        assert_eq!(
+            determine_completion_context(src, src.len()),
+            CompletionContext::PitchedClipBody {
+                clip_scale: Some((NoteName::C, ScaleType::Major))
+            }
+        );
+    }
+
+    #[test]
+    fn ctx_pitched_clip_body_with_scale_and_bars() {
+        let src = "clip lead [bars 2] [scale a minor] {\n  ";
+        assert_eq!(
+            determine_completion_context(src, src.len()),
+            CompletionContext::PitchedClipBody {
+                clip_scale: Some((NoteName::A, ScaleType::Minor))
+            }
+        );
     }
 }

@@ -90,6 +90,48 @@ impl CompletionProvider {
         .collect()
     }
 
+    /// スケール構成音を優先したノート名の補完候補を返す
+    ///
+    /// スケール内の音にはローマ数字の度数をdetailに付与し、先頭に配置する。
+    /// スケール外の音は後ろに配置する。
+    ///
+    /// # Arguments
+    /// * `root` - スケールのルート音
+    /// * `scale_type` - スケールタイプ
+    ///
+    /// # Returns
+    /// スケール内の音（度数付き）→ スケール外の音 の順で並んだ補完候補
+    pub fn scale_note_completions(root: NoteName, scale_type: ScaleType) -> Vec<CompletionItem> {
+        const DEGREE_LABELS: [&str; 7] = ["I", "II", "III", "IV", "V", "VI", "VII"];
+        let all_notes: [(&str, u8); 17] = [
+            ("c", 0), ("c#", 1), ("db", 1), ("d", 2), ("d#", 3), ("eb", 3),
+            ("e", 4), ("f", 5), ("f#", 6), ("gb", 6), ("g", 7), ("g#", 8),
+            ("ab", 8), ("a", 9), ("a#", 10), ("bb", 10), ("b", 11),
+        ];
+
+        let mut in_scale = Vec::new();
+        let mut out_of_scale = Vec::new();
+
+        for &(name, semitone) in &all_notes {
+            if let Some(degree) = diatonic::scale_degree_of(semitone, root, scale_type) {
+                in_scale.push(CompletionItem {
+                    label: name.to_string(),
+                    detail: Some(format!("{} (in scale)", DEGREE_LABELS[degree])),
+                    kind: CompletionKind::NoteName,
+                });
+            } else {
+                out_of_scale.push(CompletionItem {
+                    label: name.to_string(),
+                    detail: None,
+                    kind: CompletionKind::NoteName,
+                });
+            }
+        }
+
+        in_scale.extend(out_of_scale);
+        in_scale
+    }
+
     /// 標準MIDIコントロールチェンジの補完候補を返す
     ///
     /// # Returns
@@ -438,6 +480,64 @@ mod tests {
     fn test_identifier_completions_empty() {
         let items = CompletionProvider::identifier_completions(&[], "clip");
         assert!(items.is_empty());
+    }
+
+    #[test]
+    fn test_scale_note_completions_c_major_count() {
+        let items =
+            CompletionProvider::scale_note_completions(NoteName::C, ScaleType::Major);
+        // 全17音が返される
+        assert_eq!(items.len(), 17);
+    }
+
+    #[test]
+    fn test_scale_note_completions_c_major_in_scale_first() {
+        let items =
+            CompletionProvider::scale_note_completions(NoteName::C, ScaleType::Major);
+        // C major: c, d, e, f, g, a, b がスケール内
+        // 先頭にスケール内の音が来る
+        let in_scale: Vec<&str> = items
+            .iter()
+            .filter(|i| i.detail.is_some())
+            .map(|i| i.label.as_str())
+            .collect();
+        assert_eq!(in_scale, vec!["c", "d", "e", "f", "g", "a", "b"]);
+    }
+
+    #[test]
+    fn test_scale_note_completions_c_major_out_of_scale_after() {
+        let items =
+            CompletionProvider::scale_note_completions(NoteName::C, ScaleType::Major);
+        let out_of_scale: Vec<&str> = items
+            .iter()
+            .filter(|i| i.detail.is_none())
+            .map(|i| i.label.as_str())
+            .collect();
+        // c#, db, d#, eb, f#, gb, g#, ab, a#, bb の10音
+        assert_eq!(out_of_scale.len(), 10);
+    }
+
+    #[test]
+    fn test_scale_note_completions_degree_labels() {
+        let items =
+            CompletionProvider::scale_note_completions(NoteName::C, ScaleType::Major);
+        let c_item = items.iter().find(|i| i.label == "c").unwrap();
+        assert_eq!(c_item.detail, Some("I (in scale)".to_string()));
+        let d_item = items.iter().find(|i| i.label == "d").unwrap();
+        assert_eq!(d_item.detail, Some("II (in scale)".to_string()));
+    }
+
+    #[test]
+    fn test_scale_note_completions_a_minor() {
+        let items =
+            CompletionProvider::scale_note_completions(NoteName::A, ScaleType::Minor);
+        let in_scale: Vec<&str> = items
+            .iter()
+            .filter(|i| i.detail.is_some())
+            .map(|i| i.label.as_str())
+            .collect();
+        // A minor: a, b, c, d, e, f, g
+        assert_eq!(in_scale, vec!["c", "d", "e", "f", "g", "a", "b"]);
     }
 
 }
