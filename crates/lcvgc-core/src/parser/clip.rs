@@ -23,6 +23,7 @@ pub fn parse_clip(input: &str) -> IResult<&str, ClipDef> {
     let (input, _) = char('{')(input)?;
     let (input, _) = ws(input)?;
 
+    // ドラムクリップかどうかを先読みで判定（"use"キーワードで始まるか）
     // Peek to determine if this is a drum clip (starts with "use" keyword)
     if input.trim_start().starts_with("use ") {
         let (input, body) = parse_drum_body(input)?;
@@ -60,13 +61,16 @@ fn parse_pitched_body(mut input: &str) -> IResult<&str, PitchedClipBody> {
         let (rest, _) = ws(input)?;
         input = rest;
 
+        // 閉じ波括弧の確認
         // Check for closing brace
         if input.starts_with('}') {
             break;
         }
 
+        // CCオートメーションを試行（instrument.paramパターン）
         // Try CC automation (instrument.param pattern)
         if let Ok((_, _target)) = parse_cc_target(input) {
+            // CC行 - まずステップ形式、次にタイム形式を試行
             // It's a CC line - try step first, then time
             if let Ok((rest, cc)) = parse_cc_step(input) {
                 cc_automations.push(cc);
@@ -80,10 +84,12 @@ fn parse_pitched_body(mut input: &str) -> IResult<&str, PitchedClipBody> {
             }
         }
 
+        // 楽器名をパース
         // Parse instrument name
         let (rest, inst_name) = identifier(input)?;
         let (rest, _) = ws1(rest)?;
 
+        // 要素をパース
         // Parse elements
         let mut elements = Vec::new();
         let mut current = rest;
@@ -96,13 +102,17 @@ fn parse_pitched_body(mut input: &str) -> IResult<&str, PitchedClipBody> {
                 break;
             }
 
+            // 同一または別の楽器による改行を確認（この行の終端）
             // Check for newline with same or different instrument (end of this line)
             if let Ok((_, next_ident)) = identifier(current) {
+                // 次の識別子が同じ楽器名または既知のキーワードの場合、
+                // 新しい行の開始の可能性がある
                 // If the next identifier is the same instrument name or a known keyword,
                 // it might be a new line
                 if next_ident == inst_name || next_ident == "resolution" {
                     break;
                 }
+                // CC行のように見えるか確認（ドットを含むか）
                 // Check if it looks like a CC line (has dot)
                 let after_ident = &current[next_ident.len()..];
                 if after_ident.starts_with('.') {
@@ -110,6 +120,7 @@ fn parse_pitched_body(mut input: &str) -> IResult<&str, PitchedClipBody> {
                 }
             }
 
+            // 小節ジャンプを試行
             // Try bar jump
             if let Ok((r, bj)) = parse_bar_jump(current) {
                 elements.push(PitchedElement::BarJump(bj));
@@ -117,6 +128,7 @@ fn parse_pitched_body(mut input: &str) -> IResult<&str, PitchedClipBody> {
                 continue;
             }
 
+            // リピートを試行
             // Try repetition
             if let Ok((r, rep)) = parse_repetition(current) {
                 elements.push(PitchedElement::Repetition(rep));
@@ -124,6 +136,7 @@ fn parse_pitched_body(mut input: &str) -> IResult<&str, PitchedClipBody> {
                 continue;
             }
 
+            // コード括弧 [notes]:dur を試行
             // Try chord bracket [notes]:dur
             if current.starts_with('[') {
                 let (r, chord) = parse_chord_bracket(current)?;
@@ -132,9 +145,11 @@ fn parse_pitched_body(mut input: &str) -> IResult<&str, PitchedClipBody> {
                 continue;
             }
 
+            // ノートイベントを試行（単音またはコード名）
             // Try note event (single note or chord name)
             if let Ok((r, note)) = parse_note_event(current) {
                 let (r, art) = parse_articulation(r)?;
+                // コード名に対するアルペジオを確認
                 // Check for arpeggio on chord names
                 let (r, _) = ws(r)?;
                 if let Some((r2, _arp)) = parse_arpeggio(r) {
@@ -147,6 +162,7 @@ fn parse_pitched_body(mut input: &str) -> IResult<&str, PitchedClipBody> {
                 continue;
             }
 
+            // 他にパースできるものがないため終了
             // Can't parse anything else, break
             break;
         }
@@ -183,6 +199,7 @@ fn parse_chord_bracket(input: &str) -> IResult<&str, PitchedElement> {
             current = &current[1..];
             break;
         }
+        // 音名とオプションのオクターブをパース
         // Parse note_name and optional octave
         let (r, name) = crate::parser::common::note_name(current)?;
         let (r, oct) = opt(|i| {
@@ -193,6 +210,7 @@ fn parse_chord_bracket(input: &str) -> IResult<&str, PitchedElement> {
         current = r;
     }
 
+    // :duration をパース
     // Parse :duration
     let (current, dur) = if current.starts_with(':') {
         let (r, _) = char(':')(current)?;
@@ -205,6 +223,7 @@ fn parse_chord_bracket(input: &str) -> IResult<&str, PitchedElement> {
     let (current, dotted) = opt(tag("."))(current)?;
     let (current, art) = parse_articulation(current)?;
 
+    // アルペジオを確認
     // Check for arpeggio
     let (current, _) = ws(current)?;
     let (current, arp) = if let Some((r, a)) = parse_arpeggio(current) {
@@ -236,7 +255,9 @@ fn parse_drum_body(input: &str) -> IResult<&str, DrumClipBody> {
     let (input, _) = ws1(input)?;
     let (input, resolution) = parse_u16(input)?;
 
-    let beats_per_step = resolution as usize / 4; // for 4/4 time
+    // 4/4拍子用
+    // for 4/4 time
+    let beats_per_step = resolution as usize / 4;
 
     let mut rows: Vec<crate::ast::clip_drum::DrumRow> = Vec::new();
     let mut cc_automations = Vec::new();
@@ -250,6 +271,7 @@ fn parse_drum_body(input: &str) -> IResult<&str, DrumClipBody> {
             break;
         }
 
+        // CCオートメーションを試行
         // Try CC automation
         if let Ok((_, _target)) = parse_cc_target(current) {
             if let Ok((r, cc)) = parse_cc_step(current) {
@@ -264,15 +286,21 @@ fn parse_drum_body(input: &str) -> IResult<&str, DrumClipBody> {
             }
         }
 
+        // 楽器名をパース
         // Parse instrument name
         let (r, inst_name) = identifier(current)?;
 
+        // これが確率行の開始かどうかを確認（すべて数字とドット、スペース後にアルファベットなし）
+        // 確率行は識別子で始まらない
+        // 実際には、確率行はインデントされ、数字/ドットで直接始まる
+        // inst_nameが楽器名として妥当かどうかを確認する
         // Check if this is the start of a probability row (all digits and dots, no alpha after spaces)
         // Probability rows don't start with an identifier
         // Actually, probability rows are indented and start directly with digits/dots
         // Let's check: if inst_name looks like it could be an instrument
         let (r, _) = ws(r)?;
 
+        // 行末までパターンを読み取る
         // Read the pattern until end of line
         let line_end = r.find('\n').unwrap_or(r.len());
         let pattern = r[..line_end].trim();
@@ -282,16 +310,19 @@ fn parse_drum_body(input: &str) -> IResult<&str, DrumClipBody> {
             continue;
         }
 
+        // 確率行かどうかを確認（すべての文字が0-9または.）
         // Check if this could be a probability row (all chars are 0-9 or .)
         let is_prob = pattern.chars().all(|c| c.is_ascii_digit() || c == '.');
 
         if is_prob && !rows.is_empty() {
+            // 直前のドラム行に対する確率行
             // It's a probability row for the last drum row
             let prob = parse_probability_row(pattern);
             if let Some(last) = rows.last_mut() {
                 last.probability = Some(prob);
             }
         } else {
+            // ヒットパターン行
             // It's a hit pattern row
             let expanded = expand_pipe(pattern, beats_per_step);
             let hits = parse_hit_symbols(&expanded);
