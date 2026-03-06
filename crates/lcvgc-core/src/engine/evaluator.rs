@@ -2,6 +2,9 @@
 //!
 //! DSLのBlockをレジストリ・クロック・ステートに振り分けて評価する。
 
+use std::collections::HashSet;
+use std::path::{Path, PathBuf};
+
 use crate::ast::playback::PlayTarget;
 use crate::ast::Block;
 use crate::engine::clock::Clock;
@@ -24,8 +27,13 @@ pub enum EvalResult {
     PlayStarted,
     /// 停止
     Stopped,
-    /// インクルード（未実装 - 呼び出し側が処理すべき）
-    IncludeRequested(String),
+    /// インクルード処理済み / Include processed
+    IncludeProcessed {
+        /// インクルード先ファイルパス / Path of the included file
+        path: String,
+        /// 展開されたブロック数 / Number of expanded blocks
+        results_count: usize,
+    },
 }
 
 /// evalコマンドディスパッチャ
@@ -131,7 +139,10 @@ impl Evaluator {
                     .apply_command(PlaybackCommand::Stop { target: cmd.target });
                 Ok(EvalResult::Stopped)
             }
-            Block::Include(inc) => Ok(EvalResult::IncludeRequested(inc.path)),
+            Block::Include(ref inc) => Ok(EvalResult::IncludeProcessed {
+                path: inc.path.clone(),
+                results_count: 0,
+            }),
         }
     }
 
@@ -153,6 +164,95 @@ impl Evaluator {
     /// 現在のBPM
     pub fn bpm(&self) -> f64 {
         self.clock.bpm()
+    }
+
+    /// ファイルパスを指定して全ブロックを評価する（include展開付き）
+    /// Evaluates all blocks from a file path with include expansion
+    ///
+    /// # Arguments
+    /// * `path` - 評価するファイルのパス / Path to the file to evaluate
+    ///
+    /// # Returns
+    /// 評価結果のベクター / Vector of evaluation results
+    ///
+    /// # Errors
+    /// - `EngineError::IncludeNotFound` - ファイルが見つからない / File not found
+    /// - `EngineError::IncludeReadError` - ファイル読み込みエラー / File read error
+    /// - `EngineError::ParseError` - パースエラー / Parse error
+    /// - `EngineError::CircularInclude` - 循環インクルード / Circular include
+    pub fn eval_file(&mut self, path: &Path) -> Result<Vec<EvalResult>, EngineError> {
+        let canonical = path.canonicalize().map_err(|_| {
+            EngineError::IncludeNotFound(path.display().to_string())
+        })?;
+        let mut include_stack = HashSet::new();
+        include_stack.insert(canonical.clone());
+        self.eval_file_recursive(&canonical, &mut include_stack)
+    }
+
+    /// 再帰的にファイルを評価する（内部メソッド）
+    /// Recursively evaluates a file (internal method)
+    ///
+    /// # Arguments
+    /// * `path` - 正規化済みのファイルパス / Canonicalized file path
+    /// * `include_stack` - 循環検出用のインクルードスタック / Include stack for cycle detection
+    ///
+    /// # Returns
+    /// 評価結果のベクター / Vector of evaluation results
+    ///
+    /// # Errors
+    /// - `EngineError::CircularInclude` - 循環インクルード / Circular include
+    /// - `EngineError::IncludeNotFound` - インクルードファイル未検出 / Include file not found
+    /// - `EngineError::IncludeReadError` - ファイル読み込みエラー / File read error
+    fn eval_file_recursive(
+        &mut self,
+        path: &Path,
+        include_stack: &mut HashSet<PathBuf>,
+    ) -> Result<Vec<EvalResult>, EngineError> {
+        let source = std::fs::read_to_string(path).map_err(|e| {
+            EngineError::IncludeReadError {
+                path: path.display().to_string(),
+                reason: e.to_string(),
+            }
+        })?;
+        let (_, blocks) = crate::parser::parse_source(&source)
+            .map_err(|e| EngineError::ParseError(e.to_string()))?;
+
+        let mut results = Vec::new();
+        for block in blocks {
+            match block {
+                Block::Include(ref inc) => {
+                    let base_dir = path.parent().unwrap_or(Path::new("."));
+                    let include_path = base_dir.join(&inc.path);
+                    let canonical = include_path.canonicalize().map_err(|_| {
+                        EngineError::IncludeNotFound(inc.path.clone())
+                    })?;
+
+                    if !include_stack.insert(canonical.clone()) {
+                        let chain: Vec<String> = include_stack
+                            .iter()
+                            .map(|p| p.display().to_string())
+                            .collect();
+                        return Err(EngineError::CircularInclude(
+                            format!("{} -> {}", chain.join(" -> "), canonical.display()),
+                        ));
+                    }
+
+                    let sub_results = self.eval_file_recursive(&canonical, include_stack)?;
+                    let count = sub_results.len();
+                    results.extend(sub_results);
+                    results.push(EvalResult::IncludeProcessed {
+                        path: inc.path.clone(),
+                        results_count: count,
+                    });
+
+                    include_stack.remove(&canonical);
+                }
+                _ => {
+                    results.push(self.eval_block(block)?);
+                }
+            }
+        }
+        Ok(results)
     }
 
     /// ソースコード文字列を全ブロック評価する
@@ -406,14 +506,97 @@ mod tests {
     }
 
     #[test]
-    fn eval_include_requested() {
+    fn eval_include_processed() {
         let mut ev = Evaluator::new(120.0);
         let result = ev
             .eval_block(Block::Include(IncludeDef {
                 path: "other.lcvgc".into(),
             }))
             .unwrap();
-        assert_eq!(result, EvalResult::IncludeRequested("other.lcvgc".into()));
+        assert_eq!(
+            result,
+            EvalResult::IncludeProcessed {
+                path: "other.lcvgc".into(),
+                results_count: 0,
+            }
+        );
+    }
+
+    #[test]
+    fn eval_file_single_include() {
+        let dir = tempfile::tempdir().unwrap();
+        let sub_file = dir.path().join("sub.cvg");
+        std::fs::write(&sub_file, "tempo 140\n").unwrap();
+
+        let main_file = dir.path().join("main.cvg");
+        std::fs::write(
+            &main_file,
+            format!("include {}\n", sub_file.display()),
+        )
+        .unwrap();
+
+        let mut ev = Evaluator::new(120.0);
+        let results = ev.eval_file(&main_file).unwrap();
+        // tempo 140 が評価され、IncludeProcessed が返る
+        assert!(results
+            .iter()
+            .any(|r| matches!(r, EvalResult::TempoChanged(t) if (*t - 140.0).abs() < f64::EPSILON)));
+        assert!(results
+            .iter()
+            .any(|r| matches!(r, EvalResult::IncludeProcessed { .. })));
+    }
+
+    #[test]
+    fn eval_file_nested_include() {
+        let dir = tempfile::tempdir().unwrap();
+        let leaf_file = dir.path().join("leaf.cvg");
+        std::fs::write(&leaf_file, "tempo 160\n").unwrap();
+
+        let mid_file = dir.path().join("mid.cvg");
+        std::fs::write(
+            &mid_file,
+            format!("include {}\n", leaf_file.display()),
+        )
+        .unwrap();
+
+        let main_file = dir.path().join("main.cvg");
+        std::fs::write(
+            &main_file,
+            format!("include {}\n", mid_file.display()),
+        )
+        .unwrap();
+
+        let mut ev = Evaluator::new(120.0);
+        let results = ev.eval_file(&main_file).unwrap();
+        assert!(results
+            .iter()
+            .any(|r| matches!(r, EvalResult::TempoChanged(t) if (*t - 160.0).abs() < f64::EPSILON)));
+    }
+
+    #[test]
+    fn eval_file_circular_include() {
+        let dir = tempfile::tempdir().unwrap();
+        let file_a = dir.path().join("a.cvg");
+        let file_b = dir.path().join("b.cvg");
+        std::fs::write(&file_a, format!("include {}\n", file_b.display())).unwrap();
+        std::fs::write(&file_b, format!("include {}\n", file_a.display())).unwrap();
+
+        let mut ev = Evaluator::new(120.0);
+        let result = ev.eval_file(&file_a);
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(matches!(err, EngineError::CircularInclude(_)));
+    }
+
+    #[test]
+    fn eval_file_not_found() {
+        let mut ev = Evaluator::new(120.0);
+        let result = ev.eval_file(Path::new("/nonexistent/file.cvg"));
+        assert!(result.is_err());
+        assert!(matches!(
+            result.unwrap_err(),
+            EngineError::IncludeNotFound(_)
+        ));
     }
 
     #[test]
