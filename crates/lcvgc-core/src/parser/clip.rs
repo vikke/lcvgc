@@ -70,14 +70,20 @@ fn parse_pitched_body(mut input: &str) -> IResult<&str, PitchedClipBody> {
         // CCオートメーションを試行（instrument.paramパターン）
         // Try CC automation (instrument.param pattern)
         if let Ok((_, _target)) = parse_cc_target(input) {
-            // CC行 - まずステップ形式、次にタイム形式を試行
-            // It's a CC line - try step first, then time
-            if let Ok((rest, cc)) = parse_cc_step(input) {
+            // CC行 - まずタイム形式、次にステップ形式を試行
+            // （タイム形式は value@bar.beat を要求するためステップ形式に誤マッチしない。
+            //  ステップ形式は parse_u8 で値だけ部分マッチしてしまうため先に試行すると
+            //  タイム形式の入力を誤消費する）
+            // It's a CC line - try time first, then step
+            // (Time format requires value@bar.beat so it won't false-match step format.
+            //  Step format can partially match just the value via parse_u8,
+            //  incorrectly consuming time-format input if tried first)
+            if let Ok((rest, cc)) = parse_cc_time(input) {
                 cc_automations.push(cc);
                 input = rest;
                 continue;
             }
-            if let Ok((rest, cc)) = parse_cc_time(input) {
+            if let Ok((rest, cc)) = parse_cc_step(input) {
                 cc_automations.push(cc);
                 input = rest;
                 continue;
@@ -271,15 +277,15 @@ fn parse_drum_body(input: &str) -> IResult<&str, DrumClipBody> {
             break;
         }
 
-        // CCオートメーションを試行
-        // Try CC automation
+        // CCオートメーションを試行（タイム形式を先に試行）
+        // Try CC automation (try time format first)
         if let Ok((_, _target)) = parse_cc_target(current) {
-            if let Ok((r, cc)) = parse_cc_step(current) {
+            if let Ok((r, cc)) = parse_cc_time(current) {
                 cc_automations.push(cc);
                 current = r;
                 continue;
             }
-            if let Ok((r, cc)) = parse_cc_time(current) {
+            if let Ok((r, cc)) = parse_cc_step(current) {
                 cc_automations.push(cc);
                 current = r;
                 continue;
@@ -428,6 +434,91 @@ mod tests {
                 }
             }
             _ => panic!("expected pitched"),
+        }
+    }
+
+    /// CCタイム形式を含むピッチドクリップのパーステスト
+    /// Test parsing a pitched clip containing CC time-format automation
+    #[test]
+    fn test_pitched_clip_with_cc_time() {
+        let input = r#"clip bass_a [bars 4] {
+  bass c:3:4 eb::4
+  vbass.cutoff 40@1.1-100@4.4
+}"#;
+        let (rest, clip) = parse_clip(input).unwrap();
+        assert_eq!(rest, "");
+        match &clip.body {
+            ClipBody::Pitched(body) => {
+                assert_eq!(body.lines.len(), 1);
+                assert_eq!(body.cc_automations.len(), 1);
+                match &body.cc_automations[0] {
+                    crate::ast::clip_cc::CcAutomation::Time(time) => {
+                        assert_eq!(time.target.instrument, "vbass");
+                        assert_eq!(time.target.param, "cutoff");
+                        assert_eq!(time.segments.len(), 1);
+                        assert_eq!(time.segments[0].from.value, 40);
+                        assert_eq!(time.segments[0].from.bar, 1);
+                        assert_eq!(time.segments[0].from.beat, 1);
+                    }
+                    other => panic!("expected Time CC, got {:?}", other),
+                }
+            }
+            _ => panic!("expected pitched"),
+        }
+    }
+
+    /// CCステップ形式が引き続きパースできることのテスト
+    /// Test that CC step-format automation still parses correctly
+    #[test]
+    fn test_pitched_clip_with_cc_step() {
+        let input = r#"clip bass_b [bars 1] {
+  bass c:3:4
+  vbass.cutoff 0 10 20 30
+}"#;
+        let (rest, clip) = parse_clip(input).unwrap();
+        assert_eq!(rest, "");
+        match &clip.body {
+            ClipBody::Pitched(body) => {
+                assert_eq!(body.lines.len(), 1);
+                assert_eq!(body.cc_automations.len(), 1);
+                match &body.cc_automations[0] {
+                    crate::ast::clip_cc::CcAutomation::Step(step) => {
+                        assert_eq!(step.target.instrument, "vbass");
+                        assert_eq!(step.target.param, "cutoff");
+                        assert_eq!(step.values, vec![0, 10, 20, 30]);
+                    }
+                    other => panic!("expected Step CC, got {:?}", other),
+                }
+            }
+            _ => panic!("expected pitched"),
+        }
+    }
+
+    /// ドラムクリップでのCCタイム形式テスト
+    /// Test CC time-format automation in drum clip
+    #[test]
+    fn test_drum_clip_with_cc_time() {
+        let input = r#"clip drums_a [bars 1] {
+  use tr808
+  resolution 16
+  bd    x...x...x...x...
+  vdrum.cutoff 40@1.1-100@1.4
+}"#;
+        let (rest, clip) = parse_clip(input).unwrap();
+        assert_eq!(rest, "");
+        match &clip.body {
+            ClipBody::Drum(body) => {
+                assert_eq!(body.rows.len(), 1);
+                assert_eq!(body.cc_automations.len(), 1);
+                match &body.cc_automations[0] {
+                    crate::ast::clip_cc::CcAutomation::Time(time) => {
+                        assert_eq!(time.target.instrument, "vdrum");
+                        assert_eq!(time.target.param, "cutoff");
+                    }
+                    other => panic!("expected Time CC, got {:?}", other),
+                }
+            }
+            _ => panic!("expected drum"),
         }
     }
 

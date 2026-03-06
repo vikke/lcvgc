@@ -406,4 +406,50 @@ mod tests {
         assert_eq!(out.blocks.len(), 1);
         assert!(out.errors.is_empty());
     }
+
+    /// CCタイム形式オートメーションを含むクリップのパーステスト
+    /// Test span_parse_source with a clip containing CC time-format automation
+    #[test]
+    fn clip_with_cc_time_automation() {
+        let src = "clip bass_a [bars 4] {\n  bass c:3:4\n  vbass.cutoff 40@1.1-100@4.4\n}";
+        let out = span_parse_source(src);
+        assert_eq!(out.blocks.len(), 1);
+        assert!(out.errors.is_empty());
+        match &out.blocks[0].block {
+            Block::Clip(clip) => {
+                assert_eq!(clip.name, "bass_a");
+                match &clip.body {
+                    crate::ast::clip::ClipBody::Pitched(body) => {
+                        assert_eq!(body.cc_automations.len(), 1);
+                    }
+                    _ => panic!("expected pitched"),
+                }
+            }
+            _ => panic!("expected clip"),
+        }
+    }
+
+    /// 複数CCパターン（タイム形式+ステップ形式）を含むクリップのパーステスト
+    /// Test span_parse_source with a clip containing multiple CC patterns (time + step)
+    #[test]
+    fn clip_with_multiple_cc_patterns() {
+        let src = r#"clip bass_a [bars 4] {
+  bass c:3:4 eb::4
+  vbass.cutoff 40@1.1-100@4.4
+  vbass.resonance 0 10 20 30
+}"#;
+        let out = span_parse_source(src);
+        assert_eq!(out.blocks.len(), 1);
+        assert!(out.errors.is_empty());
+        match &out.blocks[0].block {
+            Block::Clip(clip) => match &clip.body {
+                crate::ast::clip::ClipBody::Pitched(body) => {
+                    assert_eq!(body.lines.len(), 1);
+                    assert_eq!(body.cc_automations.len(), 2);
+                }
+                _ => panic!("expected pitched"),
+            },
+            _ => panic!("expected clip"),
+        }
+    }
 }
