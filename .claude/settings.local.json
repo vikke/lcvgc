@@ -23,5 +23,18 @@
       "WebFetch(domain:skratchdot.com)",
       "WebFetch(domain:furnacecreek.org)"
     ]
+  },
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash /Users/i.matsunaga/vcswork/lcvgc/.claude/hooks/pre-commit-version-check.sh"
+          }
+        ]
+      }
+    ]
   }
 }

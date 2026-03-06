@@ -44,6 +44,16 @@
     - 英語ドキュメント: *.md
 - 翻訳は、日本語400行程度に対して、1 sub agentを起動して並列実行で処理を行なう事。1 sub agent 1 section を担当させ、`git worktree` を上手く使って作業分担する事。
 
+## バージョン管理
+
+- **厳守**: mainブランチへのコミット前に、変更に関連するコンポーネントのバージョンインクリメントをユーザーに確認する事。
+- 対象コンポーネント:
+    - lcvgc: `crates/lcvgc/Cargo.toml`
+    - lcvgc-core: `crates/lcvgc-core/Cargo.toml`
+    - lcvgc.nvim: `../lcvgc.nvim/lua/lcvgc/init.lua`
+- 選択肢: major / minor / patch / インクリメント不要
+- 変更した各コンポーネントについて個別に確認する事。
+
 ## **厳守**: 再発防止注意事項
 
 - 失敗をした場合には、このセクションにどうしたら繰替えさないかを追記していくこと。
