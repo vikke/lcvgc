@@ -1,5 +1,3 @@
-use std::path::Path;
-
 use super::span_parser::{Span, SpanError, SpannedBlock};
 /// 診断プロバイダ（パースエラー＋未定義参照）
 use crate::ast::clip::ClipBody;
@@ -89,32 +87,6 @@ impl DiagnosticProvider {
                     }
                 }
                 _ => {}
-            }
-        }
-        diagnostics
-    }
-
-    /// インクルードファイルの存在チェック
-    /// Checks if included files exist
-    ///
-    /// # Arguments
-    /// * `blocks` - スパン付きブロックのスライス / Slice of spanned blocks
-    /// * `base_path` - ベースディレクトリのパス / Base directory path
-    ///
-    /// # Returns
-    /// ファイルが存在しない場合のWarning診断リスト / List of Warning diagnostics for missing files
-    pub fn include_diagnostics(blocks: &[SpannedBlock], base_path: &Path) -> Vec<Diagnostic> {
-        let mut diagnostics = Vec::new();
-        for sb in blocks {
-            if let Block::Include(inc) = &sb.block {
-                let full_path = base_path.join(&inc.path);
-                if !full_path.exists() {
-                    diagnostics.push(Diagnostic {
-                        span: sb.span,
-                        message: format!("インクルードファイル未検出: '{}'", inc.path),
-                        severity: DiagnosticSeverity::Warning,
-                    });
-                }
             }
         }
         diagnostics
@@ -337,31 +309,6 @@ mod tests {
         let blocks = vec![spanned(Block::Tempo(Tempo::Absolute(120)))];
         let diags = DiagnosticProvider::undefined_references(&blocks, &reg);
         assert!(diags.is_empty());
-    }
-
-    #[test]
-    fn include_existing_file() {
-        let dir = tempfile::tempdir().unwrap();
-        let file = dir.path().join("sub.cvg");
-        std::fs::write(&file, "tempo 120").unwrap();
-
-        let blocks = vec![spanned(Block::Include(crate::ast::include::IncludeDef {
-            path: "sub.cvg".into(),
-        }))];
-        let diags = DiagnosticProvider::include_diagnostics(&blocks, dir.path());
-        assert!(diags.is_empty());
-    }
-
-    #[test]
-    fn include_missing_file() {
-        let dir = tempfile::tempdir().unwrap();
-        let blocks = vec![spanned(Block::Include(crate::ast::include::IncludeDef {
-            path: "missing.cvg".into(),
-        }))];
-        let diags = DiagnosticProvider::include_diagnostics(&blocks, dir.path());
-        assert_eq!(diags.len(), 1);
-        assert_eq!(diags[0].severity, DiagnosticSeverity::Warning);
-        assert!(diags[0].message.contains("missing.cvg"));
     }
 
     /// includeが先頭にある場合はエラー診断が出ないことを検証

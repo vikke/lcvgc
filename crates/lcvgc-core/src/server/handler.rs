@@ -81,9 +81,17 @@ pub async fn handle_request(evaluator: &Arc<Mutex<Evaluator>>, request: Request)
             }
             (Err(e), _) | (_, Err(e)) => Response::err(e.to_string()),
         },
-        Request::LspCompletion { source, offset } => {
+        Request::LspCompletion {
+            source,
+            offset,
+            include_sources,
+        } => {
             let mut analyzer = LspAnalyzer::new();
-            analyzer.update(source);
+            if let Some(ref includes) = include_sources {
+                analyzer.update_with_include_sources(source, includes);
+            } else {
+                analyzer.update(source);
+            }
             let ctx = determine_completion_context(analyzer.source(), offset);
             let items = build_completion_items(&ctx, analyzer.registry());
             let lsp_items: Vec<LspCompletionItem> = items
@@ -96,22 +104,32 @@ pub async fn handle_request(evaluator: &Arc<Mutex<Evaluator>>, request: Request)
                 .collect();
             Response::lsp(LspResult::Completion { items: lsp_items })
         }
-        Request::LspHover { source, offset } => {
+        Request::LspHover {
+            source,
+            offset,
+            include_sources,
+        } => {
             let mut analyzer = LspAnalyzer::new();
-            analyzer.update(source);
+            if let Some(ref includes) = include_sources {
+                analyzer.update_with_include_sources(source, includes);
+            } else {
+                analyzer.update(source);
+            }
             let info = analyzer
                 .block_at_offset(offset)
                 .and_then(HoverProvider::hover_content)
                 .map(|content| LspHoverInfo { content });
             Response::lsp(LspResult::Hover { info })
         }
-        Request::LspDiagnostics { source, file_path } => {
+        Request::LspDiagnostics {
+            source,
+            include_sources,
+        } => {
             let mut analyzer = LspAnalyzer::new();
-            // file_pathがある場合はinclude解決付きで更新、ない場合は従来通り
-            // Use include resolution when file_path is provided, otherwise use standard update
-            if let Some(ref fp) = file_path {
-                let path = std::path::Path::new(fp);
-                analyzer.update_with_file_path(source.clone(), path);
+            // include_sourcesがある場合はinclude解決付きで更新、ない場合は従来通り
+            // Use include resolution when include_sources is provided, otherwise use standard update
+            if let Some(ref includes) = include_sources {
+                analyzer.update_with_include_sources(source.clone(), includes);
             } else {
                 analyzer.update(source.clone());
             }
@@ -125,16 +143,8 @@ pub async fn handle_request(evaluator: &Arc<Mutex<Evaluator>>, request: Request)
             diags.extend(DiagnosticProvider::include_position_diagnostics(
                 analyzer.blocks(),
             ));
-            // file_pathがある場合はincludeファイル存在チェックも実施
-            // Also check include file existence when file_path is provided
-            if let Some(ref fp) = file_path {
-                let path = std::path::Path::new(fp);
-                let base_dir = path.parent().unwrap_or(std::path::Path::new("."));
-                diags.extend(DiagnosticProvider::include_diagnostics(
-                    analyzer.blocks(),
-                    base_dir,
-                ));
-            }
+            // include_diagnostics()は呼ばない（Lua側で実施）
+            // Do not call include_diagnostics() (handled on Lua side)
             let items: Vec<LspDiagnosticItem> = diags
                 .into_iter()
                 .map(|d| {
@@ -152,9 +162,17 @@ pub async fn handle_request(evaluator: &Arc<Mutex<Evaluator>>, request: Request)
                 .collect();
             Response::lsp(LspResult::Diagnostics { items })
         }
-        Request::LspGotoDefinition { source, offset } => {
+        Request::LspGotoDefinition {
+            source,
+            offset,
+            include_sources,
+        } => {
             let mut analyzer = LspAnalyzer::new();
-            analyzer.update(source.clone());
+            if let Some(ref includes) = include_sources {
+                analyzer.update_with_include_sources(source.clone(), includes);
+            } else {
+                analyzer.update(source.clone());
+            }
             let location = word_at_offset(&source, offset)
                 .and_then(|word| GotoDefinitionProvider::find_definition(&word, analyzer.blocks()))
                 .map(|span| {
@@ -169,9 +187,16 @@ pub async fn handle_request(evaluator: &Arc<Mutex<Evaluator>>, request: Request)
                 });
             Response::lsp(LspResult::GotoDefinition { location })
         }
-        Request::LspDocumentSymbols { source } => {
+        Request::LspDocumentSymbols {
+            source,
+            include_sources,
+        } => {
             let mut analyzer = LspAnalyzer::new();
-            analyzer.update(source.clone());
+            if let Some(ref includes) = include_sources {
+                analyzer.update_with_include_sources(source.clone(), includes);
+            } else {
+                analyzer.update(source.clone());
+            }
             let items: Vec<LspSymbolItem> = DocumentSymbolProvider::symbols(analyzer.blocks())
                 .into_iter()
                 .map(|sym| {
@@ -275,6 +300,7 @@ mod tests {
         let req = Request::LspCompletion {
             source: "".into(),
             offset: 0,
+            include_sources: None,
         };
         let resp = handle_request(&ev, req).await;
         assert!(resp.success);
@@ -297,6 +323,7 @@ mod tests {
         let req = Request::LspHover {
             source: "tempo 120".into(),
             offset: 3,
+            include_sources: None,
         };
         let resp = handle_request(&ev, req).await;
         assert!(resp.success);
@@ -316,7 +343,7 @@ mod tests {
         let ev = Arc::new(Mutex::new(Evaluator::new(120.0)));
         let req = Request::LspDiagnostics {
             source: "tempo 120".into(),
-            file_path: None,
+            include_sources: None,
         };
         let resp = handle_request(&ev, req).await;
         assert!(resp.success);
@@ -339,6 +366,7 @@ mod tests {
             source: source.into(),
             // "synth" in instrument block at offset ~55
             offset: source.find("device synth\n  channel").unwrap() + 7,
+            include_sources: None,
         };
         let resp = handle_request(&ev, req).await;
         assert!(resp.success);
@@ -360,6 +388,7 @@ mod tests {
         let ev = Arc::new(Mutex::new(Evaluator::new(120.0)));
         let req = Request::LspDocumentSymbols {
             source: "tempo 120".into(),
+            include_sources: None,
         };
         let resp = handle_request(&ev, req).await;
         assert!(resp.success);
@@ -373,33 +402,30 @@ mod tests {
         }
     }
 
-    /// include先のクリップがsceneから参照されても偽エラーが出ないことを検証する
-    /// Verifies that clips from included files don't cause false "undefined clip" errors in scenes
+    /// include_sourcesでクリップがsceneから参照されても偽エラーが出ないことを検証する
+    /// Verifies that clips from include_sources don't cause false "undefined clip" errors in scenes
     #[tokio::test]
-    async fn handle_lsp_diagnostics_with_include_resolves_clips() {
-        use std::io::Write;
-        let dir = tempfile::tempdir().unwrap();
+    async fn handle_lsp_diagnostics_with_include_sources_resolves_clips() {
+        use crate::server::protocol::IncludeSource;
 
-        // include先ファイル: クリップ定義
-        let inc_path = dir.path().join("bass.cvg");
-        let mut f = std::fs::File::create(&inc_path).unwrap();
-        writeln!(f, "clip bass {{\n  c4\n}}").unwrap();
-
-        // メインファイルのソース: include + scene
-        let main_path = dir.path().join("main.cvg");
         let source = "include bass.cvg\ndevice synth {\n  port \"IAC\"\n}\ninstrument inst {\n  device synth\n  channel 1\n}\nscene main {\n  inst: bass\n}";
+        let include_sources = vec![IncludeSource {
+            path: "bass.cvg".into(),
+            source: "clip bass {\n  c4\n}".into(),
+        }];
 
         let ev = Arc::new(Mutex::new(Evaluator::new(120.0)));
         let req = Request::LspDiagnostics {
             source: source.into(),
-            file_path: Some(main_path.to_string_lossy().into_owned()),
+            include_sources: Some(include_sources),
         };
         let resp = handle_request(&ev, req).await;
         assert!(resp.success);
         let lsp = resp.lsp.unwrap();
         match lsp {
             super::super::protocol::LspResult::Diagnostics { items } => {
-                // include先のclipが解決されるため、未定義エラーは出ない
+                // include_sourcesのclipが解決されるため、未定義エラーは出ない
+                // No undefined errors because clips from include_sources are resolved
                 let undef_errors: Vec<_> = items
                     .iter()
                     .filter(|i| i.message.contains("未定義"))
@@ -414,14 +440,14 @@ mod tests {
         }
     }
 
-    /// file_pathなしの場合、既存の動作と同じであることを検証する
-    /// Verifies that behavior without file_path remains the same
+    /// include_sourcesなしの場合、既存の動作と同じであることを検証する
+    /// Verifies that behavior without include_sources remains the same
     #[tokio::test]
-    async fn handle_lsp_diagnostics_without_file_path_unchanged() {
+    async fn handle_lsp_diagnostics_without_include_sources_unchanged() {
         let ev = Arc::new(Mutex::new(Evaluator::new(120.0)));
         let req = Request::LspDiagnostics {
             source: "tempo 120".into(),
-            file_path: None,
+            include_sources: None,
         };
         let resp = handle_request(&ev, req).await;
         assert!(resp.success);

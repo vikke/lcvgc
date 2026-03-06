@@ -42,6 +42,10 @@ pub enum Request {
         source: String,
         /// カーソル位置（バイトオフセット） / Cursor position (byte offset)
         offset: usize,
+        /// インクルードファイルのソース情報（Lua側から送信、省略可）
+        /// Include file source information (sent from Lua side, optional)
+        #[serde(default)]
+        include_sources: Option<Vec<IncludeSource>>,
     },
     /// LSPホバーリクエスト
     /// LSP hover request
@@ -51,6 +55,10 @@ pub enum Request {
         source: String,
         /// カーソル位置（バイトオフセット） / Cursor position (byte offset)
         offset: usize,
+        /// インクルードファイルのソース情報（Lua側から送信、省略可）
+        /// Include file source information (sent from Lua side, optional)
+        #[serde(default)]
+        include_sources: Option<Vec<IncludeSource>>,
     },
     /// LSP診断リクエスト
     /// LSP diagnostics request
@@ -58,10 +66,10 @@ pub enum Request {
     LspDiagnostics {
         /// DSLソース / DSL source
         source: String,
-        /// ファイルパス（include解決用、省略時はinclude解決なし）
-        /// File path (for include resolution, omit to skip include resolution)
+        /// インクルードファイルのソース情報（Lua側から送信、省略可）
+        /// Include file source information (sent from Lua side, optional)
         #[serde(default)]
-        file_path: Option<String>,
+        include_sources: Option<Vec<IncludeSource>>,
     },
     /// LSP定義ジャンプリクエスト
     /// LSP go-to-definition request
@@ -71,6 +79,10 @@ pub enum Request {
         source: String,
         /// カーソル位置（バイトオフセット） / Cursor position (byte offset)
         offset: usize,
+        /// インクルードファイルのソース情報（Lua側から送信、省略可）
+        /// Include file source information (sent from Lua side, optional)
+        #[serde(default)]
+        include_sources: Option<Vec<IncludeSource>>,
     },
     /// LSPドキュメントシンボルリクエスト
     /// LSP document symbols request
@@ -78,7 +90,21 @@ pub enum Request {
     LspDocumentSymbols {
         /// DSLソース / DSL source
         source: String,
+        /// インクルードファイルのソース情報（Lua側から送信、省略可）
+        /// Include file source information (sent from Lua side, optional)
+        #[serde(default)]
+        include_sources: Option<Vec<IncludeSource>>,
     },
+}
+
+/// インクルードファイルのソース情報（Lua側から送信）
+/// Include file source information (sent from Lua side)
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
+pub struct IncludeSource {
+    /// ファイルパス / File path
+    pub path: String,
+    /// ファイルの内容 / File content
+    pub source: String,
 }
 
 /// MIDIポート情報
@@ -421,9 +447,14 @@ mod tests {
         let json = r#"{"type":"lsp_completion","source":"tempo 120","offset":5}"#;
         let req: Request = serde_json::from_str(json).unwrap();
         match req {
-            Request::LspCompletion { source, offset } => {
+            Request::LspCompletion {
+                source,
+                offset,
+                include_sources,
+            } => {
                 assert_eq!(source, "tempo 120");
                 assert_eq!(offset, 5);
+                assert!(include_sources.is_none());
             }
             _ => panic!("Expected LspCompletion"),
         }
@@ -434,9 +465,14 @@ mod tests {
         let json = r#"{"type":"lsp_hover","source":"tempo 120","offset":3}"#;
         let req: Request = serde_json::from_str(json).unwrap();
         match req {
-            Request::LspHover { source, offset } => {
+            Request::LspHover {
+                source,
+                offset,
+                include_sources,
+            } => {
                 assert_eq!(source, "tempo 120");
                 assert_eq!(offset, 3);
+                assert!(include_sources.is_none());
             }
             _ => panic!("Expected LspHover"),
         }
@@ -447,24 +483,54 @@ mod tests {
         let json = r#"{"type":"lsp_diagnostics","source":"tempo 120"}"#;
         let req: Request = serde_json::from_str(json).unwrap();
         match req {
-            Request::LspDiagnostics { source, file_path } => {
+            Request::LspDiagnostics {
+                source,
+                include_sources,
+            } => {
                 assert_eq!(source, "tempo 120");
-                assert_eq!(file_path, None);
+                assert!(include_sources.is_none());
             }
             _ => panic!("Expected LspDiagnostics"),
         }
     }
 
-    /// file_path付きのLspDiagnosticsリクエストのデシリアライズテスト
-    /// Test deserialization of LspDiagnostics request with file_path
+    /// include_sources付きのLspCompletionリクエストのデシリアライズテスト
+    /// Test deserialization of LspCompletion request with include_sources
     #[test]
-    fn deserialize_lsp_diagnostics_request_with_file_path() {
-        let json = r#"{"type":"lsp_diagnostics","source":"tempo 120","file_path":"/tmp/test.cvg"}"#;
+    fn deserialize_lsp_completion_request_with_include_sources() {
+        let json = r#"{"type":"lsp_completion","source":"tempo 120","offset":5,"include_sources":[{"path":"bass.cvg","source":"clip bass {\n  c4\n}"}]}"#;
         let req: Request = serde_json::from_str(json).unwrap();
         match req {
-            Request::LspDiagnostics { source, file_path } => {
+            Request::LspCompletion {
+                source,
+                offset,
+                include_sources,
+            } => {
                 assert_eq!(source, "tempo 120");
-                assert_eq!(file_path, Some("/tmp/test.cvg".to_string()));
+                assert_eq!(offset, 5);
+                let includes = include_sources.unwrap();
+                assert_eq!(includes.len(), 1);
+                assert_eq!(includes[0].path, "bass.cvg");
+            }
+            _ => panic!("Expected LspCompletion"),
+        }
+    }
+
+    /// include_sources付きのLspDiagnosticsリクエストのデシリアライズテスト
+    /// Test deserialization of LspDiagnostics request with include_sources
+    #[test]
+    fn deserialize_lsp_diagnostics_request_with_include_sources() {
+        let json = r#"{"type":"lsp_diagnostics","source":"tempo 120","include_sources":[{"path":"bass.cvg","source":"clip bass {\n  c4\n}"}]}"#;
+        let req: Request = serde_json::from_str(json).unwrap();
+        match req {
+            Request::LspDiagnostics {
+                source,
+                include_sources,
+            } => {
+                assert_eq!(source, "tempo 120");
+                let includes = include_sources.unwrap();
+                assert_eq!(includes.len(), 1);
+                assert_eq!(includes[0].path, "bass.cvg");
             }
             _ => panic!("Expected LspDiagnostics"),
         }
@@ -475,9 +541,14 @@ mod tests {
         let json = r#"{"type":"lsp_goto_definition","source":"tempo 120","offset":0}"#;
         let req: Request = serde_json::from_str(json).unwrap();
         match req {
-            Request::LspGotoDefinition { source, offset } => {
+            Request::LspGotoDefinition {
+                source,
+                offset,
+                include_sources,
+            } => {
                 assert_eq!(source, "tempo 120");
                 assert_eq!(offset, 0);
+                assert!(include_sources.is_none());
             }
             _ => panic!("Expected LspGotoDefinition"),
         }
@@ -488,7 +559,13 @@ mod tests {
         let json = r#"{"type":"lsp_document_symbols","source":"tempo 120"}"#;
         let req: Request = serde_json::from_str(json).unwrap();
         match req {
-            Request::LspDocumentSymbols { source } => assert_eq!(source, "tempo 120"),
+            Request::LspDocumentSymbols {
+                source,
+                include_sources,
+            } => {
+                assert_eq!(source, "tempo 120");
+                assert!(include_sources.is_none());
+            }
             _ => panic!("Expected LspDocumentSymbols"),
         }
     }
