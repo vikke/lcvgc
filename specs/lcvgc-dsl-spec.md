@@ -123,15 +123,15 @@ When `--file` is specified, all blocks in the file are automatically eval'd on s
 
 ## 1. Device Definition (device)
 
-Assigns a name to a MIDI port. The port name specifies the name recognized as a MIDI device by the OS.
+Assigns a name to a MIDI port. The port name specifies the name recognized as a MIDI device by the OS, written without quotes. The `port` value is read up to the closing `}`.
 
 ```
 device mutant_brain {
-  port "Mutant Brain"
+  port Mutant Brain
 }
 
 device volca_keys {
-  port "volca keys"
+  port volca keys
 }
 ```
 
@@ -318,9 +318,9 @@ If `[scale ...]` is not specified on a clip, the global scale applies. If the gl
 Loads another `.cvg` file by relative path. **Includes are only allowed at the top of the file** (similar to C's `#include`). An include appearing after a non-include block will result in an error. Circular includes result in a parse error. If the same file is included more than once, subsequent includes are silently skipped (the engine tracks loaded paths).
 
 ```
-include "./setup.cvg"
-include "./clips/drums.cvg"
-include "./clips/bass.cvg"
+include ./setup.cvg
+include ./clips/drums.cvg
+include ./clips/bass.cvg
 ```
 
 ```
@@ -328,11 +328,11 @@ include "./clips/bass.cvg"
 var dev = mutant_brain
 
 // drums.cvg
-include "./setup.cvg"       // First time: loaded
+include ./setup.cvg       // First time: loaded
 
 // song.cvg
-include "./setup.cvg"       // Loaded
-include "./drums.cvg"       // The include "setup.cvg" inside drums.cvg is skipped
+include ./setup.cvg       // Loaded
+include ./drums.cvg       // The include setup.cvg inside drums.cvg is skipped
 ```
 
 The LSP provides file path completion.
@@ -402,7 +402,7 @@ var dev = mutant_brain
 var default_gate = 80
 
 // song.cvg
-include "./config.cvg"          // dev, default_gate become available
+include ./config.cvg          // dev, default_gate become available
 var default_gate = 90           // Override
 
 instrument bass {
@@ -1269,6 +1269,7 @@ The engine continues playback as-is. Restarting Neovim and reconnecting allows c
 - `var name = value` defines variables; referenced without `$`. Variable lookup takes priority; if not found, treated as a literal
 - Scope is two-level: global (top-level) and block (inside `{}`). Inner scope takes priority
 - Includes are only allowed at the top of the file. An include after a non-include block results in an error
+- The `port` value in `device` and the file path in `include` do not require quotes. `port` reads up to `}`, and `include` reads up to the end of the line
 - Global variables from included files are merged into the caller. Name conflicts are resolved by last-eval-wins
 - Duplicate includes of the same file are silently skipped
 - Time signature is specified per clip (default is 4/4 if omitted)
