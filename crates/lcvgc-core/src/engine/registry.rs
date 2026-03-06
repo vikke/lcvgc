@@ -17,7 +17,7 @@ use crate::ast::Block;
 /// セッション・変数・テンポ・スケール定義を保持し、名前で検索可能にする。
 /// Holds parsed device, instrument, kit, clip, scene, session, variable,
 /// tempo, and scale definitions, making them searchable by name.
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 pub struct Registry {
     /// デバイス定義のマップ（名前 → 定義）
     /// Map of device definitions (name -> definition)

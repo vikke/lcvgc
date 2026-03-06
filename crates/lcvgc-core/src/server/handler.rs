@@ -79,7 +79,9 @@ pub async fn handle_request(evaluator: &Arc<Mutex<Evaluator>>, request: Request)
             offset,
             include_sources,
         } => {
-            let mut analyzer = LspAnalyzer::new();
+            let ev = evaluator.lock().await;
+            let mut analyzer = LspAnalyzer::with_base_registry(ev.registry().clone());
+            drop(ev);
             if let Some(ref includes) = include_sources {
                 analyzer.update_with_include_sources(source, includes);
             } else {
@@ -102,7 +104,9 @@ pub async fn handle_request(evaluator: &Arc<Mutex<Evaluator>>, request: Request)
             offset,
             include_sources,
         } => {
-            let mut analyzer = LspAnalyzer::new();
+            let ev = evaluator.lock().await;
+            let mut analyzer = LspAnalyzer::with_base_registry(ev.registry().clone());
+            drop(ev);
             if let Some(ref includes) = include_sources {
                 analyzer.update_with_include_sources(source, includes);
             } else {
@@ -118,7 +122,9 @@ pub async fn handle_request(evaluator: &Arc<Mutex<Evaluator>>, request: Request)
             source,
             include_sources,
         } => {
-            let mut analyzer = LspAnalyzer::new();
+            let ev = evaluator.lock().await;
+            let mut analyzer = LspAnalyzer::with_base_registry(ev.registry().clone());
+            drop(ev);
             // include_sourcesがある場合はinclude解決付きで更新、ない場合は従来通り
             // Use include resolution when include_sources is provided, otherwise use standard update
             if let Some(ref includes) = include_sources {
@@ -160,7 +166,9 @@ pub async fn handle_request(evaluator: &Arc<Mutex<Evaluator>>, request: Request)
             offset,
             include_sources,
         } => {
-            let mut analyzer = LspAnalyzer::new();
+            let ev = evaluator.lock().await;
+            let mut analyzer = LspAnalyzer::with_base_registry(ev.registry().clone());
+            drop(ev);
             if let Some(ref includes) = include_sources {
                 analyzer.update_with_include_sources(source.clone(), includes);
             } else {
@@ -184,7 +192,9 @@ pub async fn handle_request(evaluator: &Arc<Mutex<Evaluator>>, request: Request)
             source,
             include_sources,
         } => {
-            let mut analyzer = LspAnalyzer::new();
+            let ev = evaluator.lock().await;
+            let mut analyzer = LspAnalyzer::with_base_registry(ev.registry().clone());
+            drop(ev);
             if let Some(ref includes) = include_sources {
                 analyzer.update_with_include_sources(source.clone(), includes);
             } else {
