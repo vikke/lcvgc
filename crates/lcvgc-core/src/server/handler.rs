@@ -49,13 +49,6 @@ pub async fn handle_request(evaluator: &Arc<Mutex<Evaluator>>, request: Request)
                 Err(e) => Response::err(e.to_string()),
             }
         }
-        Request::Load { path } => {
-            let mut ev = evaluator.lock().await;
-            match ev.eval_file(std::path::Path::new(&path)) {
-                Ok(results) => Response::ok(format!("{} blocks evaluated", results.len())),
-                Err(e) => Response::err(e.to_string()),
-            }
-        }
         Request::Status => {
             let ev = evaluator.lock().await;
             Response::ok(format!(
@@ -255,17 +248,6 @@ mod tests {
         let ev = Arc::new(Mutex::new(Evaluator::new(120.0)));
         let req = Request::Eval {
             source: "invalid !@# syntax".into(),
-        };
-        let resp = handle_request(&ev, req).await;
-        assert!(!resp.success);
-        assert!(resp.error.is_some());
-    }
-
-    #[tokio::test]
-    async fn handle_load_not_found() {
-        let ev = Arc::new(Mutex::new(Evaluator::new(120.0)));
-        let req = Request::Load {
-            path: "/nonexistent/file.cvg".into(),
         };
         let resp = handle_request(&ev, req).await;
         assert!(!resp.success);

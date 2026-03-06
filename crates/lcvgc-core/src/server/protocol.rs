@@ -19,13 +19,6 @@ pub enum Request {
         /// 評価するDSLソース / DSL source to evaluate
         source: String,
     },
-    /// ファイルを読み込んで評価
-    /// Load and evaluate a file
-    #[serde(rename = "load")]
-    Load {
-        /// ファイルパス / File path
-        path: String,
-    },
     /// ステータス問い合わせ
     /// Query current status
     #[serde(rename = "status")]
@@ -341,16 +334,6 @@ mod tests {
         match req {
             Request::Preload { source } => assert_eq!(source, "tempo 140"),
             _ => panic!("Expected Preload"),
-        }
-    }
-
-    #[test]
-    fn deserialize_load_request() {
-        let json = r#"{"type":"load","path":"/tmp/test.cvg"}"#;
-        let req: Request = serde_json::from_str(json).unwrap();
-        match req {
-            Request::Load { path } => assert_eq!(path, "/tmp/test.cvg"),
-            _ => panic!("Expected Load"),
         }
     }
 
