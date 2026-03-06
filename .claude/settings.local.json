@@ -18,7 +18,10 @@
       "mcp__serena__onboarding",
       "mcp__serena__list_dir",
       "mcp__serena__write_memory",
-      "mcp__serena__read_memory"
+      "mcp__serena__read_memory",
+      "WebFetch(domain:docs.rs)",
+      "WebFetch(domain:skratchdot.com)",
+      "WebFetch(domain:furnacecreek.org)"
     ]
   }
 }
