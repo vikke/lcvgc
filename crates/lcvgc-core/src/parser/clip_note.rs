@@ -5,6 +5,9 @@ use nom::IResult;
 use crate::ast::clip_note::{ChordSuffix, NoteEvent};
 use crate::parser::common::{note_name, parse_u16, parse_u8};
 
+/// 最長一致戦略でコードサフィックスをパースする。
+/// nomの21要素タプル制限内に収めるため、2つのネストされたalt()呼び出しに分割。
+///
 /// Parse a chord suffix using longest-match strategy.
 /// Split into two nested alt() calls to stay within nom's 21-element tuple limit.
 fn parse_chord_suffix(input: &str) -> IResult<&str, ChordSuffix> {
@@ -40,27 +43,35 @@ fn parse_chord_suffix(input: &str) -> IResult<&str, ChordSuffix> {
     ))(input)
 }
 
+/// オクターブとデュレーションをパースする: `:oct:dur`、`::dur`、`:oct`、または何もなし。
+/// (octave, duration, dotted) を返す。
+///
 /// Parse octave and duration: `:oct:dur`, `::dur`, `:oct`, or nothing.
 /// Returns (octave, duration, dotted).
 fn parse_oct_dur(input: &str) -> IResult<&str, (Option<u8>, Option<u16>, bool)> {
+    // コロンなし → 何もなし
     // No colon at all -> nothing
     let (input, first_colon) = opt(tag(":"))(input)?;
     if first_colon.is_none() {
         return Ok((input, (None, None, false)));
     }
 
+    // 最初の ':' の後、直後に2番目の ':' があるか確認（::dur のケース）
     // After first ':', check for immediate second ':'  (::dur case)
     let (input, second_colon) = opt(tag(":"))(input)?;
     if second_colon.is_some() {
+        // ::dur のパース
         // ::dur
         let (input, dur) = parse_u16(input)?;
         let (input, dotted) = opt(tag("."))(input)?;
         return Ok((input, (None, Some(dur), dotted.is_some())));
     }
 
+    // オクターブをパース
     // Parse octave
     let (input, oct) = parse_u8(input)?;
 
+    // 2番目のコロンを確認
     // Check for second colon
     let (input, second_colon) = opt(tag(":"))(input)?;
     if second_colon.is_none() {
@@ -68,12 +79,15 @@ fn parse_oct_dur(input: &str) -> IResult<&str, (Option<u8>, Option<u16>, bool)> 
         return Ok((input, (Some(oct), None, dotted.is_some())));
     }
 
+    // デュレーションをパース
     // Parse duration
     let (input, dur) = parse_u16(input)?;
     let (input, dotted) = opt(tag("."))(input)?;
     Ok((input, (Some(oct), Some(dur), dotted.is_some())))
 }
 
+/// 休符をパースする: `r` の後に任意で `:dur` が続く
+///
 /// Parse a rest: `r` optionally followed by `:dur`
 fn parse_rest(input: &str) -> IResult<&str, NoteEvent> {
     let (input, _) = tag("r")(input)?;
@@ -98,10 +112,16 @@ fn parse_rest(input: &str) -> IResult<&str, NoteEvent> {
     ))
 }
 
+/// ノートイベントをパースする: 単音、コード名、または休符。
+///
 /// Parse a note event: single note, chord name, or rest.
 pub fn parse_note_event(input: &str) -> IResult<&str, NoteEvent> {
+    // まず休符を試みる
     // Try rest first
     if input.starts_with('r') && !input.starts_with("r#") {
+        // 休符の可能性がある。'r' は本システムでは有効な音名ではない
+        // 'r' の次の文字がコロン、スペース、末尾、またはノートらしくない文字か確認
+        // NoteNameに 'r' はないため、parse_rest で処理できる
         // Could be rest, but 'r' is not a valid note name in our system
         // Actually check: if next char after 'r' is colon, space, end, or nothing note-like
         // In our NoteName there's no 'r', so parse_rest should work
@@ -110,12 +130,15 @@ pub fn parse_note_event(input: &str) -> IResult<&str, NoteEvent> {
         }
     }
 
+    // 音名をパース
     // Parse note name
     let (input, name) = note_name(input)?;
 
+    // コードサフィックスを試みる（最長一致）
     // Try chord suffix (longest match)
     let (input, suffix) = opt(parse_chord_suffix)(input)?;
 
+    // オクターブ/デュレーションをパース
     // Parse octave/duration
     let (input, (octave, duration, dotted)) = parse_oct_dur(input)?;
 
