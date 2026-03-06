@@ -3,6 +3,13 @@ use crate::ast::common::NoteName;
 use crate::midi::note::note_number;
 
 /// ChordSuffixから構成音のインターバル（半音数）リストを返す
+/// Returns a list of intervals (in semitones) for the given chord suffix
+///
+/// # 引数 / Arguments
+/// * `suffix` - コードサフィックス / Chord suffix (e.g. Maj, Min, Dom7)
+///
+/// # 戻り値 / Returns
+/// `Vec<u8>` - ルート音からの半音数のリスト / List of semitone offsets from the root
 pub fn chord_intervals(suffix: &ChordSuffix) -> Vec<u8> {
     match suffix {
         ChordSuffix::Maj => vec![0, 4, 7],
@@ -28,8 +35,18 @@ pub fn chord_intervals(suffix: &ChordSuffix) -> Vec<u8> {
 }
 
 /// ルート音 + サフィックス → MIDIノート番号のリスト
+/// Root note + suffix → list of MIDI note numbers
 ///
 /// 127を超えるノートはクランプされる
+/// Notes exceeding 127 are clamped to 127
+///
+/// # 引数 / Arguments
+/// * `root` - ルート音名 / Root note name
+/// * `octave` - オクターブ (u8) / Octave number
+/// * `suffix` - コードサフィックス / Chord suffix
+///
+/// # 戻り値 / Returns
+/// `Vec<u8>` - MIDIノート番号のリスト / List of MIDI note numbers
 pub fn chord_notes(root: NoteName, octave: u8, suffix: &ChordSuffix) -> Vec<u8> {
     let base = note_number(root, octave);
     chord_intervals(suffix)

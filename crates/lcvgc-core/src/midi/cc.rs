@@ -1,9 +1,19 @@
 /// 線形補間: from → to を steps ステップで補間
-/// steps=0 → 空Vec
+/// Linear interpolation: interpolates from → to in the given number of steps
+///
+/// steps=0 → 空Vec / empty Vec
 /// steps=1 → [to]
 /// steps=2 → [from, to]
 /// steps=3 → [from, midpoint, to]
-/// 各値は0-127にクランプ
+/// 各値は0-127にクランプ / Each value is clamped to 0-127
+///
+/// # 引数 / Arguments
+/// * `from` - 開始値 (u8) / Start value
+/// * `to` - 終了値 (u8) / End value
+/// * `steps` - 補間ステップ数 / Number of interpolation steps
+///
+/// # 戻り値 / Returns
+/// `Vec<u8>` - 補間されたCC値のリスト / List of interpolated CC values
 pub fn interpolate_linear(from: u8, to: u8, steps: usize) -> Vec<u8> {
     match steps {
         0 => vec![],
@@ -23,10 +33,20 @@ pub fn interpolate_linear(from: u8, to: u8, steps: usize) -> Vec<u8> {
 }
 
 /// 指数補間: from → to を steps ステップで指数カーブで補間
-/// 指数カーブ: value = from + (to - from) * (t^2)  (t = i / (steps-1))
-/// steps=0 → 空Vec
+/// Exponential interpolation: interpolates from → to using an exponential curve
+///
+/// 指数カーブ / Exponential curve: value = from + (to - from) * (t^2)  (t = i / (steps-1))
+/// steps=0 → 空Vec / empty Vec
 /// steps=1 → [to]
-/// 各値は0-127にクランプ
+/// 各値は0-127にクランプ / Each value is clamped to 0-127
+///
+/// # 引数 / Arguments
+/// * `from` - 開始値 (u8) / Start value
+/// * `to` - 終了値 (u8) / End value
+/// * `steps` - 補間ステップ数 / Number of interpolation steps
+///
+/// # 戻り値 / Returns
+/// `Vec<u8>` - 指数カーブで補間されたCC値のリスト / List of exponentially interpolated CC values
 pub fn interpolate_exponential(from: u8, to: u8, steps: usize) -> Vec<u8> {
     match steps {
         0 => vec![],
