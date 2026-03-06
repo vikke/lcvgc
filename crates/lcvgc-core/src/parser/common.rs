@@ -243,6 +243,23 @@ pub fn quoted_string(input: &str) -> IResult<&str, &str> {
     Ok((input, s))
 }
 
+/// 閉じブレース `}` の前までを取得してtrimする引用符なし値パーサー
+/// Parse an unquoted value: reads until `}` and trims surrounding whitespace
+///
+/// # Returns
+/// trim済みの値文字列 / Trimmed value string
+pub fn unquoted_value(input: &str) -> IResult<&str, &str> {
+    let (remaining, taken) = take_while(|c| c != '}')(input)?;
+    let trimmed = taken.trim();
+    if trimmed.is_empty() {
+        return Err(nom::Err::Error(nom::error::Error::new(
+            input,
+            nom::error::ErrorKind::TakeWhile1,
+        )));
+    }
+    Ok((remaining, trimmed))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -351,6 +368,25 @@ mod tests {
     fn test_quoted_string() {
         assert_eq!(quoted_string("\"Mutant Brain\""), Ok(("", "Mutant Brain")));
         assert_eq!(quoted_string("\"volca keys\""), Ok(("", "volca keys")));
+    }
+
+    #[test]
+    fn test_unquoted_value() {
+        assert_eq!(
+            unquoted_value("Mutant Brain\n}"),
+            Ok(("}", "Mutant Brain"))
+        );
+        assert_eq!(unquoted_value("IAC Bus 1 }"), Ok(("}", "IAC Bus 1")));
+        assert_eq!(
+            unquoted_value("  volca keys  \n}"),
+            Ok(("}", "volca keys"))
+        );
+    }
+
+    #[test]
+    fn test_unquoted_value_empty_fails() {
+        assert!(unquoted_value("}").is_err());
+        assert!(unquoted_value("  \n}").is_err());
     }
 
     #[test]

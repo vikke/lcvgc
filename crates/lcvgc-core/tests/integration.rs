@@ -17,7 +17,7 @@ fn e2e_tempo_and_device_registration() {
 tempo 140
 
 device mb {
-  port "Mutant Brain"
+  port Mutant Brain
 }
 
 instrument bass {
@@ -41,7 +41,7 @@ fn e2e_clip_registration_and_compile() {
     let mut ev = Evaluator::new(120.0);
     let source = r#"
 device synth {
-  port "Virtual MIDI"
+  port Virtual MIDI
 }
 
 instrument lead {
@@ -68,7 +68,7 @@ fn e2e_compiled_clip_produces_midi_messages() {
     let mut ev = Evaluator::new(120.0);
     let source = r#"
 device synth {
-  port "Virtual MIDI"
+  port Virtual MIDI
 }
 
 instrument piano {
@@ -116,7 +116,7 @@ var key = cm
 fn e2e_scene_and_session() {
     let source = r#"
 device d {
-  port "test"
+  port test
 }
 
 instrument i {
@@ -180,7 +180,7 @@ fn e2e_drum_clip() {
     let mut ev = Evaluator::new(120.0);
     let source = r#"
 device drums_dev {
-  port "Drums"
+  port Drums
 }
 
 kit tr808 {
@@ -212,7 +212,9 @@ fn e2e_file_load() {
     let mut tmpfile = tempfile::NamedTempFile::new().unwrap();
     writeln!(tmpfile, "tempo 130").unwrap();
     writeln!(tmpfile).unwrap();
-    writeln!(tmpfile, r#"device test {{ port "test" }}"#).unwrap();
+    writeln!(tmpfile, "device test {{").unwrap();
+    writeln!(tmpfile, "  port test").unwrap();
+    writeln!(tmpfile, "}}").unwrap();
 
     let mut ev = Evaluator::new(120.0);
     let results = ev.load_file(tmpfile.path().to_str().unwrap()).unwrap();

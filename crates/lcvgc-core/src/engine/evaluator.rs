@@ -594,7 +594,7 @@ mod tests {
 tempo 140
 
 device mb {
-  port "Mutant Brain"
+  port Mutant Brain
 }
 "#;
         let results = ev.eval_source(source).unwrap();

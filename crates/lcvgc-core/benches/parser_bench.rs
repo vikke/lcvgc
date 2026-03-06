@@ -13,7 +13,7 @@ const SIMPLE_SOURCE: &str = r#"
 tempo 140
 
 device mb {
-  port "Mutant Brain"
+  port Mutant Brain
 }
 
 instrument bass {
@@ -28,11 +28,11 @@ const COMPLEX_SOURCE: &str = r#"
 tempo 130
 
 device mb {
-  port "Mutant Brain"
+  port Mutant Brain
 }
 
 device volca {
-  port "volca keys"
+  port volca keys
 }
 
 instrument bass {
