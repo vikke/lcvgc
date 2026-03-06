@@ -1,5 +1,6 @@
 /target
 /tmp
 /.claude/worktrees/
+/.claude/settings.local.json
 /TODO.md
 /.serena
