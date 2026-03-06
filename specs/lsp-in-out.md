@@ -40,14 +40,17 @@ Returns a list of completion candidates at the cursor position.
 #### Request
 
 ```json
-{"type": "lsp_completion", "source": "<DSL source text>", "offset": <byte offset>}
+{"type": "lsp_completion", "source": "<DSL source text>", "offset": <byte offset>, "include_sources": [{"path": "bass.cvg", "source": "clip bass {\n  c4\n}"}]}
 ```
 
-| Field    | Type   | Description                                      |
-|----------|--------|--------------------------------------------------|
-| `type`   | string | Fixed value `"lsp_completion"`                   |
-| `source` | string | Full DSL source text                             |
-| `offset` | number | Byte offset of the cursor position (0-based)     |
+| Field              | Type                      | Description                                      |
+|--------------------|---------------------------|--------------------------------------------------|
+| `type`             | string                    | Fixed value `"lsp_completion"`                   |
+| `source`           | string                    | Full DSL source text                             |
+| `offset`           | number                    | Byte offset of the cursor position (0-based)     |
+| `include_sources`  | array \| null             | Include file source information (optional)       |
+| `include_sources[].path`   | string           | Include file path                                |
+| `include_sources[].source` | string           | Include file content                             |
 
 #### Response
 
@@ -82,14 +85,15 @@ Returns hover information (Markdown text) about the symbol at the cursor positio
 #### Request
 
 ```json
-{"type": "lsp_hover", "source": "<DSL source text>", "offset": <byte offset>}
+{"type": "lsp_hover", "source": "<DSL source text>", "offset": <byte offset>, "include_sources": [...]}
 ```
 
-| Field    | Type   | Description                                      |
-|----------|--------|--------------------------------------------------|
-| `type`   | string | Fixed value `"lsp_hover"`                        |
-| `source` | string | Full DSL source text                             |
-| `offset` | number | Byte offset of the cursor position (0-based)     |
+| Field              | Type                      | Description                                      |
+|--------------------|---------------------------|--------------------------------------------------|
+| `type`             | string                    | Fixed value `"lsp_hover"`                        |
+| `source`           | string                    | Full DSL source text                             |
+| `offset`           | number                    | Byte offset of the cursor position (0-based)     |
+| `include_sources`  | array \| null             | Include file source information (optional)       |
 
 #### Response (with information)
 
@@ -133,14 +137,16 @@ Analyzes the entire source and returns a list of errors and warnings.
 #### Request
 
 ```json
-{"type": "lsp_diagnostics", "source": "<DSL source text>", "file_path": "/path/to/file.cvg"}
+{"type": "lsp_diagnostics", "source": "<DSL source text>", "include_sources": [{"path": "bass.cvg", "source": "clip bass {\n  c4\n}"}]}
 ```
 
-| Field       | Type            | Description                                                              |
-|-------------|-----------------|--------------------------------------------------------------------------|
-| `type`      | string          | Fixed value `"lsp_diagnostics"`                                          |
-| `source`    | string          | Full DSL source text                                                     |
-| `file_path` | string \| null  | File path (optional). When provided, resolves definitions from includes  |
+| Field              | Type                      | Description                                                              |
+|--------------------|---------------------------|--------------------------------------------------------------------------|
+| `type`             | string                    | Fixed value `"lsp_diagnostics"`                                          |
+| `source`           | string                    | Full DSL source text                                                     |
+| `include_sources`  | array \| null             | Include file source information (optional). When provided, resolves definitions from includes |
+| `include_sources[].path`   | string           | Include file path                                                        |
+| `include_sources[].source` | string           | Include file content                                                     |
 
 #### Response
 
@@ -192,14 +198,15 @@ Returns the position where the symbol at the cursor position is defined.
 #### Request
 
 ```json
-{"type": "lsp_goto_definition", "source": "<DSL source text>", "offset": <byte offset>}
+{"type": "lsp_goto_definition", "source": "<DSL source text>", "offset": <byte offset>, "include_sources": [...]}
 ```
 
-| Field    | Type   | Description                                      |
-|----------|--------|--------------------------------------------------|
-| `type`   | string | Fixed value `"lsp_goto_definition"`              |
-| `source` | string | Full DSL source text                             |
-| `offset` | number | Byte offset of the cursor position (0-based)     |
+| Field              | Type                      | Description                                      |
+|--------------------|---------------------------|--------------------------------------------------|
+| `type`             | string                    | Fixed value `"lsp_goto_definition"`              |
+| `source`           | string                    | Full DSL source text                             |
+| `offset`           | number                    | Byte offset of the cursor position (0-based)     |
+| `include_sources`  | array \| null             | Include file source information (optional)       |
 
 #### Response (definition found)
 
@@ -249,13 +256,14 @@ Returns a list of symbols (blocks) defined in the source.
 #### Request
 
 ```json
-{"type": "lsp_document_symbols", "source": "<DSL source text>"}
+{"type": "lsp_document_symbols", "source": "<DSL source text>", "include_sources": [...]}
 ```
 
-| Field    | Type   | Description                            |
-|----------|--------|----------------------------------------|
-| `type`   | string | Fixed value `"lsp_document_symbols"`   |
-| `source` | string | Full DSL source text                   |
+| Field              | Type                      | Description                            |
+|--------------------|---------------------------|----------------------------------------|
+| `type`             | string                    | Fixed value `"lsp_document_symbols"`   |
+| `source`           | string                    | Full DSL source text                   |
+| `include_sources`  | array \| null             | Include file source information (optional) |
 
 #### Response
 
