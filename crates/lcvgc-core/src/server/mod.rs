@@ -1,4 +1,8 @@
+/// リクエストハンドラーモジュール
+/// Request handler module
 pub mod handler;
+/// プロトコル定義モジュール（リクエスト・レスポンス型）
+/// Protocol definition module (request/response types)
 pub mod protocol;
 
 use std::sync::Arc;
@@ -12,6 +16,17 @@ use handler::handle_request;
 use protocol::Response;
 
 /// TCPサーバーを起動し、JSON-over-TCPプロトコルでリクエストを受け付ける
+/// Starts a TCP server that accepts requests via JSON-over-TCP protocol
+///
+/// # 引数 / Arguments
+/// * `evaluator` - 共有されたDSL評価エンジン / Shared DSL evaluator engine
+/// * `port` - リッスンするTCPポート番号 / TCP port number to listen on
+///
+/// # 戻り値 / Returns
+/// サーバーが停止した場合のResult / Result when the server stops
+///
+/// # エラー / Errors
+/// TCPバインドやI/Oエラー時にエラーを返す / Returns error on TCP bind or I/O failures
 pub async fn run_server(
     evaluator: Arc<Mutex<Evaluator>>,
     port: u16,

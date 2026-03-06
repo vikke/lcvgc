@@ -1,15 +1,38 @@
+//! ダイアトニックコード生成モジュール
+//! Diatonic chord generation module
+//!
+//! スケールのルート音とタイプからダイアトニックコードを生成する。
+//! Generates diatonic chords from a scale's root note and type.
+
 use crate::ast::common::NoteName;
 use crate::ast::scale::ScaleType;
 
+/// ダイアトニックコード情報
+/// Diatonic chord information
+///
+/// スケール上の各度数に対応するコード情報を保持する。
+/// Holds chord information corresponding to each degree of the scale.
 #[derive(Debug, Clone, PartialEq)]
 pub struct DiatonicChord {
+    /// スケール上の度数（1〜7）
+    /// Degree on the scale (1-7)
     pub degree: u8,
+    /// コードのルート音
+    /// Root note of the chord
     pub root: NoteName,
+    /// コードのクオリティ（"", "m", "dim", "aug"）
+    /// Chord quality ("", "m", "dim", "aug")
     pub quality: &'static str,
+    /// 表示用ラベル（例: "Dm"）
+    /// Display label (e.g., "Dm")
     pub label: String,
+    /// 詳細説明（例: "II - minor"）
+    /// Detail description (e.g., "II - minor")
     pub detail: String,
 }
 
+/// スケールタイプに対応する音程間隔（半音数）の配列を返す
+/// Returns the interval array (in semitones) for the given scale type
 pub fn scale_intervals(scale_type: ScaleType) -> &'static [u8] {
     match scale_type {
         ScaleType::Major => &[0, 2, 4, 5, 7, 9, 11],
@@ -24,6 +47,8 @@ pub fn scale_intervals(scale_type: ScaleType) -> &'static [u8] {
     }
 }
 
+/// ノート名を半音数（0〜11）に変換する
+/// Converts a note name to semitone number (0-11)
 pub fn note_to_semitone(note: NoteName) -> u8 {
     match note {
         NoteName::C => 0,
@@ -41,6 +66,8 @@ pub fn note_to_semitone(note: NoteName) -> u8 {
     }
 }
 
+/// 半音数（0〜11）をノート名に変換する
+/// Converts a semitone number (0-11) to a note name
 pub fn semitone_to_note(semitone: u8) -> NoteName {
     match semitone % 12 {
         0 => NoteName::C,
@@ -59,6 +86,8 @@ pub fn semitone_to_note(semitone: u8) -> NoteName {
     }
 }
 
+/// ノート名を表示用文字列に変換する
+/// Converts a note name to a display string
 fn note_name_display(note: NoteName) -> &'static str {
     match note {
         NoteName::C => "C",
@@ -76,6 +105,8 @@ fn note_name_display(note: NoteName) -> &'static str {
     }
 }
 
+/// コードクオリティ記号を英語名に変換する
+/// Converts a chord quality symbol to its English name
 fn quality_name(quality: &str) -> &str {
     match quality {
         "" => "major",
@@ -86,8 +117,12 @@ fn quality_name(quality: &str) -> &str {
     }
 }
 
+/// ローマ数字による度数ラベル
+/// Degree labels in Roman numerals
 const DEGREE_LABELS: [&str; 7] = ["I", "II", "III", "IV", "V", "VI", "VII"];
 
+/// 指定されたルート音とスケールタイプから7つのダイアトニックコードを生成する
+/// Generates 7 diatonic chords from the specified root note and scale type
 pub fn diatonic_chords(root: NoteName, scale_type: ScaleType) -> Vec<DiatonicChord> {
     let intervals = scale_intervals(scale_type);
     let root_semi = note_to_semitone(root);

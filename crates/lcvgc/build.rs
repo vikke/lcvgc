@@ -1,5 +1,10 @@
+//! ビルドスクリプト: Gitハッシュをコンパイル時環境変数として埋め込む
+//! Build script: embeds Git hash as a compile-time environment variable
+
 use std::process::Command;
 
+/// ビルド時にGitコミットハッシュを取得し、`GIT_HASH`環境変数として設定する
+/// Retrieves the Git commit hash at build time and sets it as the `GIT_HASH` env var
 fn main() {
     let hash = Command::new("git")
         .args(["rev-parse", "--short", "HEAD"])

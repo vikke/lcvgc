@@ -8,7 +8,7 @@ use rand::Rng;
 ///
 /// # 引数 / Arguments
 /// * `probability` - 確率値 0-9 (0=0%, 1=10%, ..., 9=90%), None=100%（必ず発音）
-///                    Probability value 0-9 (0=0%, 1=10%, ..., 9=90%), None=100% (always triggers)
+///   Probability value 0-9 (0=0%, 1=10%, ..., 9=90%), None=100% (always triggers)
 /// * `rng` - 乱数生成器 / Random number generator
 ///
 /// # 戻り値 / Returns
@@ -33,7 +33,7 @@ pub fn should_trigger<R: Rng>(probability: Option<u8>, rng: &mut R) -> bool {
 /// # 引数 / Arguments
 /// * `hits_len` - ステップ数 / Number of steps
 /// * `probability` - 各ステップの確率値（0-9）のベクタ、Noneなら全ステップ100%
-///                    Vector of probability values (0-9) per step, None means 100% for all steps
+///   Vector of probability values (0-9) per step, None means 100% for all steps
 /// * `rng` - 乱数生成器 / Random number generator
 ///
 /// # 戻り値 / Returns
