@@ -4,17 +4,29 @@ use nom::IResult;
 use crate::parser::common::parse_u32;
 
 /// 繰り返しは内容文字列と回数を保持。内容の具体的なパースは上位レイヤーが担当。
+///
+/// Holds the content string and repeat count. Concrete parsing of the content
+/// is delegated to upper layers.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Repetition {
+    /// 繰り返し対象の生テキスト（括弧の中身）。
+    ///
+    /// Raw text inside the parentheses to be repeated.
     pub content: String,
+    /// 繰り返し回数（`*N` の N）。
+    ///
+    /// Number of repetitions (the N in `*N`).
     pub count: u32,
 }
 
 /// `(内容)*N` をパースする。ネストした括弧は対応を数えてスキップ。
+///
+/// Parses `(content)*N`. Nested parentheses are handled by tracking depth.
 pub fn parse_repetition(input: &str) -> IResult<&str, Repetition> {
     let (input, _) = char('(')(input)?;
 
     // 対応する ')' を探す（ネスト対応）
+    // Find the matching ')' (handles nested parentheses)
     let mut depth: u32 = 1;
     let mut end = 0;
     for (i, c) in input.char_indices() {
