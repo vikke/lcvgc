@@ -3,6 +3,7 @@ use nom::{bytes::complete::tag, IResult};
 use crate::ast::device::DeviceDef;
 use crate::parser::common::*;
 
+/// デバイスブロックをパースする: `device NAME { port "PORT_STRING" }`
 /// Parse a device block: `device NAME { port "PORT_STRING" }`
 pub fn parse_device(input: &str) -> IResult<&str, DeviceDef> {
     let (input, _) = ws(input)?;

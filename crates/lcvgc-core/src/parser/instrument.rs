@@ -3,6 +3,7 @@ use nom::{bytes::complete::tag, IResult};
 use crate::ast::instrument::{CcMapping, InstrumentDef, InstrumentNote};
 use crate::parser::common::{identifier, note_name, parse_u8, ws, ws1};
 
+/// デバイス参照をパースする: `device <identifier>`
 /// Parse `device <identifier>`
 fn parse_device(input: &str) -> IResult<&str, &str> {
     let (input, _) = tag("device")(input)?;
@@ -10,6 +11,7 @@ fn parse_device(input: &str) -> IResult<&str, &str> {
     identifier(input)
 }
 
+/// MIDIチャンネルをパースする: `channel <u8>`
 /// Parse `channel <u8>`
 fn parse_channel(input: &str) -> IResult<&str, u8> {
     let (input, _) = tag("channel")(input)?;
@@ -17,6 +19,7 @@ fn parse_channel(input: &str) -> IResult<&str, u8> {
     parse_u8(input)
 }
 
+/// 通常ゲート値をパースする: `gate_normal <u8>`
 /// Parse `gate_normal <u8>`
 fn parse_gate_normal(input: &str) -> IResult<&str, u8> {
     let (input, _) = tag("gate_normal")(input)?;
@@ -24,6 +27,7 @@ fn parse_gate_normal(input: &str) -> IResult<&str, u8> {
     parse_u8(input)
 }
 
+/// スタッカートゲート値をパースする: `gate_staccato <u8>`
 /// Parse `gate_staccato <u8>`
 fn parse_gate_staccato(input: &str) -> IResult<&str, u8> {
     let (input, _) = tag("gate_staccato")(input)?;
@@ -31,6 +35,7 @@ fn parse_gate_staccato(input: &str) -> IResult<&str, u8> {
     parse_u8(input)
 }
 
+/// ノート（音名＋オクターブ）をパースする: `note <note_name><octave>`
 /// Parse `note <note_name><octave>`
 fn parse_note(input: &str) -> IResult<&str, InstrumentNote> {
     let (input, _) = tag("note")(input)?;
@@ -40,6 +45,7 @@ fn parse_note(input: &str) -> IResult<&str, InstrumentNote> {
     Ok((input, InstrumentNote { name, octave }))
 }
 
+/// CCマッピングをパースする: `cc <alias> <cc_number>`
 /// Parse `cc <alias> <cc_number>`
 fn parse_cc(input: &str) -> IResult<&str, CcMapping> {
     let (input, _) = tag("cc")(input)?;
@@ -56,16 +62,24 @@ fn parse_cc(input: &str) -> IResult<&str, CcMapping> {
     ))
 }
 
+/// インストゥルメントブロック内でパースされるプロパティ
 /// Property parsed from inside an instrument block.
 enum InstrumentProperty {
+    /// デバイス名 / Device name
     Device(String),
+    /// MIDIチャンネル / MIDI channel
     Channel(u8),
+    /// ノート（ドラム等の固定音） / Note (fixed pitch for drums, etc.)
     Note(InstrumentNote),
+    /// 通常ゲート値 / Normal gate value
     GateNormal(u8),
+    /// スタッカートゲート値 / Staccato gate value
     GateStaccato(u8),
+    /// CCマッピング / CC mapping
     Cc(CcMapping),
 }
 
+/// インストゥルメントプロパティ行を1つパースする
 /// Parse a single instrument property line.
 fn parse_property(input: &str) -> IResult<&str, InstrumentProperty> {
     if let Ok((rest, dev)) = parse_device(input) {
@@ -92,6 +106,7 @@ fn parse_property(input: &str) -> IResult<&str, InstrumentProperty> {
     )))
 }
 
+/// インストゥルメントブロック全体をパースする: `instrument <name> { ... }`
 /// Parse a full `instrument <name> { ... }` block.
 pub fn parse_instrument(input: &str) -> IResult<&str, InstrumentDef> {
     let (input, _) = ws(input)?;
