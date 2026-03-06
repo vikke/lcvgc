@@ -1,5 +1,5 @@
-use crate::ast::Block;
 use super::span_parser::{Span, SpannedBlock};
+use crate::ast::Block;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct DocumentSymbol {
@@ -41,9 +41,10 @@ impl DocumentSymbolProvider {
                     Block::Scene(s) => (s.name.clone(), SymbolKind::Scene),
                     Block::Session(s) => (s.name.clone(), SymbolKind::Session),
                     Block::Tempo(t) => (format!("{:?}", t), SymbolKind::Tempo),
-                    Block::Scale(s) => {
-                        (format!("{:?} {:?}", s.root, s.scale_type), SymbolKind::Scale)
-                    }
+                    Block::Scale(s) => (
+                        format!("{:?} {:?}", s.root, s.scale_type),
+                        SymbolKind::Scale,
+                    ),
                     Block::Var(v) => (v.name.clone(), SymbolKind::Variable),
                     Block::Include(i) => (i.path.clone(), SymbolKind::Include),
                     Block::Play(p) => (format!("{:?}", p.target), SymbolKind::Play),
@@ -128,7 +129,10 @@ mod tests {
             Block::Clip(ClipDef {
                 name: "melody".into(),
                 options: ClipOptions::default(),
-                body: ClipBody::Pitched(PitchedClipBody { lines: vec![], cc_automations: vec![] }),
+                body: ClipBody::Pitched(PitchedClipBody {
+                    lines: vec![],
+                    cc_automations: vec![],
+                }),
             }),
             10,
             100,
@@ -276,11 +280,7 @@ mod tests {
                 0,
                 20,
             ),
-            make_spanned(
-                Block::Stop(StopCommand { target: None }),
-                21,
-                30,
-            ),
+            make_spanned(Block::Stop(StopCommand { target: None }), 21, 30),
         ];
         let symbols = DocumentSymbolProvider::symbols(&blocks);
         assert_eq!(symbols[0].kind, SymbolKind::Play);

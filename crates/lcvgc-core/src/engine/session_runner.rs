@@ -247,22 +247,13 @@ mod tests {
             entry("b", SessionRepeat::Once),
         ]);
         let mut runner = SessionRunner::new(&s);
-        assert_eq!(
-            runner.advance(),
-            SessionAction::PlayScene("a".to_string())
-        );
-        assert_eq!(
-            runner.advance(),
-            SessionAction::PlayScene("b".to_string())
-        );
+        assert_eq!(runner.advance(), SessionAction::PlayScene("a".to_string()));
+        assert_eq!(runner.advance(), SessionAction::PlayScene("b".to_string()));
         assert_eq!(runner.advance(), SessionAction::Done);
 
         runner.reset();
         assert!(!runner.is_done());
-        assert_eq!(
-            runner.advance(),
-            SessionAction::PlayScene("a".to_string())
-        );
+        assert_eq!(runner.advance(), SessionAction::PlayScene("a".to_string()));
     }
 
     // 8. is_done は完了後に true を返す
@@ -321,23 +312,11 @@ mod tests {
         ]);
         let mut runner = SessionRunner::new_looping(&s);
 
-        assert_eq!(
-            runner.advance(),
-            SessionAction::PlayScene("a".to_string())
-        );
-        assert_eq!(
-            runner.advance(),
-            SessionAction::PlayScene("b".to_string())
-        );
+        assert_eq!(runner.advance(), SessionAction::PlayScene("a".to_string()));
+        assert_eq!(runner.advance(), SessionAction::PlayScene("b".to_string()));
         // ループで先頭に戻る
-        assert_eq!(
-            runner.advance(),
-            SessionAction::PlayScene("a".to_string())
-        );
-        assert_eq!(
-            runner.advance(),
-            SessionAction::PlayScene("b".to_string())
-        );
+        assert_eq!(runner.advance(), SessionAction::PlayScene("a".to_string()));
+        assert_eq!(runner.advance(), SessionAction::PlayScene("b".to_string()));
     }
 
     // 12. 空セッションの is_done は true

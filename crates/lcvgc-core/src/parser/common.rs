@@ -1,10 +1,10 @@
 use nom::{
-    IResult,
     branch::alt,
     bytes::complete::{tag, take_while, take_while1},
     character::complete::{char, digit1, multispace1, one_of},
     combinator::{map, map_res, opt, value},
     multi::many0,
+    IResult,
 };
 
 use crate::ast::common::*;
@@ -248,10 +248,7 @@ mod tests {
 
     #[test]
     fn test_non_reserved_identifier() {
-        assert_eq!(
-            non_reserved_identifier("bass_a"),
-            Ok(("", "bass_a"))
-        );
+        assert_eq!(non_reserved_identifier("bass_a"), Ok(("", "bass_a")));
         assert!(non_reserved_identifier("device").is_err());
         assert!(non_reserved_identifier("clip").is_err());
     }
@@ -300,8 +297,14 @@ mod tests {
 
     #[test]
     fn test_duration_dotted() {
-        assert_eq!(duration("4."), Ok(("", Duration::Dotted(DottedInner::Quarter))));
-        assert_eq!(duration("8."), Ok(("", Duration::Dotted(DottedInner::Eighth))));
+        assert_eq!(
+            duration("4."),
+            Ok(("", Duration::Dotted(DottedInner::Quarter)))
+        );
+        assert_eq!(
+            duration("8."),
+            Ok(("", Duration::Dotted(DottedInner::Eighth)))
+        );
     }
 
     #[test]
@@ -341,10 +344,7 @@ mod tests {
 
     #[test]
     fn test_block_comment_deeply_nested() {
-        assert_eq!(
-            ws("/* a /* b /* c */ b */ a */rest"),
-            Ok(("rest", ()))
-        );
+        assert_eq!(ws("/* a /* b /* c */ b */ a */rest"), Ok(("rest", ())));
     }
 
     #[test]
@@ -365,9 +365,6 @@ mod tests {
 
     #[test]
     fn test_mixed_line_and_block_comments() {
-        assert_eq!(
-            ws("// line\n/* block */rest"),
-            Ok(("rest", ()))
-        );
+        assert_eq!(ws("// line\n/* block */rest"), Ok(("rest", ())));
     }
 }

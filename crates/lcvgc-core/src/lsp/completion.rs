@@ -3,10 +3,10 @@
 //! LSP補完リクエストに対して、コンテキストに応じた補完候補を生成する。
 //! キーワード・ノート名・コード名・CC名・識別子など各種候補を提供する。
 
+use super::diatonic;
 use crate::ast::common::NoteName;
 use crate::ast::instrument::InstrumentDef;
 use crate::ast::scale::ScaleType;
-use super::diatonic;
 
 /// 補完候補アイテム
 ///
@@ -439,5 +439,4 @@ mod tests {
         let items = CompletionProvider::identifier_completions(&[], "clip");
         assert!(items.is_empty());
     }
-
 }

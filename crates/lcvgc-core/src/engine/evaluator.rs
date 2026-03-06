@@ -177,6 +177,7 @@ impl Evaluator {
 mod tests {
     use super::*;
     use crate::ast::clip::{ClipBody, ClipDef, PitchedClipBody};
+    use crate::ast::common::NoteName;
     use crate::ast::device::DeviceDef;
     use crate::ast::include::IncludeDef;
     use crate::ast::instrument::InstrumentDef;
@@ -187,7 +188,6 @@ mod tests {
     use crate::ast::session::SessionDef;
     use crate::ast::tempo::Tempo;
     use crate::ast::var::VarDef;
-    use crate::ast::common::NoteName;
     use crate::engine::state::PlaybackState;
     use crate::parser::clip_options::ClipOptions;
 
@@ -354,12 +354,7 @@ mod tests {
                 value: "Cm".into(),
             }))
             .unwrap();
-        assert_eq!(
-            result,
-            EvalResult::VarDefined {
-                name: "key".into(),
-            }
-        );
+        assert_eq!(result, EvalResult::VarDefined { name: "key".into() });
         assert_eq!(ev.registry().get_var("key"), Some("Cm"));
     }
 
@@ -373,7 +368,10 @@ mod tests {
             }))
             .unwrap();
         assert_eq!(result, EvalResult::PlayStarted);
-        assert!(matches!(ev.state().state(), PlaybackState::PlayingScene { .. }));
+        assert!(matches!(
+            ev.state().state(),
+            PlaybackState::PlayingScene { .. }
+        ));
     }
 
     #[test]

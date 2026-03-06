@@ -47,42 +47,27 @@ mod tests {
 
     #[test]
     fn enharmonic_cs_db() {
-        assert_eq!(
-            note_number(NoteName::Cs, 4),
-            note_number(NoteName::Db, 4)
-        );
+        assert_eq!(note_number(NoteName::Cs, 4), note_number(NoteName::Db, 4));
     }
 
     #[test]
     fn enharmonic_ds_eb() {
-        assert_eq!(
-            note_number(NoteName::Ds, 4),
-            note_number(NoteName::Eb, 4)
-        );
+        assert_eq!(note_number(NoteName::Ds, 4), note_number(NoteName::Eb, 4));
     }
 
     #[test]
     fn enharmonic_fs_gb() {
-        assert_eq!(
-            note_number(NoteName::Fs, 4),
-            note_number(NoteName::Gb, 4)
-        );
+        assert_eq!(note_number(NoteName::Fs, 4), note_number(NoteName::Gb, 4));
     }
 
     #[test]
     fn enharmonic_gs_ab() {
-        assert_eq!(
-            note_number(NoteName::Gs, 4),
-            note_number(NoteName::Ab, 4)
-        );
+        assert_eq!(note_number(NoteName::Gs, 4), note_number(NoteName::Ab, 4));
     }
 
     #[test]
     fn enharmonic_as_bb() {
-        assert_eq!(
-            note_number(NoteName::As, 4),
-            note_number(NoteName::Bb, 4)
-        );
+        assert_eq!(note_number(NoteName::As, 4), note_number(NoteName::Bb, 4));
     }
 
     #[test]

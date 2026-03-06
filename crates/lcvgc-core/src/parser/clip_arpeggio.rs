@@ -17,8 +17,12 @@ fn ws(input: &str) -> &str {
 }
 
 fn parse_u16(input: &str) -> Option<(&str, u16)> {
-    let end = input.find(|c: char| !c.is_ascii_digit()).unwrap_or(input.len());
-    if end == 0 { return None; }
+    let end = input
+        .find(|c: char| !c.is_ascii_digit())
+        .unwrap_or(input.len());
+    if end == 0 {
+        return None;
+    }
     let val: u16 = input[..end].parse().ok()?;
     Some((&input[end..], val))
 }
@@ -38,7 +42,13 @@ pub fn parse_arpeggio(input: &str) -> Option<(&str, Arpeggio)> {
     let input = ws(input);
     let input = input.strip_prefix(')')?;
 
-    Some((input, Arpeggio { direction, resolution }))
+    Some((
+        input,
+        Arpeggio {
+            direction,
+            resolution,
+        },
+    ))
 }
 
 fn parse_direction(input: &str) -> Option<(&str, ArpeggioDirection)> {

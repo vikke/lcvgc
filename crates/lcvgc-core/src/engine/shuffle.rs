@@ -4,7 +4,10 @@ use crate::ast::scene::ShuffleCandidate;
 
 /// 重み付きランダム選択。candidates から weight 比率で1つ選ぶ。
 /// candidates が空の場合は None を返す。
-pub fn weighted_pick<'a, R: Rng>(candidates: &'a [ShuffleCandidate], rng: &mut R) -> Option<&'a str> {
+pub fn weighted_pick<'a, R: Rng>(
+    candidates: &'a [ShuffleCandidate],
+    rng: &mut R,
+) -> Option<&'a str> {
     if candidates.is_empty() {
         return None;
     }

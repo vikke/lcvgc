@@ -309,8 +309,7 @@ mod tests {
 
     #[test]
     fn test_three_way_shuffle() {
-        let (rest, scene) =
-            parse_scene("scene verse { bass_a | bass_b | bass_c }").unwrap();
+        let (rest, scene) = parse_scene("scene verse { bass_a | bass_b | bass_c }").unwrap();
         assert_eq!(rest, "");
         assert_eq!(
             scene.entries[0],

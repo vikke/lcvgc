@@ -1,4 +1,4 @@
-use super::completion::{CompletionKind, CompletionItem, CompletionProvider};
+use super::completion::{CompletionItem, CompletionKind, CompletionProvider};
 use crate::engine::registry::Registry;
 
 /// カーソル位置のコンテキスト
@@ -376,10 +376,7 @@ fn determine_session_context(trimmed: &str) -> CompletionContext {
 }
 
 /// コンテキストに基づいて補完候補を生成する
-pub fn build_completion_items(
-    ctx: &CompletionContext,
-    registry: &Registry,
-) -> Vec<CompletionItem> {
+pub fn build_completion_items(ctx: &CompletionContext, registry: &Registry) -> Vec<CompletionItem> {
     match ctx {
         CompletionContext::TopLevel => CompletionProvider::keyword_completions(),
 
@@ -480,9 +477,7 @@ pub fn build_completion_items(
 
         CompletionContext::ClipOptionAfterScale => CompletionProvider::note_completions(),
 
-        CompletionContext::ClipOptionAfterScaleNote => {
-            CompletionProvider::scale_type_completions()
-        }
+        CompletionContext::ClipOptionAfterScaleNote => CompletionProvider::scale_type_completions(),
     }
 }
 

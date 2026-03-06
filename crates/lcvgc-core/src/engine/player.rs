@@ -177,7 +177,10 @@ mod tests {
 
     #[test]
     fn events_at_returns_matching_events() {
-        let clip = make_clip(vec![(0, note_on(60)), (0, note_on(64)), (240, note_on(67))], 480);
+        let clip = make_clip(
+            vec![(0, note_on(60)), (0, note_on(64)), (240, note_on(67))],
+            480,
+        );
         let player = ClipPlayer::new(clip, false);
         let events = player.events_at(0);
         assert_eq!(events.len(), 2);

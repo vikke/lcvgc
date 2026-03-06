@@ -1,9 +1,9 @@
 use nom::{
+    branch::alt,
     bytes::complete::tag,
     character::complete::{char, space0, space1},
     combinator::{map, opt},
     sequence::{delimited, preceded, tuple},
-    branch::alt,
     IResult,
 };
 
@@ -15,10 +15,9 @@ fn parse_bracket_repeat(input: &str) -> IResult<&str, RepeatSpec> {
     delimited(
         tuple((space0, char('['))),
         alt((
-            map(
-                tuple((tag("repeat"), space1, parse_u32)),
-                |(_, _, n)| RepeatSpec::Count(n),
-            ),
+            map(tuple((tag("repeat"), space1, parse_u32)), |(_, _, n)| {
+                RepeatSpec::Count(n)
+            }),
             map(tag("loop"), |_| RepeatSpec::Loop),
         )),
         char(']'),
@@ -32,14 +31,15 @@ pub fn parse_play(input: &str) -> IResult<&str, PlayCommand> {
     let (input, _) = space1(input)?;
 
     // Try "session NAME" first
-    let (input, target) = if let Ok((rest, _)) = tag::<&str, &str, nom::error::Error<&str>>("session")(input) {
-        let (rest, _) = space1(rest)?;
-        let (rest, name) = identifier(rest)?;
-        (rest, PlayTarget::Session(name.to_string()))
-    } else {
-        let (rest, name) = identifier(input)?;
-        (rest, PlayTarget::Scene(name.to_string()))
-    };
+    let (input, target) =
+        if let Ok((rest, _)) = tag::<&str, &str, nom::error::Error<&str>>("session")(input) {
+            let (rest, _) = space1(rest)?;
+            let (rest, name) = identifier(rest)?;
+            (rest, PlayTarget::Session(name.to_string()))
+        } else {
+            let (rest, name) = identifier(input)?;
+            (rest, PlayTarget::Scene(name.to_string()))
+        };
 
     let (input, repeat) = match opt(parse_bracket_repeat)(input)? {
         (rest, Some(r)) => (rest, r),
@@ -53,9 +53,12 @@ pub fn parse_play(input: &str) -> IResult<&str, PlayCommand> {
 pub fn parse_stop(input: &str) -> IResult<&str, StopCommand> {
     let (input, _) = tag("stop")(input)?;
     let (input, target) = opt(preceded(space1, identifier))(input)?;
-    Ok((input, StopCommand {
-        target: target.map(|s| s.to_string()),
-    }))
+    Ok((
+        input,
+        StopCommand {
+            target: target.map(|s| s.to_string()),
+        },
+    ))
 }
 
 #[cfg(test)]

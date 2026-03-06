@@ -6,8 +6,8 @@ use crate::midi::MidiError;
 
 /// 利用可能なMIDI出力ポートを列挙する
 pub fn list_ports() -> Result<Vec<String>, MidiError> {
-    let output = MidiOutput::new("lcvgc-list")
-        .map_err(|e| MidiError::ConnectionError(e.to_string()))?;
+    let output =
+        MidiOutput::new("lcvgc-list").map_err(|e| MidiError::ConnectionError(e.to_string()))?;
     let ports = output.ports();
     let mut names = Vec::with_capacity(ports.len());
     for port in &ports {
@@ -21,8 +21,8 @@ pub fn list_ports() -> Result<Vec<String>, MidiError> {
 
 /// 利用可能なMIDI入力ポートを列挙する
 pub fn list_input_ports() -> Result<Vec<String>, MidiError> {
-    let input = MidiInput::new("lcvgc-list")
-        .map_err(|e| MidiError::ConnectionError(e.to_string()))?;
+    let input =
+        MidiInput::new("lcvgc-list").map_err(|e| MidiError::ConnectionError(e.to_string()))?;
     let ports = input.ports();
     let mut names = Vec::with_capacity(ports.len());
     for port in &ports {
@@ -36,8 +36,7 @@ pub fn list_input_ports() -> Result<Vec<String>, MidiError> {
 
 /// 名前でMIDI出力ポートに接続する
 pub fn connect(port_name: &str) -> Result<MidiOutputConnection, MidiError> {
-    let output = MidiOutput::new("lcvgc")
-        .map_err(|e| MidiError::ConnectionError(e.to_string()))?;
+    let output = MidiOutput::new("lcvgc").map_err(|e| MidiError::ConnectionError(e.to_string()))?;
     let ports = output.ports();
     let port = find_port(&output, &ports, port_name)?;
     output

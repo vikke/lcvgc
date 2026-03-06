@@ -55,19 +55,14 @@ impl FileWatcher {
         let mut watcher = notify::recommended_watcher(move |res: Result<Event, notify::Error>| {
             match res {
                 Ok(event) => {
-                    let dominated = matches!(
-                        event.kind,
-                        EventKind::Modify(_) | EventKind::Create(_)
-                    );
+                    let dominated =
+                        matches!(event.kind, EventKind::Modify(_) | EventKind::Create(_));
                     if !dominated {
                         return;
                     }
 
                     for path in &event.paths {
-                        let ext = path
-                            .extension()
-                            .and_then(|e| e.to_str())
-                            .unwrap_or("");
+                        let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
                         if extensions.iter().any(|e| e == ext) {
                             let change = if matches!(event.kind, EventKind::Create(_)) {
                                 FileChangeEvent::Created(path.clone())
@@ -188,10 +183,7 @@ mod tests {
 
     #[tokio::test]
     async fn watcher_on_nonexistent_path_returns_error() {
-        let result = FileWatcher::new(
-            Path::new("/nonexistent/path"),
-            WatcherConfig::default(),
-        );
+        let result = FileWatcher::new(Path::new("/nonexistent/path"), WatcherConfig::default());
         assert!(result.is_err());
     }
 

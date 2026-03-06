@@ -34,7 +34,6 @@ pub struct Cli {
     pub watch: Option<PathBuf>,
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -69,11 +68,16 @@ mod tests {
     fn test_all_options() {
         let cli = Cli::parse_from([
             "lcvgc",
-            "--file", "live.cvg",
-            "--port", "7777",
-            "--midi-device", "IAC Driver Bus 1",
-            "--log-level", "debug",
-            "--config", "/home/user/.config/lcvgc/config.toml",
+            "--file",
+            "live.cvg",
+            "--port",
+            "7777",
+            "--midi-device",
+            "IAC Driver Bus 1",
+            "--log-level",
+            "debug",
+            "--config",
+            "/home/user/.config/lcvgc/config.toml",
         ]);
         assert_eq!(cli.file.unwrap().to_str().unwrap(), "live.cvg");
         assert_eq!(cli.port, 7777);

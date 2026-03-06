@@ -1,7 +1,7 @@
+use nom::branch::alt;
 use nom::character::complete::char;
 use nom::combinator::map;
 use nom::sequence::preceded;
-use nom::branch::alt;
 use nom::IResult;
 
 use crate::parser::common::parse_u8;

@@ -1,9 +1,9 @@
+use super::span_parser::{Span, SpanError, SpannedBlock};
 /// 診断プロバイダ（パースエラー＋未定義参照）
 use crate::ast::clip::ClipBody;
 use crate::ast::scene::SceneEntry;
 use crate::ast::Block;
 use crate::engine::registry::Registry;
-use super::span_parser::{Span, SpanError, SpannedBlock};
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Diagnostic {
@@ -34,10 +34,7 @@ impl DiagnosticProvider {
     }
 
     /// 未定義参照の検出
-    pub fn undefined_references(
-        blocks: &[SpannedBlock],
-        registry: &Registry,
-    ) -> Vec<Diagnostic> {
+    pub fn undefined_references(blocks: &[SpannedBlock], registry: &Registry) -> Vec<Diagnostic> {
         let mut diagnostics = Vec::new();
         for sb in blocks {
             match &sb.block {
@@ -52,10 +49,7 @@ impl DiagnosticProvider {
                                 if registry.get_clip(&candidate.clip).is_none() {
                                     diagnostics.push(Diagnostic {
                                         span: sb.span,
-                                        message: format!(
-                                            "未定義のクリップ: '{}'",
-                                            candidate.clip
-                                        ),
+                                        message: format!("未定義のクリップ: '{}'", candidate.clip),
                                         severity: DiagnosticSeverity::Error,
                                     });
                                 }

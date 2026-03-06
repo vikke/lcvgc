@@ -102,7 +102,10 @@ mod tests {
     fn test_parse_single_tempo() {
         let (rest, block) = parse_block("tempo 120").unwrap();
         assert_eq!(rest, "");
-        assert!(matches!(block, Block::Tempo(crate::ast::tempo::Tempo::Absolute(120))));
+        assert!(matches!(
+            block,
+            Block::Tempo(crate::ast::tempo::Tempo::Absolute(120))
+        ));
     }
 
     #[test]

@@ -1,23 +1,23 @@
 use nom::{
-    bytes::complete::tag,
-    character::complete::char,
-    combinator::opt,
-    multi::separated_list1,
+    bytes::complete::tag, character::complete::char, combinator::opt, multi::separated_list1,
     IResult,
 };
 
 use crate::ast::clip_cc::*;
-use crate::parser::common::{identifier, parse_u8, parse_u32, ws, ws1};
+use crate::parser::common::{identifier, parse_u32, parse_u8, ws, ws1};
 
 /// `instrument.param` をパース
 pub fn parse_cc_target(input: &str) -> IResult<&str, CcTarget> {
     let (input, instrument) = identifier(input)?;
     let (input, _) = char('.')(input)?;
     let (input, param) = identifier(input)?;
-    Ok((input, CcTarget {
-        instrument: instrument.to_string(),
-        param: param.to_string(),
-    }))
+    Ok((
+        input,
+        CcTarget {
+            instrument: instrument.to_string(),
+            param: param.to_string(),
+        },
+    ))
 }
 
 /// スペース区切りのu8値リストをパース
@@ -41,11 +41,12 @@ pub fn parse_cc_time_segment(input: &str) -> IResult<&str, CcTimeSegment> {
     let (input, from) = parse_cc_time_point(input)?;
     let (input, to) = opt(|input| {
         let (input, _) = char('-')(input)?;
-        let (input, interp) = if let Ok((input, _)) = tag::<&str, &str, nom::error::Error<&str>>("exp")(input) {
-            (input, Interpolation::Exponential)
-        } else {
-            (input, Interpolation::Linear)
-        };
+        let (input, interp) =
+            if let Ok((input, _)) = tag::<&str, &str, nom::error::Error<&str>>("exp")(input) {
+                (input, Interpolation::Exponential)
+            } else {
+                (input, Interpolation::Linear)
+            };
         let (input, point) = parse_cc_time_point(input)?;
         Ok((input, (interp, point)))
     })(input)?;
@@ -80,10 +81,13 @@ mod tests {
     fn test_cc_target() {
         let (rest, target) = parse_cc_target("bass.cutoff").unwrap();
         assert_eq!(rest, "");
-        assert_eq!(target, CcTarget {
-            instrument: "bass".to_string(),
-            param: "cutoff".to_string(),
-        });
+        assert_eq!(
+            target,
+            CcTarget {
+                instrument: "bass".to_string(),
+                param: "cutoff".to_string(),
+            }
+        );
     }
 
     #[test]
@@ -97,30 +101,78 @@ mod tests {
     fn test_time_point() {
         let (rest, point) = parse_cc_time_point("64@2.1").unwrap();
         assert_eq!(rest, "");
-        assert_eq!(point, CcTimePoint { value: 64, bar: 2, beat: 1 });
+        assert_eq!(
+            point,
+            CcTimePoint {
+                value: 64,
+                bar: 2,
+                beat: 1
+            }
+        );
     }
 
     #[test]
     fn test_time_segment_linear() {
         let (rest, seg) = parse_cc_time_segment("0@1.1-127@3.1").unwrap();
         assert_eq!(rest, "");
-        assert_eq!(seg.from, CcTimePoint { value: 0, bar: 1, beat: 1 });
-        assert_eq!(seg.to, Some((Interpolation::Linear, CcTimePoint { value: 127, bar: 3, beat: 1 })));
+        assert_eq!(
+            seg.from,
+            CcTimePoint {
+                value: 0,
+                bar: 1,
+                beat: 1
+            }
+        );
+        assert_eq!(
+            seg.to,
+            Some((
+                Interpolation::Linear,
+                CcTimePoint {
+                    value: 127,
+                    bar: 3,
+                    beat: 1
+                }
+            ))
+        );
     }
 
     #[test]
     fn test_time_segment_exp() {
         let (rest, seg) = parse_cc_time_segment("0@1.1-exp127@4.4").unwrap();
         assert_eq!(rest, "");
-        assert_eq!(seg.from, CcTimePoint { value: 0, bar: 1, beat: 1 });
-        assert_eq!(seg.to, Some((Interpolation::Exponential, CcTimePoint { value: 127, bar: 4, beat: 4 })));
+        assert_eq!(
+            seg.from,
+            CcTimePoint {
+                value: 0,
+                bar: 1,
+                beat: 1
+            }
+        );
+        assert_eq!(
+            seg.to,
+            Some((
+                Interpolation::Exponential,
+                CcTimePoint {
+                    value: 127,
+                    bar: 4,
+                    beat: 4
+                }
+            ))
+        );
     }
 
     #[test]
     fn test_time_segment_no_interp() {
         let (rest, seg) = parse_cc_time_segment("64@4.1").unwrap();
         assert_eq!(rest, "");
-        assert_eq!(seg.from, CcTimePoint { value: 64, bar: 4, beat: 1 });
+        assert_eq!(
+            seg.from,
+            CcTimePoint {
+                value: 64,
+                bar: 4,
+                beat: 1
+            }
+        );
         assert_eq!(seg.to, None);
     }
 
@@ -133,7 +185,10 @@ mod tests {
             CcAutomation::Step(step) => {
                 assert_eq!(step.target.instrument, "bass");
                 assert_eq!(step.target.param, "cutoff");
-                assert_eq!(step.values, vec![0, 10, 20, 30, 40, 50, 60, 70, 80, 90, 100, 110, 120, 127, 127, 127]);
+                assert_eq!(
+                    step.values,
+                    vec![0, 10, 20, 30, 40, 50, 60, 70, 80, 90, 100, 110, 120, 127, 127, 127]
+                );
             }
             _ => panic!("expected Step"),
         }
@@ -149,8 +204,25 @@ mod tests {
                 assert_eq!(time.target.instrument, "bass");
                 assert_eq!(time.target.param, "cutoff");
                 assert_eq!(time.segments.len(), 2);
-                assert_eq!(time.segments[0].to, Some((Interpolation::Linear, CcTimePoint { value: 127, bar: 3, beat: 1 })));
-                assert_eq!(time.segments[1].from, CcTimePoint { value: 64, bar: 4, beat: 1 });
+                assert_eq!(
+                    time.segments[0].to,
+                    Some((
+                        Interpolation::Linear,
+                        CcTimePoint {
+                            value: 127,
+                            bar: 3,
+                            beat: 1
+                        }
+                    ))
+                );
+                assert_eq!(
+                    time.segments[1].from,
+                    CcTimePoint {
+                        value: 64,
+                        bar: 4,
+                        beat: 1
+                    }
+                );
                 assert_eq!(time.segments[1].to, None);
             }
             _ => panic!("expected Time"),

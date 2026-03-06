@@ -3,8 +3,8 @@
 //! エディタで開かれたドキュメントのソースコードを解析し、
 //! ブロック情報・エラー情報・レジストリを管理する。
 
-use crate::engine::registry::Registry;
 use super::span_parser::{span_parse_source, SpanError, SpannedBlock};
+use crate::engine::registry::Registry;
 
 /// LSP用ドキュメント解析器
 ///

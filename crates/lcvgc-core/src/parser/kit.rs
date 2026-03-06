@@ -6,9 +6,9 @@ use nom::{
     IResult,
 };
 
-use crate::ast::kit::{KitDef, KitInstrument, KitInstrumentNote};
 #[cfg(test)]
 use crate::ast::common::NoteName;
+use crate::ast::kit::{KitDef, KitInstrument, KitInstrumentNote};
 use crate::parser::common::{identifier, note_name, parse_u8, ws, ws1};
 
 /// Parse a note: note name + octave (e.g. `c2`, `f#2`, `a#2`).
@@ -180,7 +180,13 @@ mod tests {
         let bd = &kit.instruments[0];
         assert_eq!(bd.name, "bd");
         assert_eq!(bd.channel, 10);
-        assert_eq!(bd.note, KitInstrumentNote { name: NoteName::C, octave: 2 });
+        assert_eq!(
+            bd.note,
+            KitInstrumentNote {
+                name: NoteName::C,
+                octave: 2
+            }
+        );
         assert_eq!(bd.gate_normal, Some(50));
         assert_eq!(bd.gate_staccato, Some(20));
 
@@ -188,25 +194,49 @@ mod tests {
         let snare = &kit.instruments[1];
         assert_eq!(snare.name, "snare");
         assert_eq!(snare.channel, 10);
-        assert_eq!(snare.note, KitInstrumentNote { name: NoteName::D, octave: 2 });
+        assert_eq!(
+            snare.note,
+            KitInstrumentNote {
+                name: NoteName::D,
+                octave: 2
+            }
+        );
         assert_eq!(snare.gate_normal, None);
         assert_eq!(snare.gate_staccato, None);
 
         // hh - sharp note
         let hh = &kit.instruments[2];
-        assert_eq!(hh.note, KitInstrumentNote { name: NoteName::Fs, octave: 2 });
+        assert_eq!(
+            hh.note,
+            KitInstrumentNote {
+                name: NoteName::Fs,
+                octave: 2
+            }
+        );
         assert_eq!(hh.gate_normal, Some(30));
         assert_eq!(hh.gate_staccato, Some(10));
 
         // oh - a#2
         let oh = &kit.instruments[3];
-        assert_eq!(oh.note, KitInstrumentNote { name: NoteName::As, octave: 2 });
+        assert_eq!(
+            oh.note,
+            KitInstrumentNote {
+                name: NoteName::As,
+                octave: 2
+            }
+        );
         assert_eq!(oh.gate_normal, Some(80));
         assert_eq!(oh.gate_staccato, None);
 
         // clap - d#2
         let clap = &kit.instruments[4];
-        assert_eq!(clap.note, KitInstrumentNote { name: NoteName::Ds, octave: 2 });
+        assert_eq!(
+            clap.note,
+            KitInstrumentNote {
+                name: NoteName::Ds,
+                octave: 2
+            }
+        );
     }
 
     #[test]
@@ -220,7 +250,13 @@ mod tests {
         let kick = &kit.instruments[0];
         assert_eq!(kick.name, "kick");
         assert_eq!(kick.channel, 1);
-        assert_eq!(kick.note, KitInstrumentNote { name: NoteName::C, octave: 4 });
+        assert_eq!(
+            kick.note,
+            KitInstrumentNote {
+                name: NoteName::C,
+                octave: 4
+            }
+        );
         assert_eq!(kick.gate_normal, None);
         assert_eq!(kick.gate_staccato, None);
     }
@@ -267,17 +303,35 @@ mod tests {
         let kick = &kit.instruments[0];
         assert_eq!(kick.name, "kick");
         assert_eq!(kick.channel, 10);
-        assert_eq!(kick.note, KitInstrumentNote { name: NoteName::C, octave: 2 });
+        assert_eq!(
+            kick.note,
+            KitInstrumentNote {
+                name: NoteName::C,
+                octave: 2
+            }
+        );
 
         let snare = &kit.instruments[1];
         assert_eq!(snare.name, "snare");
         assert_eq!(snare.channel, 10);
-        assert_eq!(snare.note, KitInstrumentNote { name: NoteName::D, octave: 2 });
+        assert_eq!(
+            snare.note,
+            KitInstrumentNote {
+                name: NoteName::D,
+                octave: 2
+            }
+        );
 
         let hihat = &kit.instruments[2];
         assert_eq!(hihat.name, "hihat");
         assert_eq!(hihat.channel, 10);
-        assert_eq!(hihat.note, KitInstrumentNote { name: NoteName::Fs, octave: 2 });
+        assert_eq!(
+            hihat.note,
+            KitInstrumentNote {
+                name: NoteName::Fs,
+                octave: 2
+            }
+        );
     }
 
     /// カンマと改行が混在するkit定義がパースできることを検証する。
@@ -301,12 +355,30 @@ mod tests {
     #[test]
     fn test_parse_instrument_note() {
         let (_, note) = parse_instrument_note("c2").unwrap();
-        assert_eq!(note, KitInstrumentNote { name: NoteName::C, octave: 2 });
+        assert_eq!(
+            note,
+            KitInstrumentNote {
+                name: NoteName::C,
+                octave: 2
+            }
+        );
 
         let (_, note) = parse_instrument_note("f#2").unwrap();
-        assert_eq!(note, KitInstrumentNote { name: NoteName::Fs, octave: 2 });
+        assert_eq!(
+            note,
+            KitInstrumentNote {
+                name: NoteName::Fs,
+                octave: 2
+            }
+        );
 
         let (_, note) = parse_instrument_note("a#2").unwrap();
-        assert_eq!(note, KitInstrumentNote { name: NoteName::As, octave: 2 });
+        assert_eq!(
+            note,
+            KitInstrumentNote {
+                name: NoteName::As,
+                octave: 2
+            }
+        );
     }
 }

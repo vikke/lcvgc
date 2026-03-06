@@ -28,8 +28,12 @@ instrument bass {
     let results = eval(source);
     assert_eq!(results.len(), 3);
     assert!(matches!(results[0], EvalResult::TempoChanged(140.0)));
-    assert!(matches!(&results[1], EvalResult::Registered { kind, name } if kind == "Device" && name == "mb"));
-    assert!(matches!(&results[2], EvalResult::Registered { kind, name } if kind == "Instrument" && name == "bass"));
+    assert!(
+        matches!(&results[1], EvalResult::Registered { kind, name } if kind == "Device" && name == "mb")
+    );
+    assert!(
+        matches!(&results[2], EvalResult::Registered { kind, name } if kind == "Instrument" && name == "bass")
+    );
 }
 
 #[test]
@@ -208,11 +212,7 @@ fn e2e_file_load() {
     let mut tmpfile = tempfile::NamedTempFile::new().unwrap();
     writeln!(tmpfile, "tempo 130").unwrap();
     writeln!(tmpfile).unwrap();
-    writeln!(
-        tmpfile,
-        r#"device test {{ port "test" }}"#
-    )
-    .unwrap();
+    writeln!(tmpfile, r#"device test {{ port "test" }}"#).unwrap();
 
     let mut ev = Evaluator::new(120.0);
     let results = ev.load_file(tmpfile.path().to_str().unwrap()).unwrap();

@@ -79,11 +79,23 @@ fn parse_rest(input: &str) -> IResult<&str, NoteEvent> {
     let (input, _) = tag("r")(input)?;
     let (input, colon) = opt(tag(":"))(input)?;
     if colon.is_none() {
-        return Ok((input, NoteEvent::Rest { duration: None, dotted: false }));
+        return Ok((
+            input,
+            NoteEvent::Rest {
+                duration: None,
+                dotted: false,
+            },
+        ));
     }
     let (input, dur) = parse_u16(input)?;
     let (input, dotted) = opt(tag("."))(input)?;
-    Ok((input, NoteEvent::Rest { duration: Some(dur), dotted: dotted.is_some() }))
+    Ok((
+        input,
+        NoteEvent::Rest {
+            duration: Some(dur),
+            dotted: dotted.is_some(),
+        },
+    ))
 }
 
 /// Parse a note event: single note, chord name, or rest.
@@ -108,19 +120,25 @@ pub fn parse_note_event(input: &str) -> IResult<&str, NoteEvent> {
     let (input, (octave, duration, dotted)) = parse_oct_dur(input)?;
 
     match suffix {
-        Some(s) => Ok((input, NoteEvent::ChordName {
-            root: name,
-            suffix: s,
-            octave,
-            duration,
-            dotted,
-        })),
-        None => Ok((input, NoteEvent::Single {
-            name,
-            octave,
-            duration,
-            dotted,
-        })),
+        Some(s) => Ok((
+            input,
+            NoteEvent::ChordName {
+                root: name,
+                suffix: s,
+                octave,
+                duration,
+                dotted,
+            },
+        )),
+        None => Ok((
+            input,
+            NoteEvent::Single {
+                name,
+                octave,
+                duration,
+                dotted,
+            },
+        )),
     }
 }
 
@@ -135,12 +153,15 @@ mod tests {
     fn test_single_full() {
         assert_eq!(
             parse_note_event("c:3:8"),
-            Ok(("", NoteEvent::Single {
-                name: NoteName::C,
-                octave: Some(3),
-                duration: Some(8),
-                dotted: false,
-            }))
+            Ok((
+                "",
+                NoteEvent::Single {
+                    name: NoteName::C,
+                    octave: Some(3),
+                    duration: Some(8),
+                    dotted: false,
+                }
+            ))
         );
     }
 
@@ -148,12 +169,15 @@ mod tests {
     fn test_single_oct_omitted() {
         assert_eq!(
             parse_note_event("c::8"),
-            Ok(("", NoteEvent::Single {
-                name: NoteName::C,
-                octave: None,
-                duration: Some(8),
-                dotted: false,
-            }))
+            Ok((
+                "",
+                NoteEvent::Single {
+                    name: NoteName::C,
+                    octave: None,
+                    duration: Some(8),
+                    dotted: false,
+                }
+            ))
         );
     }
 
@@ -161,12 +185,15 @@ mod tests {
     fn test_single_both_omitted() {
         assert_eq!(
             parse_note_event("c"),
-            Ok(("", NoteEvent::Single {
-                name: NoteName::C,
-                octave: None,
-                duration: None,
-                dotted: false,
-            }))
+            Ok((
+                "",
+                NoteEvent::Single {
+                    name: NoteName::C,
+                    octave: None,
+                    duration: None,
+                    dotted: false,
+                }
+            ))
         );
     }
 
@@ -174,12 +201,15 @@ mod tests {
     fn test_single_oct_only() {
         assert_eq!(
             parse_note_event("c:3"),
-            Ok(("", NoteEvent::Single {
-                name: NoteName::C,
-                octave: Some(3),
-                duration: None,
-                dotted: false,
-            }))
+            Ok((
+                "",
+                NoteEvent::Single {
+                    name: NoteName::C,
+                    octave: Some(3),
+                    duration: None,
+                    dotted: false,
+                }
+            ))
         );
     }
 
@@ -189,13 +219,16 @@ mod tests {
     fn test_chord_full() {
         assert_eq!(
             parse_note_event("cm7:4:2"),
-            Ok(("", NoteEvent::ChordName {
-                root: NoteName::C,
-                suffix: ChordSuffix::Min7,
-                octave: Some(4),
-                duration: Some(2),
-                dotted: false,
-            }))
+            Ok((
+                "",
+                NoteEvent::ChordName {
+                    root: NoteName::C,
+                    suffix: ChordSuffix::Min7,
+                    octave: Some(4),
+                    duration: Some(2),
+                    dotted: false,
+                }
+            ))
         );
     }
 
@@ -203,13 +236,16 @@ mod tests {
     fn test_chord_name_only() {
         assert_eq!(
             parse_note_event("cm7"),
-            Ok(("", NoteEvent::ChordName {
-                root: NoteName::C,
-                suffix: ChordSuffix::Min7,
-                octave: None,
-                duration: None,
-                dotted: false,
-            }))
+            Ok((
+                "",
+                NoteEvent::ChordName {
+                    root: NoteName::C,
+                    suffix: ChordSuffix::Min7,
+                    octave: None,
+                    duration: None,
+                    dotted: false,
+                }
+            ))
         );
     }
 
@@ -217,13 +253,16 @@ mod tests {
     fn test_chord_oct_omitted() {
         assert_eq!(
             parse_note_event("cm7::2"),
-            Ok(("", NoteEvent::ChordName {
-                root: NoteName::C,
-                suffix: ChordSuffix::Min7,
-                octave: None,
-                duration: Some(2),
-                dotted: false,
-            }))
+            Ok((
+                "",
+                NoteEvent::ChordName {
+                    root: NoteName::C,
+                    suffix: ChordSuffix::Min7,
+                    octave: None,
+                    duration: Some(2),
+                    dotted: false,
+                }
+            ))
         );
     }
 
@@ -244,13 +283,16 @@ mod tests {
     fn test_min_maj7() {
         assert_eq!(
             parse_note_event("cmMaj7:4:2"),
-            Ok(("", NoteEvent::ChordName {
-                root: NoteName::C,
-                suffix: ChordSuffix::MinMaj7,
-                octave: Some(4),
-                duration: Some(2),
-                dotted: false,
-            }))
+            Ok((
+                "",
+                NoteEvent::ChordName {
+                    root: NoteName::C,
+                    suffix: ChordSuffix::MinMaj7,
+                    octave: Some(4),
+                    duration: Some(2),
+                    dotted: false,
+                }
+            ))
         );
     }
 
@@ -260,7 +302,13 @@ mod tests {
     fn test_rest() {
         assert_eq!(
             parse_note_event("r"),
-            Ok(("", NoteEvent::Rest { duration: None, dotted: false }))
+            Ok((
+                "",
+                NoteEvent::Rest {
+                    duration: None,
+                    dotted: false
+                }
+            ))
         );
     }
 
@@ -268,7 +316,13 @@ mod tests {
     fn test_rest_with_duration() {
         assert_eq!(
             parse_note_event("r:8"),
-            Ok(("", NoteEvent::Rest { duration: Some(8), dotted: false }))
+            Ok((
+                "",
+                NoteEvent::Rest {
+                    duration: Some(8),
+                    dotted: false
+                }
+            ))
         );
     }
 
@@ -278,12 +332,15 @@ mod tests {
     fn test_dotted() {
         assert_eq!(
             parse_note_event("c:3:4."),
-            Ok(("", NoteEvent::Single {
-                name: NoteName::C,
-                octave: Some(3),
-                duration: Some(4),
-                dotted: true,
-            }))
+            Ok((
+                "",
+                NoteEvent::Single {
+                    name: NoteName::C,
+                    octave: Some(3),
+                    duration: Some(4),
+                    dotted: true,
+                }
+            ))
         );
     }
 
@@ -293,13 +350,16 @@ mod tests {
     fn test_flat_chord() {
         assert_eq!(
             parse_note_event("ebm7:3:4"),
-            Ok(("", NoteEvent::ChordName {
-                root: NoteName::Eb,
-                suffix: ChordSuffix::Min7,
-                octave: Some(3),
-                duration: Some(4),
-                dotted: false,
-            }))
+            Ok((
+                "",
+                NoteEvent::ChordName {
+                    root: NoteName::Eb,
+                    suffix: ChordSuffix::Min7,
+                    octave: Some(3),
+                    duration: Some(4),
+                    dotted: false,
+                }
+            ))
         );
     }
 
@@ -313,13 +373,16 @@ mod tests {
         // So `cm` should be ChordName { C, Min, ... }
         assert_eq!(
             parse_note_event("cm"),
-            Ok(("", NoteEvent::ChordName {
-                root: NoteName::C,
-                suffix: ChordSuffix::Min,
-                octave: None,
-                duration: None,
-                dotted: false,
-            }))
+            Ok((
+                "",
+                NoteEvent::ChordName {
+                    root: NoteName::C,
+                    suffix: ChordSuffix::Min,
+                    octave: None,
+                    duration: None,
+                    dotted: false,
+                }
+            ))
         );
     }
 }

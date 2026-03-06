@@ -12,7 +12,11 @@ pub fn hit_velocity(hit: &HitSymbol) -> u8 {
 
 /// Clamp velocity value to 0-127 range
 pub fn clamp_velocity(v: u8) -> u8 {
-    if v > 127 { 127 } else { v }
+    if v > 127 {
+        127
+    } else {
+        v
+    }
 }
 
 #[cfg(test)]

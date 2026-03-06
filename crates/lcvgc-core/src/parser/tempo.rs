@@ -1,10 +1,10 @@
 use nom::{
-    IResult,
     branch::alt,
     bytes::complete::tag_no_case,
     character::complete::{char, u16 as nom_u16},
     combinator::map,
-    sequence::{preceded, pair},
+    sequence::{pair, preceded},
+    IResult,
 };
 
 use crate::ast::tempo::Tempo;
@@ -13,7 +13,9 @@ use crate::parser::common::ws1;
 /// Parse a relative tempo value: `+N` or `-N`.
 fn relative_tempo(input: &str) -> IResult<&str, Tempo> {
     let positive = map(preceded(char('+'), nom_u16), |v| Tempo::Relative(v as i16));
-    let negative = map(pair(char('-'), nom_u16), |(_, v)| Tempo::Relative(-(v as i16)));
+    let negative = map(pair(char('-'), nom_u16), |(_, v)| {
+        Tempo::Relative(-(v as i16))
+    });
     alt((positive, negative))(input)
 }
 
@@ -21,10 +23,7 @@ fn relative_tempo(input: &str) -> IResult<&str, Tempo> {
 pub fn parse_tempo(input: &str) -> IResult<&str, Tempo> {
     let (input, _) = tag_no_case("tempo")(input)?;
     let (input, _) = ws1(input)?;
-    alt((
-        relative_tempo,
-        map(nom_u16, Tempo::Absolute),
-    ))(input)
+    alt((relative_tempo, map(nom_u16, Tempo::Absolute)))(input)
 }
 
 #[cfg(test)]

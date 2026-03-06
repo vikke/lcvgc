@@ -3,9 +3,9 @@
 //! カーソル位置のブロックに対して、Markdown形式のホバー情報を生成する。
 //! デバイス・インストゥルメント・クリップ等の詳細情報を提供する。
 
+use super::span_parser::SpannedBlock;
 use crate::ast::clip::ClipBody;
 use crate::ast::Block;
-use super::span_parser::SpannedBlock;
 
 /// ホバー情報プロバイダ
 ///
@@ -26,9 +26,7 @@ impl HoverProvider {
     /// Markdown形式のホバーテキスト。対応しないブロック種別の場合は `None`
     pub fn hover_content(sb: &SpannedBlock) -> Option<String> {
         match &sb.block {
-            Block::Device(d) => {
-                Some(format!("**device** `{}`\n- port: `\"{}\"`", d.name, d.port))
-            }
+            Block::Device(d) => Some(format!("**device** `{}`\n- port: `\"{}\"`", d.name, d.port)),
             Block::Instrument(i) => {
                 let mut s = format!(
                     "**instrument** `{}`\n- device: `{}`\n- channel: `{}`",
@@ -78,9 +76,7 @@ impl HoverProvider {
                 session.entries.len()
             )),
             Block::Tempo(t) => Some(format!("**tempo** `{:?}`", t)),
-            Block::Scale(s) => {
-                Some(format!("**scale** `{:?} {:?}`", s.root, s.scale_type))
-            }
+            Block::Scale(s) => Some(format!("**scale** `{:?} {:?}`", s.root, s.scale_type)),
             Block::Var(v) => Some(format!("**var** `{}` = `{}`", v.name, v.value)),
             _ => None,
         }
@@ -89,6 +85,7 @@ impl HoverProvider {
 
 #[cfg(test)]
 mod tests {
+    use super::super::span_parser::{Span, SpannedBlock};
     use super::*;
     use crate::ast::clip::{ClipBody, ClipDef, PitchedClipBody};
     use crate::ast::common::NoteName;
@@ -102,7 +99,6 @@ mod tests {
     use crate::ast::session::SessionDef;
     use crate::ast::tempo::Tempo;
     use crate::ast::var::VarDef;
-    use super::super::span_parser::{Span, SpannedBlock};
     use crate::parser::clip_options::ClipOptions;
 
     fn sb(block: Block) -> SpannedBlock {
@@ -219,8 +215,7 @@ mod tests {
 
     #[test]
     fn tempo_hover_shows_value() {
-        let result =
-            HoverProvider::hover_content(&sb(Block::Tempo(Tempo::Absolute(120))));
+        let result = HoverProvider::hover_content(&sb(Block::Tempo(Tempo::Absolute(120))));
         let text = result.unwrap();
         assert!(text.contains("**tempo**"));
         assert!(text.contains("Absolute(120)"));
@@ -258,9 +253,7 @@ mod tests {
 
     #[test]
     fn stop_returns_none() {
-        let result = HoverProvider::hover_content(&sb(Block::Stop(StopCommand {
-            target: None,
-        })));
+        let result = HoverProvider::hover_content(&sb(Block::Stop(StopCommand { target: None })));
         assert!(result.is_none());
     }
 

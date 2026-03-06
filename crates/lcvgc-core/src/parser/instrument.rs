@@ -1,7 +1,4 @@
-use nom::{
-    bytes::complete::tag,
-    IResult,
-};
+use nom::{bytes::complete::tag, IResult};
 
 use crate::ast::instrument::{CcMapping, InstrumentDef, InstrumentNote};
 use crate::parser::common::{identifier, note_name, parse_u8, ws, ws1};

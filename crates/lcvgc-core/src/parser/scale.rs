@@ -1,9 +1,4 @@
-use nom::{
-    IResult,
-    branch::alt,
-    bytes::complete::tag_no_case,
-    combinator::value,
-};
+use nom::{branch::alt, bytes::complete::tag_no_case, combinator::value, IResult};
 
 use crate::ast::scale::{ScaleDef, ScaleType};
 use crate::parser::common::{note_name, ws1};
@@ -30,7 +25,13 @@ pub fn parse_scale(input: &str) -> IResult<&str, ScaleDef> {
     let (input, root) = note_name(input)?;
     let (input, _) = ws1(input)?;
     let (input, st) = scale_type(input)?;
-    Ok((input, ScaleDef { root, scale_type: st }))
+    Ok((
+        input,
+        ScaleDef {
+            root,
+            scale_type: st,
+        },
+    ))
 }
 
 #[cfg(test)]

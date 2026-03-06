@@ -115,7 +115,10 @@ mod tests {
             assert!(
                 exp[i] <= lin[i],
                 "exp[{}]={} should be <= lin[{}]={}",
-                i, exp[i], i, lin[i]
+                i,
+                exp[i],
+                i,
+                lin[i]
             );
         }
         assert_eq!(exp[0], 0);
@@ -130,7 +133,10 @@ mod tests {
             assert!(
                 exp[i] >= lin[i],
                 "exp[{}]={} should be >= lin[{}]={}",
-                i, exp[i], i, lin[i]
+                i,
+                exp[i],
+                i,
+                lin[i]
             );
         }
         assert_eq!(exp[0], 100);

@@ -75,8 +75,18 @@ fn block_name(block: &Block) -> Option<&str> {
 
 /// 既知キーワードで始まる行を探してスキップ
 const KEYWORDS: &[&str] = &[
-    "device ", "instrument ", "kit ", "clip ", "scene ", "session ",
-    "tempo ", "scale ", "var ", "include ", "play ", "stop",
+    "device ",
+    "instrument ",
+    "kit ",
+    "clip ",
+    "scene ",
+    "session ",
+    "tempo ",
+    "scale ",
+    "var ",
+    "include ",
+    "play ",
+    "stop",
 ];
 
 fn find_next_keyword(source: &str) -> Option<usize> {
@@ -165,7 +175,10 @@ pub fn span_parse_source(source: &str) -> ParseOutcome {
                     Some(skip_to) => {
                         let error_end = start + skip_to;
                         errors.push(SpanError {
-                            span: Span { start, end: error_end },
+                            span: Span {
+                                start,
+                                end: error_end,
+                            },
                             message: err_msg,
                         });
                         remaining = &original[error_end..];
@@ -173,7 +186,10 @@ pub fn span_parse_source(source: &str) -> ParseOutcome {
                     None => {
                         // No recovery possible, record error for rest of source
                         errors.push(SpanError {
-                            span: Span { start, end: original.len() },
+                            span: Span {
+                                start,
+                                end: original.len(),
+                            },
                             message: err_msg,
                         });
                         break;

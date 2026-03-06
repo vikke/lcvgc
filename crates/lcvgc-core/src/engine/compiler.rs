@@ -140,7 +140,11 @@ fn compile_pitched_line(
                     });
                     events.push(MidiEvent {
                         tick: current_tick + gate_ticks,
-                        message: MidiMessage::NoteOff { channel, note, velocity: 0 },
+                        message: MidiMessage::NoteOff {
+                            channel,
+                            note,
+                            velocity: 0,
+                        },
                     });
 
                     current_tick += note_ticks;
@@ -152,7 +156,10 @@ fn compile_pitched_line(
                     current_tick += note_ticks;
                 }
                 NoteEvent::ChordName {
-                    octave, duration, dotted, ..
+                    octave,
+                    duration,
+                    dotted,
+                    ..
                 } => {
                     // TODO: コード名展開（ChordSuffix → ノート群）
                     let dur = duration.unwrap_or(current_duration);
@@ -243,7 +250,11 @@ fn compile_drum(
             });
             events.push(MidiEvent {
                 tick: tick + gate_ticks,
-                message: MidiMessage::NoteOff { channel, note, velocity: 0 },
+                message: MidiMessage::NoteOff {
+                    channel,
+                    note,
+                    velocity: 0,
+                },
             });
         }
     }
@@ -276,11 +287,7 @@ mod tests {
         registry
     }
 
-    fn make_pitched_clip(
-        name: &str,
-        bars: Option<u32>,
-        lines: Vec<PitchedLine>,
-    ) -> ClipDef {
+    fn make_pitched_clip(name: &str, bars: Option<u32>, lines: Vec<PitchedLine>) -> ClipDef {
         ClipDef {
             name: name.to_string(),
             options: ClipOptions {
@@ -653,10 +660,7 @@ mod tests {
         let compiled = compile_clip(&clip, &clock, &registry).unwrap();
         assert!(matches!(
             compiled.events[0].message,
-            MidiMessage::NoteOn {
-                velocity: 127,
-                ..
-            }
+            MidiMessage::NoteOn { velocity: 127, .. }
         ));
         let ghost_on = compiled
             .events

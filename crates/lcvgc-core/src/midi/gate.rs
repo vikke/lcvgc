@@ -70,24 +70,48 @@ mod tests {
     #[test]
     fn gate_80_percent() {
         let result = calculate_gate(500, 80);
-        assert_eq!(result, GateResult { on_duration_ms: 400, off_duration_ms: 100 });
+        assert_eq!(
+            result,
+            GateResult {
+                on_duration_ms: 400,
+                off_duration_ms: 100
+            }
+        );
     }
 
     #[test]
     fn gate_100_percent_legato() {
         let result = calculate_gate(500, 100);
-        assert_eq!(result, GateResult { on_duration_ms: 500, off_duration_ms: 0 });
+        assert_eq!(
+            result,
+            GateResult {
+                on_duration_ms: 500,
+                off_duration_ms: 0
+            }
+        );
     }
 
     #[test]
     fn gate_minimum_off_guarantee() {
         let result = calculate_gate(100, 98);
-        assert_eq!(result, GateResult { on_duration_ms: 95, off_duration_ms: 5 });
+        assert_eq!(
+            result,
+            GateResult {
+                on_duration_ms: 95,
+                off_duration_ms: 5
+            }
+        );
     }
 
     #[test]
     fn gate_very_short_duration() {
         let result = calculate_gate(10, 80);
-        assert_eq!(result, GateResult { on_duration_ms: 5, off_duration_ms: 5 });
+        assert_eq!(
+            result,
+            GateResult {
+                on_duration_ms: 5,
+                off_duration_ms: 5
+            }
+        );
     }
 }
