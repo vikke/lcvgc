@@ -43,6 +43,7 @@
     - 日本語ドキュメント: *.ja.md
     - 英語ドキュメント: *.md
 - 翻訳は、日本語400行程度に対して、1 sub agentを起動して並列実行で処理を行なう事。1 sub agent 1 section を担当させ、`git worktree` を上手く使って作業分担する事。
+- LSPのプロトコル仕様書は [ここ](https://github.com/vikke/lcvgc/blob/main/specs/lsp-in-out.ja.md) にある。プロトコルが関連する修正は、ここを読んで把握する事。
 
 ## バージョン管理
 
