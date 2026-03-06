@@ -1,20 +1,49 @@
-/// CarryOverState manages octave/duration carry-over for shorthand note notation.
+/// 省略記法ノートのオクターブ・音価キャリーオーバー状態を管理する構造体。
+/// デフォルト値: octave=4, duration=4（4分音符）。
+///
+/// Manages octave/duration carry-over state for shorthand note notation.
 /// Default: octave=4, duration=4 (quarter note).
-
 #[derive(Debug, Clone, PartialEq)]
 pub struct CarryOverState {
+    /// 現在のオクターブ値 (0-10)
+    ///
+    /// Current octave value (0-10)
     pub octave: u8,
+    /// 現在の音価（分母表記: 4=4分音符, 8=8分音符 等）
+    ///
+    /// Current duration in denominator notation (4=quarter, 8=eighth, etc.)
     pub duration: u16,
 }
 
+/// 省略記法から解決されたノート情報を保持する構造体。
+///
+/// Holds resolved note information from shorthand notation.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ResolvedNote {
+    /// 解決後のオクターブ値
+    ///
+    /// Resolved octave value
     pub octave: u8,
+    /// 解決後の音価（分母表記）
+    ///
+    /// Resolved duration in denominator notation
     pub duration: u16,
+    /// 付点の有無
+    ///
+    /// Whether the note is dotted
     pub dotted: bool,
 }
 
 impl CarryOverState {
+    /// 新しい `CarryOverState` をデフォルト値（octave=4, duration=4）で生成する。
+    ///
+    /// Creates a new `CarryOverState` with default values (octave=4, duration=4).
+    ///
+    /// # 戻り値 / Returns
+    ///
+    /// デフォルト状態の `CarryOverState`
+    ///
+    /// A `CarryOverState` with default state.
     pub fn new() -> Self {
         CarryOverState {
             octave: 4,
@@ -22,13 +51,22 @@ impl CarryOverState {
         }
     }
 
-    /// Resolve a note with optional octave/duration, updating internal state.
-    pub fn resolve(
-        &mut self,
-        octave: Option<u8>,
-        duration: Option<u16>,
-        dotted: bool,
-    ) -> ResolvedNote {
+    /// オプショナルなオクターブ・音価を解決し、内部状態を更新してノート情報を返す。
+    ///
+    /// Resolves a note with optional octave/duration, updating internal state.
+    ///
+    /// # 引数 / Arguments
+    ///
+    /// * `octave` - オクターブ値。`None` の場合は前回の値を引き継ぐ / Octave value. If `None`, carries over from previous state.
+    /// * `duration` - 音価。`None` の場合は前回の値を引き継ぐ / Duration value. If `None`, carries over from previous state.
+    /// * `dotted` - 付点の有無 / Whether the note is dotted.
+    ///
+    /// # 戻り値 / Returns
+    ///
+    /// 解決済みのノート情報 [`ResolvedNote`]
+    ///
+    /// Resolved note information as [`ResolvedNote`].
+    pub fn resolve(&mut self, octave: Option<u8>, duration: Option<u16>, dotted: bool) -> ResolvedNote {
         if let Some(oct) = octave {
             self.octave = oct;
         }
@@ -44,6 +82,9 @@ impl CarryOverState {
 }
 
 impl Default for CarryOverState {
+    /// デフォルト値（octave=4, duration=4）で `CarryOverState` を生成する。
+    ///
+    /// Creates a `CarryOverState` with default values (octave=4, duration=4).
     fn default() -> Self {
         Self::new()
     }
