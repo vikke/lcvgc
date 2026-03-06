@@ -1,6 +1,16 @@
+//! ベロシティ変換モジュール
+//! Velocity conversion module
+
 use crate::ast::clip_drum::HitSymbol;
 
-/// HitSymbol -> MIDI velocity
+/// ヒットシンボルからMIDIベロシティに変換する
+/// Converts a HitSymbol to MIDI velocity
+///
+/// # 引数 / Arguments
+/// * `hit` - ヒットシンボル / Hit symbol
+///
+/// # 戻り値 / Returns
+/// MIDIベロシティ値 (0-127) / MIDI velocity value (0-127)
 pub fn hit_velocity(hit: &HitSymbol) -> u8 {
     match hit {
         HitSymbol::Normal => 100,
@@ -10,9 +20,20 @@ pub fn hit_velocity(hit: &HitSymbol) -> u8 {
     }
 }
 
-/// Clamp velocity value to 0-127 range
+/// ベロシティ値を0-127の範囲にクランプする
+/// Clamps a velocity value to the 0-127 range
+///
+/// # 引数 / Arguments
+/// * `v` - ベロシティ値 / Velocity value
+///
+/// # 戻り値 / Returns
+/// クランプされたベロシティ値 (0-127) / Clamped velocity value (0-127)
 pub fn clamp_velocity(v: u8) -> u8 {
-    if v > 127 { 127 } else { v }
+    if v > 127 {
+        127
+    } else {
+        v
+    }
 }
 
 #[cfg(test)]

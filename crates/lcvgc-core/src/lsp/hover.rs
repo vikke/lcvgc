@@ -1,34 +1,42 @@
 //! ホバー情報プロバイダモジュール
+//! Hover information provider module
 //!
 //! カーソル位置のブロックに対して、Markdown形式のホバー情報を生成する。
 //! デバイス・インストゥルメント・クリップ等の詳細情報を提供する。
+//! Generates Markdown-formatted hover information for the block at the cursor position.
+//! Provides detailed information for devices, instruments, clips, and more.
 
+use super::span_parser::SpannedBlock;
 use crate::ast::clip::ClipBody;
 use crate::ast::Block;
-use super::span_parser::SpannedBlock;
 
 /// ホバー情報プロバイダ
+/// Hover information provider
 ///
 /// `SpannedBlock` からMarkdown形式のホバーテキストを生成する。
+/// Generates Markdown-formatted hover text from a `SpannedBlock`.
 pub struct HoverProvider;
 
 impl HoverProvider {
     /// スパン付きブロックからホバー用Markdownテキストを生成する
+    /// Generates Markdown hover text from a spanned block
     ///
     /// ブロック種別に応じて、名前・ポート・チャンネル・エントリ数等の
     /// 詳細情報を含むMarkdown文字列を返す。
     /// play, stop, include ブロックにはホバー情報は提供しない。
+    /// Returns a Markdown string containing details such as name, port, channel,
+    /// and entry count depending on the block type.
+    /// No hover information is provided for play, stop, or include blocks.
     ///
     /// # Arguments
-    /// * `sb` - スパン付きブロック
+    /// * `sb` - スパン付きブロック / Spanned block
     ///
     /// # Returns
     /// Markdown形式のホバーテキスト。対応しないブロック種別の場合は `None`
+    /// Markdown-formatted hover text, or `None` for unsupported block types
     pub fn hover_content(sb: &SpannedBlock) -> Option<String> {
         match &sb.block {
-            Block::Device(d) => {
-                Some(format!("**device** `{}`\n- port: `\"{}\"`", d.name, d.port))
-            }
+            Block::Device(d) => Some(format!("**device** `{}`\n- port: `\"{}\"`", d.name, d.port)),
             Block::Instrument(i) => {
                 let mut s = format!(
                     "**instrument** `{}`\n- device: `{}`\n- channel: `{}`",
@@ -78,9 +86,7 @@ impl HoverProvider {
                 session.entries.len()
             )),
             Block::Tempo(t) => Some(format!("**tempo** `{:?}`", t)),
-            Block::Scale(s) => {
-                Some(format!("**scale** `{:?} {:?}`", s.root, s.scale_type))
-            }
+            Block::Scale(s) => Some(format!("**scale** `{:?} {:?}`", s.root, s.scale_type)),
             Block::Var(v) => Some(format!("**var** `{}` = `{}`", v.name, v.value)),
             _ => None,
         }
@@ -89,6 +95,7 @@ impl HoverProvider {
 
 #[cfg(test)]
 mod tests {
+    use super::super::span_parser::{Span, SpannedBlock};
     use super::*;
     use crate::ast::clip::{ClipBody, ClipDef, PitchedClipBody};
     use crate::ast::common::NoteName;
@@ -102,7 +109,6 @@ mod tests {
     use crate::ast::session::SessionDef;
     use crate::ast::tempo::Tempo;
     use crate::ast::var::VarDef;
-    use super::super::span_parser::{Span, SpannedBlock};
     use crate::parser::clip_options::ClipOptions;
 
     fn sb(block: Block) -> SpannedBlock {
@@ -219,8 +225,7 @@ mod tests {
 
     #[test]
     fn tempo_hover_shows_value() {
-        let result =
-            HoverProvider::hover_content(&sb(Block::Tempo(Tempo::Absolute(120))));
+        let result = HoverProvider::hover_content(&sb(Block::Tempo(Tempo::Absolute(120))));
         let text = result.unwrap();
         assert!(text.contains("**tempo**"));
         assert!(text.contains("Absolute(120)"));
@@ -258,9 +263,7 @@ mod tests {
 
     #[test]
     fn stop_returns_none() {
-        let result = HoverProvider::hover_content(&sb(Block::Stop(StopCommand {
-            target: None,
-        })));
+        let result = HoverProvider::hover_content(&sb(Block::Stop(StopCommand { target: None })));
         assert!(result.is_none());
     }
 

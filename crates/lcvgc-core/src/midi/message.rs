@@ -1,20 +1,78 @@
 /// MIDIメッセージ
+/// MIDI message representation
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MidiMessage {
-    NoteOn { channel: u8, note: u8, velocity: u8 },
-    NoteOff { channel: u8, note: u8, velocity: u8 },
-    ControlChange { channel: u8, cc: u8, value: u8 },
-    ProgramChange { channel: u8, program: u8 },
+    /// ノートオン: 発音開始
+    /// Note On: start sounding a note
+    NoteOn {
+        /// MIDIチャンネル (0-15)
+        /// MIDI channel (0-15)
+        channel: u8,
+        /// ノート番号 (0-127)
+        /// Note number (0-127)
+        note: u8,
+        /// ベロシティ (0-127)
+        /// Velocity (0-127)
+        velocity: u8,
+    },
+    /// ノートオフ: 発音停止
+    /// Note Off: stop sounding a note
+    NoteOff {
+        /// MIDIチャンネル (0-15)
+        /// MIDI channel (0-15)
+        channel: u8,
+        /// ノート番号 (0-127)
+        /// Note number (0-127)
+        note: u8,
+        /// ベロシティ (0-127)
+        /// Velocity (0-127)
+        velocity: u8,
+    },
+    /// コントロールチェンジ
+    /// Control Change
+    ControlChange {
+        /// MIDIチャンネル (0-15)
+        /// MIDI channel (0-15)
+        channel: u8,
+        /// CC番号 (0-127)
+        /// CC number (0-127)
+        cc: u8,
+        /// CC値 (0-127)
+        /// CC value (0-127)
+        value: u8,
+    },
+    /// プログラムチェンジ: 音色変更
+    /// Program Change: change instrument
+    ProgramChange {
+        /// MIDIチャンネル (0-15)
+        /// MIDI channel (0-15)
+        channel: u8,
+        /// プログラム番号 (0-127)
+        /// Program number (0-127)
+        program: u8,
+    },
 }
 
 impl MidiMessage {
     /// MIDIバイト列にシリアライズ
+    /// Serialize to MIDI byte sequence
+    ///
+    /// # 戻り値 / Returns
+    /// `Vec<u8>` - MIDIプロトコルに準拠したバイト列 / MIDI protocol-compliant byte sequence
     pub fn to_bytes(&self) -> Vec<u8> {
         match self {
-            MidiMessage::NoteOn { channel, note, velocity } => {
+            MidiMessage::NoteOn {
+                channel,
+                note,
+                velocity,
+            } => {
                 vec![0x90 | channel, *note, *velocity]
             }
-            MidiMessage::NoteOff { channel, note, velocity } => {
+            MidiMessage::NoteOff {
+                channel,
+                note,
+                velocity,
+            } => {
                 vec![0x80 | channel, *note, *velocity]
             }
             MidiMessage::ControlChange { channel, cc, value } => {
@@ -33,37 +91,60 @@ mod tests {
 
     #[test]
     fn note_on_ch0() {
-        let msg = MidiMessage::NoteOn { channel: 0, note: 60, velocity: 100 };
+        let msg = MidiMessage::NoteOn {
+            channel: 0,
+            note: 60,
+            velocity: 100,
+        };
         assert_eq!(msg.to_bytes(), vec![0x90, 60, 100]);
     }
 
     #[test]
     fn note_off_ch0() {
-        let msg = MidiMessage::NoteOff { channel: 0, note: 60, velocity: 0 };
+        let msg = MidiMessage::NoteOff {
+            channel: 0,
+            note: 60,
+            velocity: 0,
+        };
         assert_eq!(msg.to_bytes(), vec![0x80, 60, 0]);
     }
 
     #[test]
     fn note_on_drum_ch9() {
-        let msg = MidiMessage::NoteOn { channel: 9, note: 36, velocity: 127 };
+        let msg = MidiMessage::NoteOn {
+            channel: 9,
+            note: 36,
+            velocity: 127,
+        };
         assert_eq!(msg.to_bytes(), vec![0x99, 36, 127]);
     }
 
     #[test]
     fn control_change() {
-        let msg = MidiMessage::ControlChange { channel: 0, cc: 74, value: 64 };
+        let msg = MidiMessage::ControlChange {
+            channel: 0,
+            cc: 74,
+            value: 64,
+        };
         assert_eq!(msg.to_bytes(), vec![0xB0, 74, 64]);
     }
 
     #[test]
     fn program_change() {
-        let msg = MidiMessage::ProgramChange { channel: 0, program: 0 };
+        let msg = MidiMessage::ProgramChange {
+            channel: 0,
+            program: 0,
+        };
         assert_eq!(msg.to_bytes(), vec![0xC0, 0]);
     }
 
     #[test]
     fn channel_15_boundary() {
-        let msg = MidiMessage::NoteOn { channel: 15, note: 60, velocity: 100 };
+        let msg = MidiMessage::NoteOn {
+            channel: 15,
+            note: 60,
+            velocity: 100,
+        };
         assert_eq!(msg.to_bytes(), vec![0x9F, 60, 100]);
     }
 }

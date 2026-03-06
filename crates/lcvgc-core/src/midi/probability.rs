@@ -1,8 +1,18 @@
+//! 確率ベースの発音判定モジュール
+//! Probability-based note triggering module
+
 use rand::Rng;
 
 /// ドラムの確率行に基づく発音判定
+/// Determines whether a note should trigger based on drum probability
 ///
-/// probability: 0-9 (0=0%, 1=10%, ..., 9=90%), None=100%（必ず発音）
+/// # 引数 / Arguments
+/// * `probability` - 確率値 0-9 (0=0%, 1=10%, ..., 9=90%), None=100%（必ず発音）
+///   Probability value 0-9 (0=0%, 1=10%, ..., 9=90%), None=100% (always triggers)
+/// * `rng` - 乱数生成器 / Random number generator
+///
+/// # 戻り値 / Returns
+/// true = 発音する / triggers, false = ミュート / muted
 pub fn should_trigger<R: Rng>(probability: Option<u8>, rng: &mut R) -> bool {
     match probability {
         None => true,
@@ -18,10 +28,16 @@ pub fn should_trigger<R: Rng>(probability: Option<u8>, rng: &mut R) -> bool {
 }
 
 /// ステップ列に確率を適用し、各ステップの発音可否を返す
+/// Applies probability to a sequence of steps and returns trigger/mute for each step
 ///
-/// hits_len: ステップ数
-/// probability: 各ステップの確率値（0-9）のベクタ、Noneなら全ステップ100%
-/// 戻り値: true = 発音, false = ミュート
+/// # 引数 / Arguments
+/// * `hits_len` - ステップ数 / Number of steps
+/// * `probability` - 各ステップの確率値（0-9）のベクタ、Noneなら全ステップ100%
+///   Vector of probability values (0-9) per step, None means 100% for all steps
+/// * `rng` - 乱数生成器 / Random number generator
+///
+/// # 戻り値 / Returns
+/// Vec<bool>: true = 発音 / triggers, false = ミュート / muted
 pub fn apply_probability_mask<R: Rng>(
     hits_len: usize,
     probability: &Option<Vec<u8>>,

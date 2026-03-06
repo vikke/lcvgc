@@ -1,28 +1,37 @@
 //! 定義ジャンプ（Go to Definition）プロバイダモジュール
+//! Go to definition provider module
 //!
 //! 識別子名からブロック定義位置を検索し、
 //! LSPの定義ジャンプ機能を提供する。
+//! Searches for block definition positions by identifier name
+//! and provides the LSP go to definition feature.
 
-use crate::ast::Block;
 use super::span_parser::{Span, SpannedBlock};
+use crate::ast::Block;
 
 /// 定義ジャンププロバイダ
+/// Go to definition provider
 ///
 /// ブロック名から定義位置（`Span`）を検索する静的メソッドを提供する。
+/// Provides static methods to search for definition positions (`Span`) by block name.
 pub struct GotoDefinitionProvider;
 
 impl GotoDefinitionProvider {
     /// 指定名前に一致するブロック定義の位置を返す
+    /// Returns the position of the block definition matching the given name
     ///
     /// 名前付きブロック（device, instrument, kit, clip, scene, session, var）を
     /// 走査し、最初に一致したブロックの `name_span`（存在しない場合は `span`）を返す。
+    /// Scans named blocks (device, instrument, kit, clip, scene, session, var)
+    /// and returns the `name_span` (or `span` if absent) of the first match.
     ///
     /// # Arguments
-    /// * `name` - 検索する識別子名
-    /// * `blocks` - スパン付きブロック一覧
+    /// * `name` - 検索する識別子名 / Identifier name to search for
+    /// * `blocks` - スパン付きブロック一覧 / List of spanned blocks
     ///
     /// # Returns
     /// 定義が見つかった場合は `Some(Span)`、見つからない場合は `None`
+    /// `Some(Span)` if a definition is found, `None` otherwise
     pub fn find_definition(name: &str, blocks: &[SpannedBlock]) -> Option<Span> {
         for sb in blocks {
             let block_name = match &sb.block {
@@ -45,6 +54,7 @@ impl GotoDefinitionProvider {
 
 #[cfg(test)]
 mod tests {
+    use super::super::span_parser::{Span, SpannedBlock};
     use super::*;
     use crate::ast::clip::{ClipBody, ClipDef, PitchedClipBody};
     use crate::ast::device::DeviceDef;
@@ -52,7 +62,6 @@ mod tests {
     use crate::ast::scene::SceneDef;
     use crate::ast::tempo::Tempo;
     use crate::ast::var::VarDef;
-    use super::super::span_parser::{Span, SpannedBlock};
     use crate::parser::clip_options::ClipOptions;
 
     fn device_block(name: &str, span: Span, name_span: Option<Span>) -> SpannedBlock {
@@ -81,11 +90,7 @@ mod tests {
         }
     }
 
-    fn instrument_block(
-        name: &str,
-        span: Span,
-        name_span: Option<Span>,
-    ) -> SpannedBlock {
+    fn instrument_block(name: &str, span: Span, name_span: Option<Span>) -> SpannedBlock {
         SpannedBlock {
             block: Block::Instrument(InstrumentDef {
                 name: name.into(),
@@ -125,22 +130,14 @@ mod tests {
 
     #[test]
     fn find_existing_clip_returns_span() {
-        let blocks = vec![clip_block(
-            "riff",
-            Span { start: 0, end: 100 },
-            None,
-        )];
+        let blocks = vec![clip_block("riff", Span { start: 0, end: 100 }, None)];
         let result = GotoDefinitionProvider::find_definition("riff", &blocks);
         assert_eq!(result, Some(Span { start: 0, end: 100 }));
     }
 
     #[test]
     fn find_non_existing_returns_none() {
-        let blocks = vec![device_block(
-            "synth",
-            Span { start: 0, end: 50 },
-            None,
-        )];
+        let blocks = vec![device_block("synth", Span { start: 0, end: 50 }, None)];
         let result = GotoDefinitionProvider::find_definition("unknown", &blocks);
         assert_eq!(result, None);
     }
@@ -186,11 +183,7 @@ mod tests {
 
     #[test]
     fn returns_block_span_when_name_span_is_none() {
-        let blocks = vec![device_block(
-            "dev",
-            Span { start: 5, end: 55 },
-            None,
-        )];
+        let blocks = vec![device_block("dev", Span { start: 5, end: 55 }, None)];
         let result = GotoDefinitionProvider::find_definition("dev", &blocks);
         assert_eq!(result, Some(Span { start: 5, end: 55 }));
     }
@@ -224,8 +217,19 @@ mod tests {
     #[test]
     fn finds_first_matching_block() {
         let blocks = vec![
-            device_block("synth", Span { start: 0, end: 50 }, Some(Span { start: 7, end: 12 })),
-            device_block("synth", Span { start: 60, end: 110 }, Some(Span { start: 67, end: 72 })),
+            device_block(
+                "synth",
+                Span { start: 0, end: 50 },
+                Some(Span { start: 7, end: 12 }),
+            ),
+            device_block(
+                "synth",
+                Span {
+                    start: 60,
+                    end: 110,
+                },
+                Some(Span { start: 67, end: 72 }),
+            ),
         ];
         let result = GotoDefinitionProvider::find_definition("synth", &blocks);
         assert_eq!(result, Some(Span { start: 7, end: 12 }));

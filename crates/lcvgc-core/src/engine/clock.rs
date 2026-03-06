@@ -1,8 +1,14 @@
 use crate::ast::tempo::Tempo;
 
+/// 拍子記号（例: 4/4, 3/4, 6/8）
+/// Time signature (e.g. 4/4, 3/4, 6/8)
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TimeSignature {
+    /// 拍子の分子（1小節あたりの拍数）
+    /// Numerator (number of beats per bar)
     pub numerator: u8,
+    /// 拍子の分母（1拍の音価）
+    /// Denominator (note value of one beat)
     pub denominator: u8,
 }
 
@@ -15,14 +21,27 @@ impl Default for TimeSignature {
     }
 }
 
+/// MIDIクロック。テンポ・PPQ・拍子を保持し、ティック計算を提供する
+/// MIDI clock. Holds tempo, PPQ, and time signature, and provides tick calculations
 #[derive(Debug, Clone)]
 pub struct Clock {
+    /// 四分音符あたりのティック数 (Pulses Per Quarter note)
+    /// Pulses per quarter note (ticks per quarter note)
     ppq: u16,
+    /// テンポ（BPM: beats per minute）
+    /// Tempo in beats per minute (BPM)
     bpm: f64,
+    /// 拍子記号
+    /// Time signature
     time_sig: TimeSignature,
 }
 
 impl Clock {
+    /// デフォルトPPQ(480)で新しいクロックを生成する
+    /// Creates a new clock with the default PPQ (480)
+    ///
+    /// # 引数 / Arguments
+    /// * `bpm` - テンポ（BPM） / Tempo in beats per minute
     pub fn new(bpm: f64) -> Self {
         Self {
             ppq: 480,
@@ -31,6 +50,12 @@ impl Clock {
         }
     }
 
+    /// PPQを指定して新しいクロックを生成する
+    /// Creates a new clock with a specified PPQ value
+    ///
+    /// # 引数 / Arguments
+    /// * `bpm` - テンポ（BPM） / Tempo in beats per minute
+    /// * `ppq` - 四分音符あたりのティック数 / Pulses per quarter note
     pub fn with_ppq(bpm: f64, ppq: u16) -> Self {
         Self {
             ppq,
@@ -39,38 +64,61 @@ impl Clock {
         }
     }
 
+    /// 現在のBPMを返す
+    /// Returns the current BPM
     pub fn bpm(&self) -> f64 {
         self.bpm
     }
 
+    /// 現在のPPQを返す
+    /// Returns the current PPQ
     pub fn ppq(&self) -> u16 {
         self.ppq
     }
 
+    /// 現在の拍子記号を返す
+    /// Returns the current time signature
     pub fn time_sig(&self) -> &TimeSignature {
         &self.time_sig
     }
 
+    /// BPMを設定する
+    /// Sets the BPM
+    ///
+    /// # 引数 / Arguments
+    /// * `bpm` - 新しいテンポ（BPM） / New tempo in beats per minute
     pub fn set_bpm(&mut self, bpm: f64) {
         self.bpm = bpm;
     }
 
+    /// 拍子記号を設定する
+    /// Sets the time signature
+    ///
+    /// # 引数 / Arguments
+    /// * `ts` - 新しい拍子記号 / New time signature
     pub fn set_time_sig(&mut self, ts: TimeSignature) {
         self.time_sig = ts;
     }
 
-    /// 1tickのマイクロ秒 = 60_000_000 / (bpm * ppq)
+    /// 1ティックのマイクロ秒 = 60_000_000 / (bpm * ppq)
+    /// Microseconds per tick = 60,000,000 / (bpm * ppq)
     pub fn tick_duration_us(&self) -> u64 {
         (60_000_000.0 / (self.bpm * f64::from(self.ppq))) as u64
     }
 
-    /// 1小節のtick数 = ppq * numerator * (4 / denominator)
+    /// 1小節のティック数 = ppq * numerator * (4 / denominator)
+    /// Ticks per bar = ppq * numerator * (4 / denominator)
     pub fn ticks_per_bar(&self) -> u64 {
         u64::from(self.ppq) * u64::from(self.time_sig.numerator) * 4
             / u64::from(self.time_sig.denominator)
     }
 
-    /// 音価+付点 -> tick数
+    /// 音価と付点からティック数を計算する
+    /// Converts a note duration and dotted flag to tick count
+    ///
+    /// # 引数 / Arguments
+    /// * `duration` - 音価（4=四分音符, 8=八分音符 等） / Note duration (4=quarter, 8=eighth, etc.)
+    /// * `dotted` - 付点の有無 / Whether the note is dotted
     pub fn duration_to_ticks(&self, duration: u16, dotted: bool) -> u64 {
         let base = u64::from(self.ppq) * 4 / u64::from(duration);
         if dotted {
@@ -80,7 +128,11 @@ impl Clock {
         }
     }
 
-    /// Tempo AST適用
+    /// テンポASTノードを適用してBPMを更新する
+    /// Applies a Tempo AST node to update the BPM
+    ///
+    /// # 引数 / Arguments
+    /// * `tempo` - テンポAST（絶対値または相対値） / Tempo AST node (absolute or relative)
     pub fn apply_tempo(&mut self, tempo: &Tempo) {
         match tempo {
             Tempo::Absolute(bpm) => self.bpm = f64::from(*bpm),

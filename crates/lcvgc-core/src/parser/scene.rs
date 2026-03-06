@@ -12,6 +12,7 @@ use crate::ast::tempo::Tempo;
 use crate::parser::common::{identifier, ws, ws1};
 use crate::parser::tempo::parse_tempo;
 
+/// オプションの重み接尾辞をパースする: `*3`
 /// Parse an optional weight suffix: `*3`
 fn parse_weight(input: &str) -> IResult<&str, u32> {
     let (input, _) = char('*')(input)?;
@@ -19,6 +20,7 @@ fn parse_weight(input: &str) -> IResult<&str, u32> {
     Ok((input, d))
 }
 
+/// シャッフル候補を1つパースする: `clip_name` または `clip_name*3`
 /// Parse a single shuffle candidate: `clip_name` or `clip_name*3`
 fn parse_shuffle_candidate(input: &str) -> IResult<&str, ShuffleCandidate> {
     let (input, name) = identifier(input)?;
@@ -32,6 +34,8 @@ fn parse_shuffle_candidate(input: &str) -> IResult<&str, ShuffleCandidate> {
     ))
 }
 
+/// 末尾の確率値（1-9）をパースする。
+/// 数字の後に英数字が続く場合はパースしない。
 /// Parse a trailing probability digit (1-9).
 /// The digit must not be followed by alphanumeric characters.
 /// Whitespace before the digit is consumed by the caller.
@@ -47,6 +51,7 @@ fn parse_probability(input: &str) -> IResult<&str, u8> {
     Ok((input, d.to_digit(10).unwrap() as u8))
 }
 
+/// クリップエントリをパースする: `ident(*w)? (| ident(*w)?)* (prob)?`
 /// Parse a clip entry: `ident(*w)? (| ident(*w)?)* (prob)?`
 fn parse_clip_entry(input: &str) -> IResult<&str, SceneEntry> {
     let (input, first) = parse_shuffle_candidate(input)?;
@@ -77,11 +82,13 @@ fn parse_clip_entry(input: &str) -> IResult<&str, SceneEntry> {
     ))
 }
 
+/// シーンエントリ（テンポまたはクリップ）を1つパースする。
 /// Parse a single scene entry (tempo or clip).
 fn parse_scene_entry(input: &str) -> IResult<&str, SceneEntry> {
     alt((map(parse_tempo, SceneEntry::Tempo), parse_clip_entry))(input)
 }
 
+/// シーン定義をパースする: `scene NAME { entries... }`
 /// Parse a scene definition: `scene NAME { entries... }`
 pub fn parse_scene(input: &str) -> IResult<&str, SceneDef> {
     let (input, _) = tag("scene")(input)?;
@@ -309,8 +316,7 @@ mod tests {
 
     #[test]
     fn test_three_way_shuffle() {
-        let (rest, scene) =
-            parse_scene("scene verse { bass_a | bass_b | bass_c }").unwrap();
+        let (rest, scene) = parse_scene("scene verse { bass_a | bass_b | bass_c }").unwrap();
         assert_eq!(rest, "");
         assert_eq!(
             scene.entries[0],

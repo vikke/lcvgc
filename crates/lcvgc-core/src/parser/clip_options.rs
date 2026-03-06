@@ -37,7 +37,13 @@ fn parse_bars_option(input: &str) -> IResult<&str, ClipOptions> {
     let (input, n) = parse_u32(input)?;
     let (input, _) = ws(input)?;
     let (input, _) = char(']')(input)?;
-    Ok((input, ClipOptions { bars: Some(n), ..Default::default() }))
+    Ok((
+        input,
+        ClipOptions {
+            bars: Some(n),
+            ..Default::default()
+        },
+    ))
 }
 
 /// Parse `[time N/N]`
@@ -51,7 +57,13 @@ fn parse_time_option(input: &str) -> IResult<&str, ClipOptions> {
     let (input, den) = parse_u8(input)?;
     let (input, _) = ws(input)?;
     let (input, _) = char(']')(input)?;
-    Ok((input, ClipOptions { time_sig: Some((num, den)), ..Default::default() }))
+    Ok((
+        input,
+        ClipOptions {
+            time_sig: Some((num, den)),
+            ..Default::default()
+        },
+    ))
 }
 
 /// Parse `[scale ROOT TYPE]`
@@ -65,10 +77,16 @@ fn parse_scale_option(input: &str) -> IResult<&str, ClipOptions> {
     let (input, st) = scale_type(input)?;
     let (input, _) = ws(input)?;
     let (input, _) = char(']')(input)?;
-    Ok((input, ClipOptions {
-        scale: Some(ScaleDef { root, scale_type: st }),
-        ..Default::default()
-    }))
+    Ok((
+        input,
+        ClipOptions {
+            scale: Some(ScaleDef {
+                root,
+                scale_type: st,
+            }),
+            ..Default::default()
+        },
+    ))
 }
 
 /// Parse a single clip option bracket.
@@ -133,10 +151,13 @@ mod tests {
     fn test_scale_only() {
         let (rest, opts) = parse_clip_options("[scale c minor]").unwrap();
         assert_eq!(rest, "");
-        assert_eq!(opts.scale, Some(ScaleDef {
-            root: NoteName::C,
-            scale_type: ScaleType::Minor,
-        }));
+        assert_eq!(
+            opts.scale,
+            Some(ScaleDef {
+                root: NoteName::C,
+                scale_type: ScaleType::Minor,
+            })
+        );
     }
 
     #[test]
@@ -144,10 +165,13 @@ mod tests {
         let (rest, opts) = parse_clip_options("[bars 4] [scale c minor]").unwrap();
         assert_eq!(rest, "");
         assert_eq!(opts.bars, Some(4));
-        assert_eq!(opts.scale, Some(ScaleDef {
-            root: NoteName::C,
-            scale_type: ScaleType::Minor,
-        }));
+        assert_eq!(
+            opts.scale,
+            Some(ScaleDef {
+                root: NoteName::C,
+                scale_type: ScaleType::Minor,
+            })
+        );
     }
 
     #[test]
@@ -156,10 +180,13 @@ mod tests {
         assert_eq!(rest, "");
         assert_eq!(opts.bars, Some(2));
         assert_eq!(opts.time_sig, Some((3, 4)));
-        assert_eq!(opts.scale, Some(ScaleDef {
-            root: NoteName::D,
-            scale_type: ScaleType::Dorian,
-        }));
+        assert_eq!(
+            opts.scale,
+            Some(ScaleDef {
+                root: NoteName::D,
+                scale_type: ScaleType::Dorian,
+            })
+        );
     }
 
     #[test]
@@ -174,10 +201,13 @@ mod tests {
         let (rest, opts) = parse_clip_options("[scale c minor] [bars 2]").unwrap();
         assert_eq!(rest, "");
         assert_eq!(opts.bars, Some(2));
-        assert_eq!(opts.scale, Some(ScaleDef {
-            root: NoteName::C,
-            scale_type: ScaleType::Minor,
-        }));
+        assert_eq!(
+            opts.scale,
+            Some(ScaleDef {
+                root: NoteName::C,
+                scale_type: ScaleType::Minor,
+            })
+        );
     }
 
     #[test]

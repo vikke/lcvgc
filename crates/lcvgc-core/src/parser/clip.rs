@@ -1,15 +1,10 @@
-use nom::{
-    bytes::complete::tag,
-    character::complete::char,
-    combinator::opt,
-    IResult,
-};
+use nom::{bytes::complete::tag, character::complete::char, combinator::opt, IResult};
 
 use crate::ast::clip::*;
-use crate::parser::clip_articulation::parse_articulation;
 use crate::parser::clip_arpeggio::parse_arpeggio;
+use crate::parser::clip_articulation::parse_articulation;
 use crate::parser::clip_bar_jump::parse_bar_jump;
-use crate::parser::clip_cc::{parse_cc_step, parse_cc_time, parse_cc_target};
+use crate::parser::clip_cc::{parse_cc_step, parse_cc_target, parse_cc_time};
 use crate::parser::clip_drum::{expand_pipe, parse_hit_symbols, parse_probability_row};
 use crate::parser::clip_note::parse_note_event;
 use crate::parser::clip_options::parse_clip_options;
@@ -33,20 +28,26 @@ pub fn parse_clip(input: &str) -> IResult<&str, ClipDef> {
         let (input, body) = parse_drum_body(input)?;
         let (input, _) = ws(input)?;
         let (input, _) = char('}')(input)?;
-        Ok((input, ClipDef {
-            name: name.to_string(),
-            options,
-            body: ClipBody::Drum(body),
-        }))
+        Ok((
+            input,
+            ClipDef {
+                name: name.to_string(),
+                options,
+                body: ClipBody::Drum(body),
+            },
+        ))
     } else {
         let (input, body) = parse_pitched_body(input)?;
         let (input, _) = ws(input)?;
         let (input, _) = char('}')(input)?;
-        Ok((input, ClipDef {
-            name: name.to_string(),
-            options,
-            body: ClipBody::Pitched(body),
-        }))
+        Ok((
+            input,
+            ClipDef {
+                name: name.to_string(),
+                options,
+                body: ClipBody::Pitched(body),
+            },
+        ))
     }
 }
 
@@ -160,7 +161,13 @@ fn parse_pitched_body(mut input: &str) -> IResult<&str, PitchedClipBody> {
         input = current;
     }
 
-    Ok((input, PitchedClipBody { lines, cc_automations }))
+    Ok((
+        input,
+        PitchedClipBody {
+            lines,
+            cc_automations,
+        },
+    ))
 }
 
 /// Parse a chord bracket: `[note1 note2 ...]:dur`
@@ -206,13 +213,16 @@ fn parse_chord_bracket(input: &str) -> IResult<&str, PitchedElement> {
         (current, None)
     };
 
-    Ok((current, PitchedElement::ChordBracket {
-        notes,
-        duration: dur,
-        dotted: dotted.is_some(),
-        articulation: art,
-        arpeggio: arp,
-    }))
+    Ok((
+        current,
+        PitchedElement::ChordBracket {
+            notes,
+            duration: dur,
+            dotted: dotted.is_some(),
+            articulation: art,
+            arpeggio: arp,
+        },
+    ))
 }
 
 /// Parse the body of a drum clip.
@@ -295,12 +305,15 @@ fn parse_drum_body(input: &str) -> IResult<&str, DrumClipBody> {
         current = &r[line_end..];
     }
 
-    Ok((current, DrumClipBody {
-        kit: kit.to_string(),
-        resolution,
-        rows,
-        cc_automations,
-    }))
+    Ok((
+        current,
+        DrumClipBody {
+            kit: kit.to_string(),
+            resolution,
+            rows,
+            cc_automations,
+        },
+    ))
 }
 
 #[cfg(test)]

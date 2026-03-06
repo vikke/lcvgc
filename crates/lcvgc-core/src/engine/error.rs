@@ -68,7 +68,10 @@ mod tests {
 
     #[test]
     fn display_io() {
-        let e = EngineError::Io(std::io::Error::new(std::io::ErrorKind::NotFound, "not found"));
+        let e = EngineError::Io(std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            "not found",
+        ));
         assert_eq!(e.to_string(), "IOエラー: not found");
     }
 

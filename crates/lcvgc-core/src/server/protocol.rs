@@ -1,124 +1,223 @@
 use serde::{Deserialize, Serialize};
 
 /// クライアントからのリクエスト
+/// Request from a client
 #[derive(Debug, Deserialize)]
 #[serde(tag = "type")]
 pub enum Request {
     /// DSLソースを評価
+    /// Evaluate DSL source code
     #[serde(rename = "eval")]
-    Eval { source: String },
+    Eval {
+        /// 評価するDSLソース / DSL source to evaluate
+        source: String,
+    },
     /// ファイルを読み込んで評価
+    /// Load and evaluate a file
     #[serde(rename = "load")]
-    Load { path: String },
+    Load {
+        /// ファイルパス / File path
+        path: String,
+    },
     /// ステータス問い合わせ
+    /// Query current status
     #[serde(rename = "status")]
     Status,
     /// MIDIポート一覧
+    /// List MIDI ports
     #[serde(rename = "list_ports")]
     ListPorts,
     /// LSP補完リクエスト
+    /// LSP completion request
     #[serde(rename = "lsp_completion")]
-    LspCompletion { source: String, offset: usize },
+    LspCompletion {
+        /// DSLソース / DSL source
+        source: String,
+        /// カーソル位置（バイトオフセット） / Cursor position (byte offset)
+        offset: usize,
+    },
     /// LSPホバーリクエスト
+    /// LSP hover request
     #[serde(rename = "lsp_hover")]
-    LspHover { source: String, offset: usize },
+    LspHover {
+        /// DSLソース / DSL source
+        source: String,
+        /// カーソル位置（バイトオフセット） / Cursor position (byte offset)
+        offset: usize,
+    },
     /// LSP診断リクエスト
+    /// LSP diagnostics request
     #[serde(rename = "lsp_diagnostics")]
-    LspDiagnostics { source: String },
+    LspDiagnostics {
+        /// DSLソース / DSL source
+        source: String,
+    },
     /// LSP定義ジャンプリクエスト
+    /// LSP go-to-definition request
     #[serde(rename = "lsp_goto_definition")]
-    LspGotoDefinition { source: String, offset: usize },
+    LspGotoDefinition {
+        /// DSLソース / DSL source
+        source: String,
+        /// カーソル位置（バイトオフセット） / Cursor position (byte offset)
+        offset: usize,
+    },
     /// LSPドキュメントシンボルリクエスト
+    /// LSP document symbols request
     #[serde(rename = "lsp_document_symbols")]
-    LspDocumentSymbols { source: String },
+    LspDocumentSymbols {
+        /// DSLソース / DSL source
+        source: String,
+    },
 }
 
 /// MIDIポート情報
+/// MIDI port information
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
 pub struct PortInfo {
+    /// ポート名 / Port name
     pub name: String,
+    /// 方向 ("in" または "out") / Direction ("in" or "out")
     pub direction: String,
 }
 
 /// LSP補完アイテム
+/// LSP completion item
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
 pub struct LspCompletionItem {
+    /// 補完ラベル / Completion label
     pub label: String,
+    /// 詳細情報 / Detail information
     #[serde(skip_serializing_if = "Option::is_none")]
     pub detail: Option<String>,
+    /// 補完種別 (e.g. "Keyword", "Snippet") / Completion kind
     pub kind: String,
 }
 
 /// LSPホバー情報
+/// LSP hover information
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
 pub struct LspHoverInfo {
+    /// ホバー表示用コンテンツ / Content for hover display
     pub content: String,
 }
 
 /// LSP診断アイテム
+/// LSP diagnostic item
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
 pub struct LspDiagnosticItem {
+    /// 開始行 / Start line
     pub start_line: u32,
+    /// 開始列 / Start column
     pub start_col: u32,
+    /// 終了行 / End line
     pub end_line: u32,
+    /// 終了列 / End column
     pub end_col: u32,
+    /// 診断メッセージ / Diagnostic message
     pub message: String,
+    /// 重要度 (e.g. "Error", "Warning") / Severity level
     pub severity: String,
 }
 
 /// LSP位置スパン
+/// LSP location span
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
 pub struct LspLocationSpan {
+    /// 開始行 / Start line
     pub start_line: u32,
+    /// 開始列 / Start column
     pub start_col: u32,
+    /// 終了行 / End line
     pub end_line: u32,
+    /// 終了列 / End column
     pub end_col: u32,
 }
 
 /// LSPシンボルアイテム
+/// LSP symbol item
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
 pub struct LspSymbolItem {
+    /// シンボル名 / Symbol name
     pub name: String,
+    /// シンボル種別 (e.g. "Tempo", "Device") / Symbol kind
     pub kind: String,
+    /// 開始行 / Start line
     pub start_line: u32,
+    /// 開始列 / Start column
     pub start_col: u32,
+    /// 終了行 / End line
     pub end_line: u32,
+    /// 終了列 / End column
     pub end_col: u32,
 }
 
 /// LSP結果
+/// LSP result
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
 #[serde(tag = "type")]
 pub enum LspResult {
+    /// 補完結果 / Completion result
     #[serde(rename = "completion")]
-    Completion { items: Vec<LspCompletionItem> },
+    Completion {
+        /// 補完候補一覧 / List of completion candidates
+        items: Vec<LspCompletionItem>,
+    },
+    /// ホバー結果 / Hover result
     #[serde(rename = "hover")]
-    Hover { info: Option<LspHoverInfo> },
+    Hover {
+        /// ホバー情報（存在しない場合はNone） / Hover info (None if unavailable)
+        info: Option<LspHoverInfo>,
+    },
+    /// 診断結果 / Diagnostics result
     #[serde(rename = "diagnostics")]
-    Diagnostics { items: Vec<LspDiagnosticItem> },
+    Diagnostics {
+        /// 診断アイテム一覧 / List of diagnostic items
+        items: Vec<LspDiagnosticItem>,
+    },
+    /// 定義ジャンプ結果 / Go-to-definition result
     #[serde(rename = "goto_definition")]
-    GotoDefinition { location: Option<LspLocationSpan> },
+    GotoDefinition {
+        /// 定義の位置（見つからない場合はNone） / Definition location (None if not found)
+        location: Option<LspLocationSpan>,
+    },
+    /// ドキュメントシンボル結果 / Document symbols result
     #[serde(rename = "document_symbols")]
-    DocumentSymbols { items: Vec<LspSymbolItem> },
+    DocumentSymbols {
+        /// シンボル一覧 / List of symbols
+        items: Vec<LspSymbolItem>,
+    },
 }
 
 /// サーバーからのレスポンス
+/// Response from the server
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Response {
+    /// 処理成功フラグ / Success flag
     pub success: bool,
+    /// 成功時のメッセージ / Message on success
     #[serde(skip_serializing_if = "Option::is_none")]
     pub message: Option<String>,
+    /// エラー時のメッセージ / Error message on failure
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
+    /// MIDIポート一覧 / List of MIDI ports
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ports: Option<Vec<PortInfo>>,
     /// LSP結果
+    /// LSP result
     #[serde(skip_serializing_if = "Option::is_none")]
     pub lsp: Option<LspResult>,
 }
 
 impl Response {
     /// 成功レスポンス
+    /// Creates a success response
+    ///
+    /// # 引数 / Arguments
+    /// * `message` - 成功メッセージ / Success message
+    ///
+    /// # 戻り値 / Returns
+    /// 成功フラグが立ったレスポンス / Response with success flag set
     pub fn ok(message: impl Into<String>) -> Self {
         Self {
             success: true,
@@ -130,6 +229,13 @@ impl Response {
     }
 
     /// エラーレスポンス
+    /// Creates an error response
+    ///
+    /// # 引数 / Arguments
+    /// * `error` - エラーメッセージ / Error message
+    ///
+    /// # 戻り値 / Returns
+    /// 失敗フラグが立ったレスポンス / Response with success flag unset
     pub fn err(error: impl Into<String>) -> Self {
         Self {
             success: false,
@@ -141,6 +247,13 @@ impl Response {
     }
 
     /// ポート一覧レスポンス
+    /// Creates a port list response
+    ///
+    /// # 引数 / Arguments
+    /// * `ports` - MIDIポート情報の一覧 / List of MIDI port information
+    ///
+    /// # 戻り値 / Returns
+    /// ポート一覧を含むレスポンス / Response containing the port list
     pub fn ports(ports: Vec<PortInfo>) -> Self {
         Self {
             success: true,
@@ -152,6 +265,13 @@ impl Response {
     }
 
     /// LSP結果レスポンス
+    /// Creates an LSP result response
+    ///
+    /// # 引数 / Arguments
+    /// * `result` - LSP処理結果 / LSP processing result
+    ///
+    /// # 戻り値 / Returns
+    /// LSP結果を含むレスポンス / Response containing the LSP result
     pub fn lsp(result: LspResult) -> Self {
         Self {
             success: true,

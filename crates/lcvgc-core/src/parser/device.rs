@@ -1,11 +1,9 @@
-use nom::{
-    IResult,
-    bytes::complete::tag,
-};
+use nom::{bytes::complete::tag, IResult};
 
 use crate::ast::device::DeviceDef;
 use crate::parser::common::*;
 
+/// デバイスブロックをパースする: `device NAME { port "PORT_STRING" }`
 /// Parse a device block: `device NAME { port "PORT_STRING" }`
 pub fn parse_device(input: &str) -> IResult<&str, DeviceDef> {
     let (input, _) = ws(input)?;
@@ -21,10 +19,13 @@ pub fn parse_device(input: &str) -> IResult<&str, DeviceDef> {
     let (input, _) = ws(input)?;
     let (input, _) = tag("}")(input)?;
 
-    Ok((input, DeviceDef {
-        name: name.to_string(),
-        port: port.to_string(),
-    }))
+    Ok((
+        input,
+        DeviceDef {
+            name: name.to_string(),
+            port: port.to_string(),
+        },
+    ))
 }
 
 #[cfg(test)]
@@ -38,10 +39,13 @@ mod tests {
         let result = parse_device(input);
         assert_eq!(
             result,
-            Ok(("", DeviceDef {
-                name: "mutant_brain".to_string(),
-                port: "Mutant Brain".to_string(),
-            }))
+            Ok((
+                "",
+                DeviceDef {
+                    name: "mutant_brain".to_string(),
+                    port: "Mutant Brain".to_string(),
+                }
+            ))
         );
     }
 
@@ -51,10 +55,13 @@ mod tests {
         let result = parse_device(input);
         assert_eq!(
             result,
-            Ok(("", DeviceDef {
-                name: "volca_keys".to_string(),
-                port: "volca keys".to_string(),
-            }))
+            Ok((
+                "",
+                DeviceDef {
+                    name: "volca_keys".to_string(),
+                    port: "volca keys".to_string(),
+                }
+            ))
         );
     }
 

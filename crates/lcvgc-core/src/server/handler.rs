@@ -50,25 +50,23 @@ pub async fn handle_request(evaluator: &Arc<Mutex<Evaluator>>, request: Request)
                 ev.state().state()
             ))
         }
-        Request::ListPorts => {
-            match (midi::port::list_ports(), midi::port::list_input_ports()) {
-                (Ok(outputs), Ok(inputs)) => {
-                    let mut ports: Vec<PortInfo> = outputs
-                        .into_iter()
-                        .map(|name| PortInfo {
-                            name,
-                            direction: "out".to_string(),
-                        })
-                        .collect();
-                    ports.extend(inputs.into_iter().map(|name| PortInfo {
+        Request::ListPorts => match (midi::port::list_ports(), midi::port::list_input_ports()) {
+            (Ok(outputs), Ok(inputs)) => {
+                let mut ports: Vec<PortInfo> = outputs
+                    .into_iter()
+                    .map(|name| PortInfo {
                         name,
-                        direction: "in".to_string(),
-                    }));
-                    Response::ports(ports)
-                }
-                (Err(e), _) | (_, Err(e)) => Response::err(e.to_string()),
+                        direction: "out".to_string(),
+                    })
+                    .collect();
+                ports.extend(inputs.into_iter().map(|name| PortInfo {
+                    name,
+                    direction: "in".to_string(),
+                }));
+                Response::ports(ports)
             }
-        }
+            (Err(e), _) | (_, Err(e)) => Response::err(e.to_string()),
+        },
         Request::LspCompletion { source, offset } => {
             let mut analyzer = LspAnalyzer::new();
             analyzer.update(source);
@@ -122,9 +120,7 @@ pub async fn handle_request(evaluator: &Arc<Mutex<Evaluator>>, request: Request)
             let mut analyzer = LspAnalyzer::new();
             analyzer.update(source.clone());
             let location = word_at_offset(&source, offset)
-                .and_then(|word| {
-                    GotoDefinitionProvider::find_definition(&word, analyzer.blocks())
-                })
+                .and_then(|word| GotoDefinitionProvider::find_definition(&word, analyzer.blocks()))
                 .map(|span| {
                     let (start_line, start_col) = offset_to_line_col(&source, span.start);
                     let (end_line, end_col) = offset_to_line_col(&source, span.end);
@@ -282,7 +278,8 @@ mod tests {
     #[tokio::test]
     async fn handle_lsp_goto_definition_device() {
         let ev = Arc::new(Mutex::new(Evaluator::new(120.0)));
-        let source = "device synth {\n  port \"IAC\"\n}\ninstrument bass {\n  device synth\n  channel 1\n}";
+        let source =
+            "device synth {\n  port \"IAC\"\n}\ninstrument bass {\n  device synth\n  channel 1\n}";
         let req = Request::LspGotoDefinition {
             source: source.into(),
             // "synth" in instrument block at offset ~55

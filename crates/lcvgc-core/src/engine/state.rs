@@ -1,81 +1,140 @@
 //! 再生状態管理モジュール
+//! Playback state management module
 //!
 //! シーケンサーの再生状態遷移を管理する。
+//! Manages playback state transitions of the sequencer.
+//!
 //! シーン再生・セッション再生・停止の3状態間を遷移し、
 //! リピートモードに応じた小節進行制御を行う。
+//! Transitions between three states: scene playback, session playback, and stopped,
+//! and controls measure progression according to the repeat mode.
 
 use crate::ast::playback::RepeatSpec;
 
 /// 再生状態
+/// Playback state
 #[derive(Debug, Clone, PartialEq)]
 pub enum PlaybackState {
     /// 停止中
+    /// Stopped
     Stopped,
     /// シーン再生中
+    /// Playing a scene
     PlayingScene {
         /// シーン名
+        /// Scene name
         name: String,
         /// リピートモード
+        /// Repeat mode
         repeat: RepeatMode,
     },
     /// セッション再生中
+    /// Playing a session
     PlayingSession {
         /// セッション名
+        /// Session name
         name: String,
         /// セッション全体のリピートモード
+        /// Repeat mode for the entire session
         repeat: RepeatMode,
         /// 現在のエントリインデックス
+        /// Current entry index
         entry_index: usize,
         /// 現在のシーンのリピートモード
+        /// Repeat mode for the current scene
         scene_repeat: RepeatMode,
     },
 }
 
 /// リピートモード（内部管理用）
+/// Repeat mode (for internal management)
 #[derive(Debug, Clone, PartialEq)]
 pub enum RepeatMode {
     /// 1回のみ
+    /// Once only
     Once,
     /// 残り回数
-    Count { remaining: u32 },
+    /// Remaining count
+    Count {
+        /// 残りリピート回数
+        /// Remaining repeat count
+        remaining: u32,
+    },
     /// 無限ループ
+    /// Infinite loop
     Loop,
 }
 
 /// 再生コマンド
+/// Playback command
 #[derive(Debug, Clone, PartialEq)]
 pub enum PlaybackCommand {
     /// シーン再生
-    PlayScene { name: String, repeat: RepeatSpec },
+    /// Play a scene
+    PlayScene {
+        /// シーン名
+        /// Scene name
+        name: String,
+        /// リピート指定
+        /// Repeat specification
+        repeat: RepeatSpec,
+    },
     /// セッション再生
-    PlaySession { name: String, repeat: RepeatSpec },
+    /// Play a session
+    PlaySession {
+        /// セッション名
+        /// Session name
+        name: String,
+        /// リピート指定
+        /// Repeat specification
+        repeat: RepeatSpec,
+    },
     /// 停止（対象指定なしで全停止）
-    Stop { target: Option<String> },
+    /// Stop (stops all if no target specified)
+    Stop {
+        /// 停止対象の名前（Noneで全停止）
+        /// Name of the target to stop (None to stop all)
+        target: Option<String>,
+    },
 }
 
 /// 小節進行時のアクション
+/// Action upon measure progression
 #[derive(Debug, Clone, PartialEq)]
 pub enum NextAction {
     /// 同じシーンを続行
+    /// Continue the same scene
     ContinueScene,
     /// シーン完了、停止
+    /// Scene complete, stop
     SceneComplete,
     /// セッション内の次シーンへ
-    NextSessionEntry { scene_name: String },
+    /// Advance to the next scene in the session
+    NextSessionEntry {
+        /// 次のシーン名
+        /// Next scene name
+        scene_name: String,
+    },
     /// セッション完了、停止
+    /// Session complete, stop
     SessionComplete,
 }
 
 /// 再生状態マネージャ
+/// Playback state manager
 ///
 /// 再生コマンドの適用と小節進行に伴う状態遷移を管理する。
+/// Manages state transitions from playback command application and measure progression.
 #[derive(Debug)]
 pub struct StateManager {
+    /// 現在の再生状態
+    /// Current playback state
     state: PlaybackState,
 }
 
 impl StateManager {
     /// 停止状態で初期化
+    /// Initializes in the stopped state
     pub fn new() -> Self {
         Self {
             state: PlaybackState::Stopped,
@@ -83,11 +142,13 @@ impl StateManager {
     }
 
     /// 現在の再生状態への参照を返す
+    /// Returns a reference to the current playback state
     pub fn state(&self) -> &PlaybackState {
         &self.state
     }
 
     /// コマンドを適用して状態を遷移させる
+    /// Applies a command and transitions the state
     pub fn apply_command(&mut self, cmd: PlaybackCommand) {
         match cmd {
             PlaybackCommand::PlayScene { name, repeat } => {
@@ -123,8 +184,10 @@ impl StateManager {
     }
 
     /// シーンの1ループ完了時に呼び出し、次のアクションを返す
+    /// Called when one scene loop completes, returns the next action
     ///
     /// リピートモードに応じて状態を更新し、適切なアクションを返す。
+    /// Updates the state according to the repeat mode and returns the appropriate action.
     pub fn scene_loop_complete(&mut self) -> NextAction {
         match &mut self.state {
             PlaybackState::Stopped => NextAction::SceneComplete,
@@ -175,6 +238,7 @@ impl StateManager {
     }
 
     /// RepeatSpecからRepeatModeへ変換する
+    /// Converts RepeatSpec to RepeatMode
     pub fn from_repeat_spec(spec: &RepeatSpec) -> RepeatMode {
         match spec {
             RepeatSpec::Once => RepeatMode::Once,
@@ -184,6 +248,7 @@ impl StateManager {
     }
 
     /// 現在再生中のシーン名を返す
+    /// Returns the name of the currently playing scene
     pub fn current_scene_name(&self) -> Option<&str> {
         match &self.state {
             PlaybackState::PlayingScene { name, .. } => Some(name),

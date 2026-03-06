@@ -7,6 +7,8 @@ use nom::{
 use crate::ast::var::VarDef;
 use crate::parser::common::{non_reserved_identifier, ws};
 
+/// 変数定義をパースする: `var NAME = VALUE`
+/// VALUEは次の空白文字または入力末尾まで消費される。
 /// Parse `var NAME = VALUE`
 /// VALUE is consumed until the next whitespace or end of input.
 pub fn parse_var(input: &str) -> IResult<&str, VarDef> {

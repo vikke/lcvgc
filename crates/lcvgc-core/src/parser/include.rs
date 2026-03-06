@@ -3,6 +3,7 @@ use nom::{bytes::complete::tag, IResult};
 use crate::ast::include::IncludeDef;
 use crate::parser::common::{quoted_string, ws};
 
+/// インクルード文をパースする: `include "PATH"`
 /// Parse `include "PATH"`
 pub fn parse_include(input: &str) -> IResult<&str, IncludeDef> {
     let (input, _) = tag("include")(input)?;

@@ -5,18 +5,25 @@ use crate::ast::tempo::Tempo;
 use crate::engine::shuffle;
 
 /// シーンの1ループ分の解決結果
+/// Resolved result for one loop iteration of a scene
 #[derive(Debug, Clone, PartialEq)]
 pub struct SceneInstance {
     /// 選択されたクリップ名のリスト
+    /// List of selected clip names
     pub clips: Vec<String>,
     /// テンポ変更指示（あれば）
+    /// Tempo change instruction (if any)
     pub tempo_change: Option<Tempo>,
 }
 
 /// シーン定義からクリップを選択する（シャッフル・確率判定付き）
+/// Selects clips from a scene definition (with shuffle and probability evaluation)
 ///
 /// ループごとに呼び出して毎回判定し直す。
+/// Called per loop iteration to re-evaluate each time.
+///
 /// エントリごとに確率判定→候補から重み付き選択の順で処理する。
+/// Processes each entry by probability check followed by weighted selection from candidates.
 pub fn resolve_scene<R: Rng>(scene: &SceneDef, rng: &mut R) -> SceneInstance {
     let mut clips = Vec::new();
     let mut tempo_change = None;

@@ -1,9 +1,14 @@
+//! パーサーおよび評価エンジンのベンチマーク
+//! Benchmarks for the parser and evaluation engine
+
 use criterion::{black_box, criterion_group, criterion_main, Criterion};
 use lcvgc_core::engine::clock::Clock;
 use lcvgc_core::engine::compiler::compile_clip;
 use lcvgc_core::engine::evaluator::Evaluator;
 use lcvgc_core::parser::parse_source;
 
+/// シンプルなDSLソース（tempo + device + instrument）
+/// Simple DSL source (tempo + device + instrument)
 const SIMPLE_SOURCE: &str = r#"
 tempo 140
 
@@ -17,6 +22,8 @@ instrument bass {
 }
 "#;
 
+/// 複雑なDSLソース（複数device/instrument/clip/scene/session/scale/var）
+/// Complex DSL source (multiple devices/instruments/clips/scenes/sessions/scale/var)
 const COMPLEX_SOURCE: &str = r#"
 tempo 130
 
@@ -86,18 +93,24 @@ scale c minor
 var style = dark
 "#;
 
+/// シンプルソースのパースベンチマーク
+/// Benchmark for parsing simple source
 fn bench_parse_simple(c: &mut Criterion) {
     c.bench_function("parse_simple", |b| {
         b.iter(|| parse_source(black_box(SIMPLE_SOURCE)))
     });
 }
 
+/// 複雑ソースのパースベンチマーク
+/// Benchmark for parsing complex source
 fn bench_parse_complex(c: &mut Criterion) {
     c.bench_function("parse_complex", |b| {
         b.iter(|| parse_source(black_box(COMPLEX_SOURCE)))
     });
 }
 
+/// シンプルソースの評価ベンチマーク
+/// Benchmark for evaluating simple source
 fn bench_eval_simple(c: &mut Criterion) {
     c.bench_function("eval_simple", |b| {
         b.iter(|| {
@@ -107,6 +120,8 @@ fn bench_eval_simple(c: &mut Criterion) {
     });
 }
 
+/// 複雑ソースの評価ベンチマーク
+/// Benchmark for evaluating complex source
 fn bench_eval_complex(c: &mut Criterion) {
     c.bench_function("eval_complex", |b| {
         b.iter(|| {
@@ -116,6 +131,8 @@ fn bench_eval_complex(c: &mut Criterion) {
     });
 }
 
+/// クリップコンパイルのベンチマーク
+/// Benchmark for clip compilation
 fn bench_compile_clip(c: &mut Criterion) {
     let mut ev = Evaluator::new(120.0);
     ev.eval_source(COMPLEX_SOURCE).unwrap();

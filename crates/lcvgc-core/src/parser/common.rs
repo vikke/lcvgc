@@ -1,14 +1,16 @@
 use nom::{
-    IResult,
     branch::alt,
     bytes::complete::{tag, take_while, take_while1},
     character::complete::{char, digit1, multispace1, one_of},
     combinator::{map, map_res, opt, value},
     multi::many0,
+    IResult,
 };
 
 use crate::ast::common::*;
 
+/// 予約語の一覧
+/// List of reserved keywords
 pub(crate) const RESERVED_KEYWORDS: &[&str] = &[
     "device",
     "instrument",
@@ -37,6 +39,7 @@ pub(crate) const RESERVED_KEYWORDS: &[&str] = &[
     "loop",
 ];
 
+/// 空白とコメント（行コメント `//` およびブロックコメント `/* */`）を消費する
 /// Consume whitespace and comments (line comments `//` and block comments `/* */`).
 pub fn ws(input: &str) -> IResult<&str, ()> {
     let (input, _) = many0(alt((
@@ -47,6 +50,7 @@ pub fn ws(input: &str) -> IResult<&str, ()> {
     Ok((input, ()))
 }
 
+/// 行コメントをパースする: `// ...`
 /// Parse a line comment: `// ...`
 fn line_comment(input: &str) -> IResult<&str, &str> {
     let (input, _) = tag("//")(input)?;
@@ -54,6 +58,7 @@ fn line_comment(input: &str) -> IResult<&str, &str> {
     Ok((input, comment))
 }
 
+/// ブロックコメントをパースする: `/* ... */`（ネスト対応）
 /// Parse a block comment: `/* ... */` with nested comment support.
 ///
 /// Supports arbitrary nesting depth (e.g. `/* outer /* inner */ outer */`).
@@ -90,6 +95,7 @@ fn block_comment(input: &str) -> IResult<&str, ()> {
     Ok((remaining, ()))
 }
 
+/// 識別子をパースする（英字・数字・アンダースコア。先頭は英字またはアンダースコア）
 /// Parse an identifier (letters, digits, underscores; must start with letter or underscore).
 pub fn identifier(input: &str) -> IResult<&str, &str> {
     let start = input;
@@ -99,6 +105,7 @@ pub fn identifier(input: &str) -> IResult<&str, &str> {
     Ok((input, matched))
 }
 
+/// 予約語でない識別子をパースする
 /// Parse an identifier that is not a reserved keyword.
 pub fn non_reserved_identifier(input: &str) -> IResult<&str, &str> {
     let (rest, ident) = identifier(input)?;
@@ -112,11 +119,14 @@ pub fn non_reserved_identifier(input: &str) -> IResult<&str, &str> {
     }
 }
 
+/// 文字列が予約語かどうかを判定する
 /// Check if a string is a reserved keyword.
 pub fn is_reserved(s: &str) -> bool {
     RESERVED_KEYWORDS.contains(&s)
 }
 
+/// 音名をパースする（すべて小文字）
+/// 順序が重要: 2文字の音名（c#, db等）を先に試し、その後1文字の音名を試す
 /// Parse a note name (all lowercase).
 /// Order matters: try two-char names first (c#, db, etc.), then single-char.
 pub fn note_name(input: &str) -> IResult<&str, NoteName> {
@@ -143,6 +153,7 @@ pub fn note_name(input: &str) -> IResult<&str, NoteName> {
     ))(input)
 }
 
+/// オクターブ番号（0-9）をパースする
 /// Parse an octave number (0-9).
 pub fn octave(input: &str) -> IResult<&str, Octave> {
     map(one_of("0123456789"), |c: char| {
@@ -150,6 +161,7 @@ pub fn octave(input: &str) -> IResult<&str, Octave> {
     })(input)
 }
 
+/// 音価をパースする: 1, 2, 4, 8, 16。`.` が続く場合は付点音符
 /// Parse a duration value: 1, 2, 4, 8, 16, optionally followed by `.` for dotted.
 pub fn duration(input: &str) -> IResult<&str, Duration> {
     let (input, num) = alt((
@@ -179,21 +191,25 @@ pub fn duration(input: &str) -> IResult<&str, Duration> {
     Ok((input, dur))
 }
 
+/// u32整数をパースする
 /// Parse a u32 integer.
 pub fn parse_u32(input: &str) -> IResult<&str, u32> {
     map_res(digit1, |s: &str| s.parse::<u32>())(input)
 }
 
+/// u8整数をパースする
 /// Parse a u8 integer.
 pub fn parse_u8(input: &str) -> IResult<&str, u8> {
     map_res(digit1, |s: &str| s.parse::<u8>())(input)
 }
 
+/// u16整数をパースする
 /// Parse a u16 integer.
 pub fn parse_u16(input: &str) -> IResult<&str, u16> {
     map_res(digit1, |s: &str| s.parse::<u16>())(input)
 }
 
+/// 1つ以上の空白文字（およびコメント）を消費する
 /// Consume at least one whitespace character (and any comments).
 pub fn ws1(input: &str) -> IResult<&str, ()> {
     let (input, _) = multispace1(input)?;
@@ -201,6 +217,7 @@ pub fn ws1(input: &str) -> IResult<&str, ()> {
     Ok((input, ()))
 }
 
+/// 引用符付き文字列をパースする: "..."
 /// Parse a quoted string: "..."
 pub fn quoted_string(input: &str) -> IResult<&str, &str> {
     let (input, _) = char('"')(input)?;
@@ -248,10 +265,7 @@ mod tests {
 
     #[test]
     fn test_non_reserved_identifier() {
-        assert_eq!(
-            non_reserved_identifier("bass_a"),
-            Ok(("", "bass_a"))
-        );
+        assert_eq!(non_reserved_identifier("bass_a"), Ok(("", "bass_a")));
         assert!(non_reserved_identifier("device").is_err());
         assert!(non_reserved_identifier("clip").is_err());
     }
@@ -300,8 +314,14 @@ mod tests {
 
     #[test]
     fn test_duration_dotted() {
-        assert_eq!(duration("4."), Ok(("", Duration::Dotted(DottedInner::Quarter))));
-        assert_eq!(duration("8."), Ok(("", Duration::Dotted(DottedInner::Eighth))));
+        assert_eq!(
+            duration("4."),
+            Ok(("", Duration::Dotted(DottedInner::Quarter)))
+        );
+        assert_eq!(
+            duration("8."),
+            Ok(("", Duration::Dotted(DottedInner::Eighth)))
+        );
     }
 
     #[test]
@@ -341,10 +361,7 @@ mod tests {
 
     #[test]
     fn test_block_comment_deeply_nested() {
-        assert_eq!(
-            ws("/* a /* b /* c */ b */ a */rest"),
-            Ok(("rest", ()))
-        );
+        assert_eq!(ws("/* a /* b /* c */ b */ a */rest"), Ok(("rest", ())));
     }
 
     #[test]
@@ -365,9 +382,6 @@ mod tests {
 
     #[test]
     fn test_mixed_line_and_block_comments() {
-        assert_eq!(
-            ws("// line\n/* block */rest"),
-            Ok(("rest", ()))
-        );
+        assert_eq!(ws("// line\n/* block */rest"), Ok(("rest", ())));
     }
 }

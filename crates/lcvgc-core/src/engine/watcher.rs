@@ -1,6 +1,8 @@
 //! ファイル変更監視によるホットリロード機構
+//! Hot-reload mechanism via file change watching
 //!
 //! DSLファイル(.cvg)の変更を検知し、自動的にre-evalを実行する。
+//! Detects changes in DSL files (.cvg) and automatically triggers re-evaluation.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -13,20 +15,26 @@ use tracing::{debug, error, info, warn};
 use crate::engine::evaluator::Evaluator;
 
 /// ファイル変更イベントの種類
+/// Types of file change events
 #[derive(Debug, Clone, PartialEq)]
 pub enum FileChangeEvent {
     /// ファイルが変更された
+    /// File was modified
     Modified(PathBuf),
     /// ファイルが作成された
+    /// File was created
     Created(PathBuf),
 }
 
 /// ホットリロードの設定
+/// Configuration for hot-reload
 #[derive(Debug, Clone)]
 pub struct WatcherConfig {
     /// デバウンス時間（短時間の連続変更をまとめる）
+    /// Debounce duration (coalesces rapid consecutive changes)
     pub debounce_ms: u64,
     /// 監視対象の拡張子
+    /// File extensions to watch
     pub extensions: Vec<String>,
 }
 
@@ -40,14 +48,25 @@ impl Default for WatcherConfig {
 }
 
 /// ファイルウォッチャー
+/// File watcher
+///
+/// 指定ディレクトリ以下のDSLファイル変更を監視し、デバウンス付きでイベントを通知する。
+/// Monitors DSL file changes under a specified directory and notifies events with debouncing.
 pub struct FileWatcher {
+    /// ウォッチャー設定
+    /// Watcher configuration
     config: WatcherConfig,
+    /// ファイルシステムウォッチャー（保持用）
+    /// Filesystem watcher (kept alive)
     _watcher: RecommendedWatcher,
+    /// 変更イベント受信チャネル
+    /// Channel receiver for change events
     rx: mpsc::Receiver<FileChangeEvent>,
 }
 
 impl FileWatcher {
     /// 指定パスの監視を開始する
+    /// Starts watching the specified path
     pub fn new(path: &Path, config: WatcherConfig) -> Result<Self, notify::Error> {
         let (tx, rx) = mpsc::channel(32);
         let extensions = config.extensions.clone();
@@ -55,19 +74,14 @@ impl FileWatcher {
         let mut watcher = notify::recommended_watcher(move |res: Result<Event, notify::Error>| {
             match res {
                 Ok(event) => {
-                    let dominated = matches!(
-                        event.kind,
-                        EventKind::Modify(_) | EventKind::Create(_)
-                    );
+                    let dominated =
+                        matches!(event.kind, EventKind::Modify(_) | EventKind::Create(_));
                     if !dominated {
                         return;
                     }
 
                     for path in &event.paths {
-                        let ext = path
-                            .extension()
-                            .and_then(|e| e.to_str())
-                            .unwrap_or("");
+                        let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
                         if extensions.iter().any(|e| e == ext) {
                             let change = if matches!(event.kind, EventKind::Create(_)) {
                                 FileChangeEvent::Created(path.clone())
@@ -95,6 +109,7 @@ impl FileWatcher {
     }
 
     /// 変更イベントを受信する（デバウンス付き）
+    /// Receives a change event (with debouncing)
     pub async fn next_change(&mut self) -> Option<FileChangeEvent> {
         // 最初のイベントを待つ
         let event = self.rx.recv().await?;
@@ -114,8 +129,10 @@ impl FileWatcher {
 }
 
 /// ホットリロードループを起動する
+/// Starts the hot-reload loop
 ///
 /// ファイル変更を検知したらevaluatorにre-evalを実行する。
+/// Triggers re-evaluation on the evaluator when file changes are detected.
 pub async fn run_hot_reload(
     evaluator: Arc<Mutex<Evaluator>>,
     watch_path: PathBuf,
@@ -188,10 +205,7 @@ mod tests {
 
     #[tokio::test]
     async fn watcher_on_nonexistent_path_returns_error() {
-        let result = FileWatcher::new(
-            Path::new("/nonexistent/path"),
-            WatcherConfig::default(),
-        );
+        let result = FileWatcher::new(Path::new("/nonexistent/path"), WatcherConfig::default());
         assert!(result.is_err());
     }
 

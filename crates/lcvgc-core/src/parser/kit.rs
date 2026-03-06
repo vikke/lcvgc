@@ -6,11 +6,12 @@ use nom::{
     IResult,
 };
 
-use crate::ast::kit::{KitDef, KitInstrument, KitInstrumentNote};
 #[cfg(test)]
 use crate::ast::common::NoteName;
+use crate::ast::kit::{KitDef, KitInstrument, KitInstrumentNote};
 use crate::parser::common::{identifier, note_name, parse_u8, ws, ws1};
 
+/// ノート（音名＋オクターブ）をパースする（例: `c2`, `f#2`, `a#2`）。
 /// Parse a note: note name + octave (e.g. `c2`, `f#2`, `a#2`).
 fn parse_instrument_note(input: &str) -> IResult<&str, KitInstrumentNote> {
     let (input, name) = note_name(input)?;
@@ -18,15 +19,25 @@ fn parse_instrument_note(input: &str) -> IResult<&str, KitInstrumentNote> {
     Ok((input, KitInstrumentNote { name, octave }))
 }
 
-/// Parse a single comma-separated instrument property.
-/// Returns a closure that updates the instrument builder fields.
+/// インストゥルメントの個々のプロパティを表す列挙型。
+/// Enum representing a single instrument property parsed from a kit definition.
 enum InstrumentProp {
+    /// MIDIチャンネル番号
+    /// MIDI channel number
     Channel(u8),
+    /// 発音するノート（音名＋オクターブ）
+    /// Note to trigger (note name + octave)
     Note(KitInstrumentNote),
+    /// 通常発音時のゲート値
+    /// Gate value for normal articulation
     GateNormal(u8),
+    /// スタッカート時のゲート値
+    /// Gate value for staccato articulation
     GateStaccato(u8),
 }
 
+/// カンマ区切りのインストゥルメントプロパティを1つパースする。
+/// Parse a single comma-separated instrument property.
 fn parse_instrument_prop(input: &str) -> IResult<&str, InstrumentProp> {
     let (input, key) = identifier(input)?;
     let (input, _) = ws1(input)?;
@@ -54,6 +65,7 @@ fn parse_instrument_prop(input: &str) -> IResult<&str, InstrumentProp> {
     }
 }
 
+/// `{ ... }` 内のプロパティをパースする。カンマ区切り・改行区切り・混在のいずれにも対応。
 /// Parse properties inside `{ ... }`, separated by commas and/or whitespace.
 ///
 /// Supports both comma-separated (`channel 10, note c2`) and
@@ -83,6 +95,7 @@ fn parse_instrument_props(input: &str) -> IResult<&str, Vec<InstrumentProp>> {
     Ok((input, props))
 }
 
+/// インストゥルメント1行をパースする: `name { channel 10, note c2, ... }`
 /// Parse a single instrument line: `name { channel 10, note c2, ... }`
 fn parse_instrument(input: &str) -> IResult<&str, KitInstrument> {
     let (input, name) = identifier(input)?;
@@ -126,6 +139,7 @@ fn parse_instrument(input: &str) -> IResult<&str, KitInstrument> {
     ))
 }
 
+/// キットブロック全体をパースする。
 /// Parse a full kit block.
 pub fn parse_kit(input: &str) -> IResult<&str, KitDef> {
     let (input, _) = tag("kit")(input)?;
@@ -180,7 +194,13 @@ mod tests {
         let bd = &kit.instruments[0];
         assert_eq!(bd.name, "bd");
         assert_eq!(bd.channel, 10);
-        assert_eq!(bd.note, KitInstrumentNote { name: NoteName::C, octave: 2 });
+        assert_eq!(
+            bd.note,
+            KitInstrumentNote {
+                name: NoteName::C,
+                octave: 2
+            }
+        );
         assert_eq!(bd.gate_normal, Some(50));
         assert_eq!(bd.gate_staccato, Some(20));
 
@@ -188,25 +208,49 @@ mod tests {
         let snare = &kit.instruments[1];
         assert_eq!(snare.name, "snare");
         assert_eq!(snare.channel, 10);
-        assert_eq!(snare.note, KitInstrumentNote { name: NoteName::D, octave: 2 });
+        assert_eq!(
+            snare.note,
+            KitInstrumentNote {
+                name: NoteName::D,
+                octave: 2
+            }
+        );
         assert_eq!(snare.gate_normal, None);
         assert_eq!(snare.gate_staccato, None);
 
         // hh - sharp note
         let hh = &kit.instruments[2];
-        assert_eq!(hh.note, KitInstrumentNote { name: NoteName::Fs, octave: 2 });
+        assert_eq!(
+            hh.note,
+            KitInstrumentNote {
+                name: NoteName::Fs,
+                octave: 2
+            }
+        );
         assert_eq!(hh.gate_normal, Some(30));
         assert_eq!(hh.gate_staccato, Some(10));
 
         // oh - a#2
         let oh = &kit.instruments[3];
-        assert_eq!(oh.note, KitInstrumentNote { name: NoteName::As, octave: 2 });
+        assert_eq!(
+            oh.note,
+            KitInstrumentNote {
+                name: NoteName::As,
+                octave: 2
+            }
+        );
         assert_eq!(oh.gate_normal, Some(80));
         assert_eq!(oh.gate_staccato, None);
 
         // clap - d#2
         let clap = &kit.instruments[4];
-        assert_eq!(clap.note, KitInstrumentNote { name: NoteName::Ds, octave: 2 });
+        assert_eq!(
+            clap.note,
+            KitInstrumentNote {
+                name: NoteName::Ds,
+                octave: 2
+            }
+        );
     }
 
     #[test]
@@ -220,7 +264,13 @@ mod tests {
         let kick = &kit.instruments[0];
         assert_eq!(kick.name, "kick");
         assert_eq!(kick.channel, 1);
-        assert_eq!(kick.note, KitInstrumentNote { name: NoteName::C, octave: 4 });
+        assert_eq!(
+            kick.note,
+            KitInstrumentNote {
+                name: NoteName::C,
+                octave: 4
+            }
+        );
         assert_eq!(kick.gate_normal, None);
         assert_eq!(kick.gate_staccato, None);
     }
@@ -240,7 +290,9 @@ mod tests {
     }
 
     /// 改行区切り（カンマなし）のkit定義がパースできることを検証する。
+    /// Verify that kit definitions with newline-separated properties (no commas) can be parsed.
     /// tree-sitter文法と一貫した構文をサポートする。
+    /// Supports syntax consistent with tree-sitter grammar.
     #[test]
     fn test_kit_with_newline_separated_props() {
         let input = r#"kit tr808 {
@@ -267,20 +319,39 @@ mod tests {
         let kick = &kit.instruments[0];
         assert_eq!(kick.name, "kick");
         assert_eq!(kick.channel, 10);
-        assert_eq!(kick.note, KitInstrumentNote { name: NoteName::C, octave: 2 });
+        assert_eq!(
+            kick.note,
+            KitInstrumentNote {
+                name: NoteName::C,
+                octave: 2
+            }
+        );
 
         let snare = &kit.instruments[1];
         assert_eq!(snare.name, "snare");
         assert_eq!(snare.channel, 10);
-        assert_eq!(snare.note, KitInstrumentNote { name: NoteName::D, octave: 2 });
+        assert_eq!(
+            snare.note,
+            KitInstrumentNote {
+                name: NoteName::D,
+                octave: 2
+            }
+        );
 
         let hihat = &kit.instruments[2];
         assert_eq!(hihat.name, "hihat");
         assert_eq!(hihat.channel, 10);
-        assert_eq!(hihat.note, KitInstrumentNote { name: NoteName::Fs, octave: 2 });
+        assert_eq!(
+            hihat.note,
+            KitInstrumentNote {
+                name: NoteName::Fs,
+                octave: 2
+            }
+        );
     }
 
     /// カンマと改行が混在するkit定義がパースできることを検証する。
+    /// Verify that kit definitions with mixed comma and newline separators can be parsed.
     #[test]
     fn test_kit_with_mixed_separators() {
         let input = r#"kit mixed {
@@ -301,12 +372,30 @@ mod tests {
     #[test]
     fn test_parse_instrument_note() {
         let (_, note) = parse_instrument_note("c2").unwrap();
-        assert_eq!(note, KitInstrumentNote { name: NoteName::C, octave: 2 });
+        assert_eq!(
+            note,
+            KitInstrumentNote {
+                name: NoteName::C,
+                octave: 2
+            }
+        );
 
         let (_, note) = parse_instrument_note("f#2").unwrap();
-        assert_eq!(note, KitInstrumentNote { name: NoteName::Fs, octave: 2 });
+        assert_eq!(
+            note,
+            KitInstrumentNote {
+                name: NoteName::Fs,
+                octave: 2
+            }
+        );
 
         let (_, note) = parse_instrument_note("a#2").unwrap();
-        assert_eq!(note, KitInstrumentNote { name: NoteName::As, octave: 2 });
+        assert_eq!(
+            note,
+            KitInstrumentNote {
+                name: NoteName::As,
+                octave: 2
+            }
+        );
     }
 }

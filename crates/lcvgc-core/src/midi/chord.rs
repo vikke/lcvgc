@@ -3,6 +3,13 @@ use crate::ast::common::NoteName;
 use crate::midi::note::note_number;
 
 /// ChordSuffixから構成音のインターバル（半音数）リストを返す
+/// Returns a list of intervals (in semitones) for the given chord suffix
+///
+/// # 引数 / Arguments
+/// * `suffix` - コードサフィックス / Chord suffix (e.g. Maj, Min, Dom7)
+///
+/// # 戻り値 / Returns
+/// `Vec<u8>` - ルート音からの半音数のリスト / List of semitone offsets from the root
 pub fn chord_intervals(suffix: &ChordSuffix) -> Vec<u8> {
     match suffix {
         ChordSuffix::Maj => vec![0, 4, 7],
@@ -28,15 +35,29 @@ pub fn chord_intervals(suffix: &ChordSuffix) -> Vec<u8> {
 }
 
 /// ルート音 + サフィックス → MIDIノート番号のリスト
+/// Root note + suffix → list of MIDI note numbers
 ///
 /// 127を超えるノートはクランプされる
+/// Notes exceeding 127 are clamped to 127
+///
+/// # 引数 / Arguments
+/// * `root` - ルート音名 / Root note name
+/// * `octave` - オクターブ (u8) / Octave number
+/// * `suffix` - コードサフィックス / Chord suffix
+///
+/// # 戻り値 / Returns
+/// `Vec<u8>` - MIDIノート番号のリスト / List of MIDI note numbers
 pub fn chord_notes(root: NoteName, octave: u8, suffix: &ChordSuffix) -> Vec<u8> {
     let base = note_number(root, octave);
     chord_intervals(suffix)
         .iter()
         .map(|&interval| {
             let n = base as u16 + interval as u16;
-            if n > 127 { 127 } else { n as u8 }
+            if n > 127 {
+                127
+            } else {
+                n as u8
+            }
         })
         .collect()
 }
@@ -47,87 +68,138 @@ mod tests {
 
     #[test]
     fn major_triad() {
-        assert_eq!(chord_notes(NoteName::C, 4, &ChordSuffix::Maj), vec![60, 64, 67]);
+        assert_eq!(
+            chord_notes(NoteName::C, 4, &ChordSuffix::Maj),
+            vec![60, 64, 67]
+        );
     }
 
     #[test]
     fn minor_triad() {
-        assert_eq!(chord_notes(NoteName::C, 4, &ChordSuffix::Min), vec![60, 63, 67]);
+        assert_eq!(
+            chord_notes(NoteName::C, 4, &ChordSuffix::Min),
+            vec![60, 63, 67]
+        );
     }
 
     #[test]
     fn maj7() {
-        assert_eq!(chord_notes(NoteName::C, 4, &ChordSuffix::Maj7), vec![60, 64, 67, 71]);
+        assert_eq!(
+            chord_notes(NoteName::C, 4, &ChordSuffix::Maj7),
+            vec![60, 64, 67, 71]
+        );
     }
 
     #[test]
     fn min7() {
-        assert_eq!(chord_notes(NoteName::C, 4, &ChordSuffix::Min7), vec![60, 63, 67, 70]);
+        assert_eq!(
+            chord_notes(NoteName::C, 4, &ChordSuffix::Min7),
+            vec![60, 63, 67, 70]
+        );
     }
 
     #[test]
     fn dom7() {
-        assert_eq!(chord_notes(NoteName::C, 4, &ChordSuffix::Dom7), vec![60, 64, 67, 70]);
+        assert_eq!(
+            chord_notes(NoteName::C, 4, &ChordSuffix::Dom7),
+            vec![60, 64, 67, 70]
+        );
     }
 
     #[test]
     fn dim_triad() {
-        assert_eq!(chord_notes(NoteName::C, 4, &ChordSuffix::Dim), vec![60, 63, 66]);
+        assert_eq!(
+            chord_notes(NoteName::C, 4, &ChordSuffix::Dim),
+            vec![60, 63, 66]
+        );
     }
 
     #[test]
     fn dim7() {
-        assert_eq!(chord_notes(NoteName::C, 4, &ChordSuffix::Dim7), vec![60, 63, 66, 69]);
+        assert_eq!(
+            chord_notes(NoteName::C, 4, &ChordSuffix::Dim7),
+            vec![60, 63, 66, 69]
+        );
     }
 
     #[test]
     fn aug_triad() {
-        assert_eq!(chord_notes(NoteName::C, 4, &ChordSuffix::Aug), vec![60, 64, 68]);
+        assert_eq!(
+            chord_notes(NoteName::C, 4, &ChordSuffix::Aug),
+            vec![60, 64, 68]
+        );
     }
 
     #[test]
     fn min7b5() {
-        assert_eq!(chord_notes(NoteName::C, 4, &ChordSuffix::Min7b5), vec![60, 63, 66, 70]);
+        assert_eq!(
+            chord_notes(NoteName::C, 4, &ChordSuffix::Min7b5),
+            vec![60, 63, 66, 70]
+        );
     }
 
     #[test]
     fn min_maj7() {
-        assert_eq!(chord_notes(NoteName::C, 4, &ChordSuffix::MinMaj7), vec![60, 63, 67, 71]);
+        assert_eq!(
+            chord_notes(NoteName::C, 4, &ChordSuffix::MinMaj7),
+            vec![60, 63, 67, 71]
+        );
     }
 
     #[test]
     fn sus4() {
-        assert_eq!(chord_notes(NoteName::C, 4, &ChordSuffix::Sus4), vec![60, 65, 67]);
+        assert_eq!(
+            chord_notes(NoteName::C, 4, &ChordSuffix::Sus4),
+            vec![60, 65, 67]
+        );
     }
 
     #[test]
     fn sus2() {
-        assert_eq!(chord_notes(NoteName::C, 4, &ChordSuffix::Sus2), vec![60, 62, 67]);
+        assert_eq!(
+            chord_notes(NoteName::C, 4, &ChordSuffix::Sus2),
+            vec![60, 62, 67]
+        );
     }
 
     #[test]
     fn sixth() {
-        assert_eq!(chord_notes(NoteName::C, 4, &ChordSuffix::Sixth), vec![60, 64, 67, 69]);
+        assert_eq!(
+            chord_notes(NoteName::C, 4, &ChordSuffix::Sixth),
+            vec![60, 64, 67, 69]
+        );
     }
 
     #[test]
     fn min6() {
-        assert_eq!(chord_notes(NoteName::C, 4, &ChordSuffix::Min6), vec![60, 63, 67, 69]);
+        assert_eq!(
+            chord_notes(NoteName::C, 4, &ChordSuffix::Min6),
+            vec![60, 63, 67, 69]
+        );
     }
 
     #[test]
     fn ninth() {
-        assert_eq!(chord_notes(NoteName::C, 4, &ChordSuffix::Ninth), vec![60, 64, 67, 70, 74]);
+        assert_eq!(
+            chord_notes(NoteName::C, 4, &ChordSuffix::Ninth),
+            vec![60, 64, 67, 70, 74]
+        );
     }
 
     #[test]
     fn min9() {
-        assert_eq!(chord_notes(NoteName::C, 4, &ChordSuffix::Min9), vec![60, 63, 67, 70, 74]);
+        assert_eq!(
+            chord_notes(NoteName::C, 4, &ChordSuffix::Min9),
+            vec![60, 63, 67, 70, 74]
+        );
     }
 
     #[test]
     fn add9() {
-        assert_eq!(chord_notes(NoteName::C, 4, &ChordSuffix::Add9), vec![60, 64, 67, 74]);
+        assert_eq!(
+            chord_notes(NoteName::C, 4, &ChordSuffix::Add9),
+            vec![60, 64, 67, 74]
+        );
     }
 
     #[test]
@@ -149,7 +221,10 @@ mod tests {
     #[test]
     fn different_root_a_minor() {
         // A4=69, Am=[69,72,76]
-        assert_eq!(chord_notes(NoteName::A, 4, &ChordSuffix::Min), vec![69, 72, 76]);
+        assert_eq!(
+            chord_notes(NoteName::A, 4, &ChordSuffix::Min),
+            vec![69, 72, 76]
+        );
     }
 
     #[test]
@@ -162,6 +237,9 @@ mod tests {
     #[test]
     fn intervals_count_matches_notes_count() {
         let suffix = ChordSuffix::Thirteenth;
-        assert_eq!(chord_intervals(&suffix).len(), chord_notes(NoteName::C, 4, &suffix).len());
+        assert_eq!(
+            chord_intervals(&suffix).len(),
+            chord_notes(NoteName::C, 4, &suffix).len()
+        );
     }
 }

@@ -4,15 +4,33 @@ use std::path::Path;
 use serde::Deserialize;
 
 /// エンジン設定（TOMLファイルから読み込み可能）
+/// Engine configuration (loadable from a TOML file)
 #[derive(Debug, Deserialize, Default)]
 pub struct Config {
+    /// デフォルトBPM（テンポ未指定時に使用）
+    /// Default BPM (used when tempo is not specified)
     pub default_bpm: Option<f64>,
+    /// 四分音符あたりのティック数
+    /// Pulses per quarter note (ticks per quarter note)
     pub ppq: Option<u16>,
+    /// MIDIポートマッピング（論理名 → 物理ポート名）
+    /// MIDI port mapping (logical name -> physical port name)
     pub midi_ports: Option<HashMap<String, String>>,
 }
 
 impl Config {
-    /// TOMLファイルから読み込み。ファイルが存在しない場合はデフォルト値を返す。
+    /// TOMLファイルから設定を読み込む。ファイルが存在しない場合はデフォルト値を返す。
+    /// Loads configuration from a TOML file. Returns defaults if the file does not exist.
+    ///
+    /// # 引数 / Arguments
+    /// * `path` - 設定ファイルのパス / Path to the configuration file
+    ///
+    /// # 戻り値 / Returns
+    /// `Config` - 読み込んだ設定 / Loaded configuration
+    ///
+    /// # エラー / Errors
+    /// ファイル読み込みやTOMLパースに失敗した場合、エラーメッセージを返す
+    /// Returns an error message if file reading or TOML parsing fails
     pub fn load(path: &Path) -> Result<Self, String> {
         if !path.exists() {
             return Ok(Self::default());

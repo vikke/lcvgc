@@ -17,11 +17,8 @@ use tracing::{error, info};
 /// * `log_level` - ログレベル文字列 (e.g. "info", "debug")
 fn init_tracing(log_level: &str) {
     use tracing_subscriber::EnvFilter;
-    let filter = EnvFilter::try_new(log_level)
-        .unwrap_or_else(|_| EnvFilter::new("info"));
-    tracing_subscriber::fmt()
-        .with_env_filter(filter)
-        .init();
+    let filter = EnvFilter::try_new(log_level).unwrap_or_else(|_| EnvFilter::new("info"));
+    tracing_subscriber::fmt().with_env_filter(filter).init();
 }
 
 #[tokio::main]

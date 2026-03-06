@@ -1,34 +1,88 @@
-use crate::ast::Block;
-use super::span_parser::{Span, SpannedBlock};
+//! ドキュメントシンボルプロバイダモジュール
+//! Document symbol provider module
+//!
+//! SpannedBlockからLSPドキュメントシンボルを生成する。
+//! Generates LSP document symbols from SpannedBlocks.
 
+use super::span_parser::{Span, SpannedBlock};
+use crate::ast::Block;
+
+/// ドキュメントシンボル
+/// Document symbol representing a named element in the source
 #[derive(Debug, Clone, PartialEq)]
 pub struct DocumentSymbol {
+    /// シンボル名
+    /// Symbol name
     pub name: String,
+    /// シンボル種別
+    /// Symbol kind
     pub kind: SymbolKind,
+    /// シンボル全体のスパン
+    /// Span covering the entire symbol
     pub span: Span,
+    /// シンボル名のスパン（名前付きシンボルのみ）
+    /// Span of the symbol name (only for named symbols)
     pub name_span: Option<Span>,
 }
 
+/// シンボル種別
+/// Symbol kind enumeration
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum SymbolKind {
+    /// デバイス定義
+    /// Device definition
     Device,
+    /// インストゥルメント定義
+    /// Instrument definition
     Instrument,
+    /// キット定義
+    /// Kit definition
     Kit,
+    /// クリップ定義
+    /// Clip definition
     Clip,
+    /// シーン定義
+    /// Scene definition
     Scene,
+    /// セッション定義
+    /// Session definition
     Session,
+    /// テンポ設定
+    /// Tempo setting
     Tempo,
+    /// スケール設定
+    /// Scale setting
     Scale,
+    /// 変数定義
+    /// Variable definition
     Variable,
+    /// インクルード文
+    /// Include statement
     Include,
+    /// 再生コマンド
+    /// Play command
     Play,
+    /// 停止コマンド
+    /// Stop command
     Stop,
 }
 
+/// ドキュメントシンボルプロバイダ
+/// Document symbol provider
+///
+/// SpannedBlockリストからDocumentSymbolリストを生成する静的メソッドを提供する。
+/// Provides static methods to generate DocumentSymbol lists from SpannedBlock lists.
 pub struct DocumentSymbolProvider;
 
 impl DocumentSymbolProvider {
-    /// SpannedBlockリストからDocumentSymbolリストを生成
+    /// SpannedBlockリストからDocumentSymbolリストを生成する
+    /// Generates a list of DocumentSymbols from a list of SpannedBlocks
+    ///
+    /// # Arguments
+    /// * `blocks` - スパン付きブロック一覧 / List of spanned blocks
+    ///
+    /// # Returns
+    /// ドキュメントシンボルのリスト / List of document symbols
     pub fn symbols(blocks: &[SpannedBlock]) -> Vec<DocumentSymbol> {
         blocks
             .iter()
@@ -41,9 +95,10 @@ impl DocumentSymbolProvider {
                     Block::Scene(s) => (s.name.clone(), SymbolKind::Scene),
                     Block::Session(s) => (s.name.clone(), SymbolKind::Session),
                     Block::Tempo(t) => (format!("{:?}", t), SymbolKind::Tempo),
-                    Block::Scale(s) => {
-                        (format!("{:?} {:?}", s.root, s.scale_type), SymbolKind::Scale)
-                    }
+                    Block::Scale(s) => (
+                        format!("{:?} {:?}", s.root, s.scale_type),
+                        SymbolKind::Scale,
+                    ),
                     Block::Var(v) => (v.name.clone(), SymbolKind::Variable),
                     Block::Include(i) => (i.path.clone(), SymbolKind::Include),
                     Block::Play(p) => (format!("{:?}", p.target), SymbolKind::Play),
@@ -128,7 +183,10 @@ mod tests {
             Block::Clip(ClipDef {
                 name: "melody".into(),
                 options: ClipOptions::default(),
-                body: ClipBody::Pitched(PitchedClipBody { lines: vec![], cc_automations: vec![] }),
+                body: ClipBody::Pitched(PitchedClipBody {
+                    lines: vec![],
+                    cc_automations: vec![],
+                }),
             }),
             10,
             100,
@@ -276,11 +334,7 @@ mod tests {
                 0,
                 20,
             ),
-            make_spanned(
-                Block::Stop(StopCommand { target: None }),
-                21,
-                30,
-            ),
+            make_spanned(Block::Stop(StopCommand { target: None }), 21, 30),
         ];
         let symbols = DocumentSymbolProvider::symbols(&blocks);
         assert_eq!(symbols[0].kind, SymbolKind::Play);
