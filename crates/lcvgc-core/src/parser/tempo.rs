@@ -10,6 +10,7 @@ use nom::{
 use crate::ast::tempo::Tempo;
 use crate::parser::common::ws1;
 
+/// 相対テンポ値をパースする: `+N` または `-N`
 /// Parse a relative tempo value: `+N` or `-N`.
 fn relative_tempo(input: &str) -> IResult<&str, Tempo> {
     let positive = map(preceded(char('+'), nom_u16), |v| Tempo::Relative(v as i16));
@@ -19,6 +20,7 @@ fn relative_tempo(input: &str) -> IResult<&str, Tempo> {
     alt((positive, negative))(input)
 }
 
+/// テンポ定義をパースする: `tempo <value>`
 /// Parse `tempo <value>`.
 pub fn parse_tempo(input: &str) -> IResult<&str, Tempo> {
     let (input, _) = tag_no_case("tempo")(input)?;

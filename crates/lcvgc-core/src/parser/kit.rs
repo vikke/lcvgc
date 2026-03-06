@@ -11,6 +11,7 @@ use crate::ast::common::NoteName;
 use crate::ast::kit::{KitDef, KitInstrument, KitInstrumentNote};
 use crate::parser::common::{identifier, note_name, parse_u8, ws, ws1};
 
+/// ノート（音名＋オクターブ）をパースする（例: `c2`, `f#2`, `a#2`）。
 /// Parse a note: note name + octave (e.g. `c2`, `f#2`, `a#2`).
 fn parse_instrument_note(input: &str) -> IResult<&str, KitInstrumentNote> {
     let (input, name) = note_name(input)?;
@@ -18,15 +19,25 @@ fn parse_instrument_note(input: &str) -> IResult<&str, KitInstrumentNote> {
     Ok((input, KitInstrumentNote { name, octave }))
 }
 
-/// Parse a single comma-separated instrument property.
-/// Returns a closure that updates the instrument builder fields.
+/// インストゥルメントの個々のプロパティを表す列挙型。
+/// Enum representing a single instrument property parsed from a kit definition.
 enum InstrumentProp {
+    /// MIDIチャンネル番号
+    /// MIDI channel number
     Channel(u8),
+    /// 発音するノート（音名＋オクターブ）
+    /// Note to trigger (note name + octave)
     Note(KitInstrumentNote),
+    /// 通常発音時のゲート値
+    /// Gate value for normal articulation
     GateNormal(u8),
+    /// スタッカート時のゲート値
+    /// Gate value for staccato articulation
     GateStaccato(u8),
 }
 
+/// カンマ区切りのインストゥルメントプロパティを1つパースする。
+/// Parse a single comma-separated instrument property.
 fn parse_instrument_prop(input: &str) -> IResult<&str, InstrumentProp> {
     let (input, key) = identifier(input)?;
     let (input, _) = ws1(input)?;
@@ -54,6 +65,7 @@ fn parse_instrument_prop(input: &str) -> IResult<&str, InstrumentProp> {
     }
 }
 
+/// `{ ... }` 内のプロパティをパースする。カンマ区切り・改行区切り・混在のいずれにも対応。
 /// Parse properties inside `{ ... }`, separated by commas and/or whitespace.
 ///
 /// Supports both comma-separated (`channel 10, note c2`) and
@@ -83,6 +95,7 @@ fn parse_instrument_props(input: &str) -> IResult<&str, Vec<InstrumentProp>> {
     Ok((input, props))
 }
 
+/// インストゥルメント1行をパースする: `name { channel 10, note c2, ... }`
 /// Parse a single instrument line: `name { channel 10, note c2, ... }`
 fn parse_instrument(input: &str) -> IResult<&str, KitInstrument> {
     let (input, name) = identifier(input)?;
@@ -126,6 +139,7 @@ fn parse_instrument(input: &str) -> IResult<&str, KitInstrument> {
     ))
 }
 
+/// キットブロック全体をパースする。
 /// Parse a full kit block.
 pub fn parse_kit(input: &str) -> IResult<&str, KitDef> {
     let (input, _) = tag("kit")(input)?;
@@ -276,7 +290,9 @@ mod tests {
     }
 
     /// 改行区切り（カンマなし）のkit定義がパースできることを検証する。
+    /// Verify that kit definitions with newline-separated properties (no commas) can be parsed.
     /// tree-sitter文法と一貫した構文をサポートする。
+    /// Supports syntax consistent with tree-sitter grammar.
     #[test]
     fn test_kit_with_newline_separated_props() {
         let input = r#"kit tr808 {
@@ -335,6 +351,7 @@ mod tests {
     }
 
     /// カンマと改行が混在するkit定義がパースできることを検証する。
+    /// Verify that kit definitions with mixed comma and newline separators can be parsed.
     #[test]
     fn test_kit_with_mixed_separators() {
         let input = r#"kit mixed {

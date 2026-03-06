@@ -3,6 +3,7 @@ use nom::{bytes::complete::tag, character::complete::char, IResult};
 use crate::ast::session::*;
 use crate::parser::common::{identifier, parse_u32, ws, ws1};
 
+/// セッションエントリの修飾子をパースする: `[repeat N]` または `[loop]`
 /// Parse a session entry modifier: `[repeat N]` or `[loop]`.
 fn session_modifier(input: &str) -> IResult<&str, SessionRepeat> {
     let (input, _) = char('[')(input)?;
@@ -23,6 +24,7 @@ fn session_modifier(input: &str) -> IResult<&str, SessionRepeat> {
     }
 }
 
+/// セッションエントリを1つパースする: シーン名とオプションの `[repeat N]` または `[loop]`
 /// Parse a single session entry: `scene_name` with optional `[repeat N]` or `[loop]`.
 fn session_entry(input: &str) -> IResult<&str, SessionEntry> {
     let (input, scene) = identifier(input)?;
@@ -45,6 +47,7 @@ fn session_entry(input: &str) -> IResult<&str, SessionEntry> {
     ))
 }
 
+/// セッション定義をパースする: `session NAME { entries... }`
 /// Parse `session NAME { entries... }`.
 pub fn parse_session(input: &str) -> IResult<&str, SessionDef> {
     let (input, _) = tag("session")(input)?;

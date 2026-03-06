@@ -10,6 +10,7 @@ use nom::{
 use crate::ast::playback::*;
 use crate::parser::common::{identifier, parse_u32};
 
+/// ブラケット内のリピート指定をパースする: `[repeat N]` または `[loop]`
 /// Parse repeat spec inside brackets: `[repeat N]` or `[loop]`
 fn parse_bracket_repeat(input: &str) -> IResult<&str, RepeatSpec> {
     delimited(
@@ -24,6 +25,8 @@ fn parse_bracket_repeat(input: &str) -> IResult<&str, RepeatSpec> {
     )(input)
 }
 
+/// 再生コマンドをパースする: `play NAME`, `play NAME [repeat N]`, `play NAME [loop]`,
+/// `play session NAME`, `play session NAME [...]`
 /// Parse: `play NAME`, `play NAME [repeat N]`, `play NAME [loop]`,
 ///        `play session NAME`, `play session NAME [...]`
 pub fn parse_play(input: &str) -> IResult<&str, PlayCommand> {
@@ -49,6 +52,7 @@ pub fn parse_play(input: &str) -> IResult<&str, PlayCommand> {
     Ok((input, PlayCommand { target, repeat }))
 }
 
+/// 停止コマンドをパースする: `stop` または `stop NAME`
 /// Parse: `stop` or `stop NAME`
 pub fn parse_stop(input: &str) -> IResult<&str, StopCommand> {
     let (input, _) = tag("stop")(input)?;

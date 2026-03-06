@@ -1,23 +1,65 @@
+/// クリップパーサーモジュール
+/// Clip parser module
 pub mod clip;
+/// クリップ・アルペジオパーサーモジュール
+/// Clip arpeggio parser module
 pub mod clip_arpeggio;
+/// クリップ・アーティキュレーションパーサーモジュール
+/// Clip articulation parser module
 pub mod clip_articulation;
+/// クリップ・小節ジャンプパーサーモジュール
+/// Clip bar jump parser module
 pub mod clip_bar_jump;
+/// クリップCCパーサーモジュール
+/// Clip CC (Control Change) parser module
 pub mod clip_cc;
+/// クリップ・ドラムパーサーモジュール
+/// Clip drum parser module
 pub mod clip_drum;
+/// クリップ・ノートパーサーモジュール
+/// Clip note parser module
 pub mod clip_note;
+/// クリップオプションパーサーモジュール
+/// Clip options parser module
 pub mod clip_options;
+/// クリップ・リピートパーサーモジュール
+/// Clip repetition parser module
 pub mod clip_repetition;
+/// クリップ省略記法パーサーモジュール
+/// Clip shorthand parser module
 pub mod clip_shorthand;
+/// 共通パーサーユーティリティモジュール
+/// Common parser utility module
 pub mod common;
+/// デバイスパーサーモジュール
+/// Device parser module
 pub mod device;
+/// インクルードパーサーモジュール
+/// Include parser module
 pub mod include;
+/// インストゥルメントパーサーモジュール
+/// Instrument parser module
 pub mod instrument;
+/// キットパーサーモジュール
+/// Kit parser module
 pub mod kit;
+/// 再生コマンドパーサーモジュール
+/// Playback command parser module
 pub mod playback;
+/// スケールパーサーモジュール
+/// Scale parser module
 pub mod scale;
+/// シーンパーサーモジュール
+/// Scene parser module
 pub mod scene;
+/// セッションパーサーモジュール
+/// Session parser module
 pub mod session;
+/// テンポパーサーモジュール
+/// Tempo parser module
 pub mod tempo;
+/// 変数パーサーモジュール
+/// Variable parser module
 pub mod var;
 
 use nom::IResult;
@@ -25,6 +67,7 @@ use nom::IResult;
 use crate::ast::Block;
 use common::ws;
 
+/// 先頭キーワードを見て、トップレベルブロックを1つパースする。
 /// Parse a single top-level block by peeking at the first keyword.
 pub fn parse_block(input: &str) -> IResult<&str, Block> {
     let (input, _) = ws(input)?;
@@ -74,6 +117,7 @@ pub fn parse_block(input: &str) -> IResult<&str, Block> {
     }
 }
 
+/// ソースファイル全体をブロックのリストにパースする。
 /// Parse an entire source file into a list of blocks.
 pub fn parse_source(input: &str) -> IResult<&str, Vec<Block>> {
     let mut blocks = Vec::new();

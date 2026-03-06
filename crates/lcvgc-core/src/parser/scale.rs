@@ -3,6 +3,7 @@ use nom::{branch::alt, bytes::complete::tag_no_case, combinator::value, IResult}
 use crate::ast::scale::{ScaleDef, ScaleType};
 use crate::parser::common::{note_name, ws1};
 
+/// スケール種別キーワードをパースする（大文字小文字を区別しない）。
 /// Parse a scale type keyword (case-insensitive).
 fn scale_type(input: &str) -> IResult<&str, ScaleType> {
     alt((
@@ -18,6 +19,7 @@ fn scale_type(input: &str) -> IResult<&str, ScaleType> {
     ))(input)
 }
 
+/// スケール定義をパースする: `scale <root> <type>`
 /// Parse `scale <root> <type>`.
 pub fn parse_scale(input: &str) -> IResult<&str, ScaleDef> {
     let (input, _) = tag_no_case("scale")(input)?;
