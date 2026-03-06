@@ -77,11 +77,7 @@ impl LspAnalyzer {
         self.source = new_source;
         // ベースレジストリがある場合はそこから復元、なければ空で初期化
         // Restore from base registry if available, otherwise initialize empty
-        self.registry = self
-            .base_registry
-            .as_ref()
-            .cloned()
-            .unwrap_or_default();
+        self.registry = self.base_registry.as_ref().cloned().unwrap_or_default();
         self.spanned_blocks.clear();
         self.errors.clear();
 
