@@ -181,9 +181,9 @@ impl Evaluator {
     /// - `EngineError::ParseError` - パースエラー / Parse error
     /// - `EngineError::CircularInclude` - 循環インクルード / Circular include
     pub fn eval_file(&mut self, path: &Path) -> Result<Vec<EvalResult>, EngineError> {
-        let canonical = path.canonicalize().map_err(|_| {
-            EngineError::IncludeNotFound(path.display().to_string())
-        })?;
+        let canonical = path
+            .canonicalize()
+            .map_err(|_| EngineError::IncludeNotFound(path.display().to_string()))?;
         let mut include_stack = HashSet::new();
         include_stack.insert(canonical.clone());
         self.eval_file_recursive(&canonical, &mut include_stack)
@@ -208,11 +208,9 @@ impl Evaluator {
         path: &Path,
         include_stack: &mut HashSet<PathBuf>,
     ) -> Result<Vec<EvalResult>, EngineError> {
-        let source = std::fs::read_to_string(path).map_err(|e| {
-            EngineError::IncludeReadError {
-                path: path.display().to_string(),
-                reason: e.to_string(),
-            }
+        let source = std::fs::read_to_string(path).map_err(|e| EngineError::IncludeReadError {
+            path: path.display().to_string(),
+            reason: e.to_string(),
         })?;
         let (_, blocks) = crate::parser::parse_source(&source)
             .map_err(|e| EngineError::ParseError(e.to_string()))?;
@@ -223,18 +221,20 @@ impl Evaluator {
                 Block::Include(ref inc) => {
                     let base_dir = path.parent().unwrap_or(Path::new("."));
                     let include_path = base_dir.join(&inc.path);
-                    let canonical = include_path.canonicalize().map_err(|_| {
-                        EngineError::IncludeNotFound(inc.path.clone())
-                    })?;
+                    let canonical = include_path
+                        .canonicalize()
+                        .map_err(|_| EngineError::IncludeNotFound(inc.path.clone()))?;
 
                     if !include_stack.insert(canonical.clone()) {
                         let chain: Vec<String> = include_stack
                             .iter()
                             .map(|p| p.display().to_string())
                             .collect();
-                        return Err(EngineError::CircularInclude(
-                            format!("{} -> {}", chain.join(" -> "), canonical.display()),
-                        ));
+                        return Err(EngineError::CircularInclude(format!(
+                            "{} -> {}",
+                            chain.join(" -> "),
+                            canonical.display()
+                        )));
                     }
 
                     let sub_results = self.eval_file_recursive(&canonical, include_stack)?;
@@ -529,18 +529,14 @@ mod tests {
         std::fs::write(&sub_file, "tempo 140\n").unwrap();
 
         let main_file = dir.path().join("main.cvg");
-        std::fs::write(
-            &main_file,
-            format!("include {}\n", sub_file.display()),
-        )
-        .unwrap();
+        std::fs::write(&main_file, format!("include {}\n", sub_file.display())).unwrap();
 
         let mut ev = Evaluator::new(120.0);
         let results = ev.eval_file(&main_file).unwrap();
         // tempo 140 が評価され、IncludeProcessed が返る
-        assert!(results
-            .iter()
-            .any(|r| matches!(r, EvalResult::TempoChanged(t) if (*t - 140.0).abs() < f64::EPSILON)));
+        assert!(results.iter().any(
+            |r| matches!(r, EvalResult::TempoChanged(t) if (*t - 140.0).abs() < f64::EPSILON)
+        ));
         assert!(results
             .iter()
             .any(|r| matches!(r, EvalResult::IncludeProcessed { .. })));
@@ -553,24 +549,16 @@ mod tests {
         std::fs::write(&leaf_file, "tempo 160\n").unwrap();
 
         let mid_file = dir.path().join("mid.cvg");
-        std::fs::write(
-            &mid_file,
-            format!("include {}\n", leaf_file.display()),
-        )
-        .unwrap();
+        std::fs::write(&mid_file, format!("include {}\n", leaf_file.display())).unwrap();
 
         let main_file = dir.path().join("main.cvg");
-        std::fs::write(
-            &main_file,
-            format!("include {}\n", mid_file.display()),
-        )
-        .unwrap();
+        std::fs::write(&main_file, format!("include {}\n", mid_file.display())).unwrap();
 
         let mut ev = Evaluator::new(120.0);
         let results = ev.eval_file(&main_file).unwrap();
-        assert!(results
-            .iter()
-            .any(|r| matches!(r, EvalResult::TempoChanged(t) if (*t - 160.0).abs() < f64::EPSILON)));
+        assert!(results.iter().any(
+            |r| matches!(r, EvalResult::TempoChanged(t) if (*t - 160.0).abs() < f64::EPSILON)
+        ));
     }
 
     #[test]

@@ -1,8 +1,8 @@
 //! include機能の統合テスト
 //! Integration tests for include functionality
 
-use lcvgc_core::engine::evaluator::{EvalResult, Evaluator};
 use lcvgc_core::engine::error::EngineError;
+use lcvgc_core::engine::evaluator::{EvalResult, Evaluator};
 
 /// 単一ファイルのincludeが正しく展開されることを検証
 /// Verifies that a single file include is correctly expanded
