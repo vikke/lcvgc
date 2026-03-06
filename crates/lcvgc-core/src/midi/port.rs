@@ -1,3 +1,6 @@
+//! MIDIポート管理モジュール
+//! MIDI port management module
+
 use std::collections::HashMap;
 
 use midir::{MidiInput, MidiOutput, MidiOutputConnection, MidiOutputPort};
@@ -5,6 +8,7 @@ use midir::{MidiInput, MidiOutput, MidiOutputConnection, MidiOutputPort};
 use crate::midi::MidiError;
 
 /// 利用可能なMIDI出力ポートを列挙する
+/// Lists available MIDI output ports
 pub fn list_ports() -> Result<Vec<String>, MidiError> {
     let output =
         MidiOutput::new("lcvgc-list").map_err(|e| MidiError::ConnectionError(e.to_string()))?;
@@ -20,6 +24,7 @@ pub fn list_ports() -> Result<Vec<String>, MidiError> {
 }
 
 /// 利用可能なMIDI入力ポートを列挙する
+/// Lists available MIDI input ports
 pub fn list_input_ports() -> Result<Vec<String>, MidiError> {
     let input =
         MidiInput::new("lcvgc-list").map_err(|e| MidiError::ConnectionError(e.to_string()))?;
@@ -35,6 +40,7 @@ pub fn list_input_ports() -> Result<Vec<String>, MidiError> {
 }
 
 /// 名前でMIDI出力ポートに接続する
+/// Connects to a MIDI output port by name
 pub fn connect(port_name: &str) -> Result<MidiOutputConnection, MidiError> {
     let output = MidiOutput::new("lcvgc").map_err(|e| MidiError::ConnectionError(e.to_string()))?;
     let ports = output.ports();
@@ -45,6 +51,7 @@ pub fn connect(port_name: &str) -> Result<MidiOutputConnection, MidiError> {
 }
 
 /// ポート一覧から名前に一致するポートを探す
+/// Finds a port matching the given name from the port list
 fn find_port(
     output: &MidiOutput,
     ports: &[MidiOutputPort],
@@ -61,11 +68,16 @@ fn find_port(
 }
 
 /// MIDIポート接続を管理する構造体
+/// Struct that manages MIDI port connections
 pub struct PortManager {
+    /// 論理名からMIDI出力接続へのマッピング
+    /// Mapping from logical names to MIDI output connections
     connections: HashMap<String, MidiOutputConnection>,
 }
 
 impl PortManager {
+    /// 空のPortManagerを作成する
+    /// Creates an empty PortManager
     pub fn new() -> Self {
         PortManager {
             connections: HashMap::new(),
@@ -73,6 +85,7 @@ impl PortManager {
     }
 
     /// 論理名とポート名を指定して接続する
+    /// Connects using a logical name and a port name
     pub fn connect(&mut self, name: &str, port_name: &str) -> Result<(), MidiError> {
         let conn = connect(port_name)?;
         self.connections.insert(name.to_string(), conn);
@@ -80,6 +93,7 @@ impl PortManager {
     }
 
     /// 論理名の接続を切断する
+    /// Disconnects the connection with the given logical name
     pub fn disconnect(&mut self, name: &str) {
         if let Some(conn) = self.connections.remove(name) {
             conn.close();
@@ -87,6 +101,7 @@ impl PortManager {
     }
 
     /// 論理名の接続にMIDIバイト列を送信する
+    /// Sends MIDI bytes to the connection with the given logical name
     pub fn send(&mut self, name: &str, msg: &[u8]) -> Result<(), MidiError> {
         let conn = self
             .connections
@@ -97,11 +112,13 @@ impl PortManager {
     }
 
     /// 論理名が接続済みかどうかを返す
+    /// Returns whether the given logical name is connected
     pub fn is_connected(&self, name: &str) -> bool {
         self.connections.contains_key(name)
     }
 
     /// 接続済みの論理名一覧を返す
+    /// Returns a list of connected logical names
     pub fn connected_names(&self) -> Vec<&str> {
         self.connections.keys().map(|s| s.as_str()).collect()
     }

@@ -1,7 +1,10 @@
 //! MIDIポート監視モジュール
+//! MIDI port monitor module
 //!
 //! 起動時のポート一覧表示と、ポーリングによるホットプラグ検出を提供する。
+//! Provides startup port listing and hot-plug detection via polling.
 //! midir 0.10 にはホットプラグAPIがないため、定期ポーリング方式で実装している。
+//! Since midir 0.10 lacks a hot-plug API, periodic polling is used instead.
 
 use std::collections::HashSet;
 
@@ -10,30 +13,38 @@ use tracing::info;
 use super::port::{list_input_ports, list_ports};
 
 /// ポーリング間隔の設定
+/// Configuration for polling interval
 #[derive(Debug, Clone)]
 pub struct PortMonitorConfig {
     /// ポーリング間隔（ミリ秒）
+    /// Polling interval in milliseconds
     pub interval_ms: u64,
 }
 
 impl Default for PortMonitorConfig {
     /// デフォルトは2000ms間隔
+    /// Default is 2000ms interval
     fn default() -> Self {
         Self { interval_ms: 2000 }
     }
 }
 
 /// ある時点のMIDIポート名スナップショット
+/// Snapshot of MIDI port names at a given point in time
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct PortSnapshot {
     /// MIDI出力ポート名の集合
+    /// Set of MIDI output port names
     output: HashSet<String>,
     /// MIDI入力ポート名の集合
+    /// Set of MIDI input port names
     input: HashSet<String>,
 }
 
 /// 現在のMIDIポート一覧をスナップショットとして取得する。
 /// いずれかの列挙でエラーが発生した場合はNoneを返す（誤った切断通知を防ぐ）。
+/// Collects the current MIDI port list as a snapshot.
+/// Returns None if any port enumeration fails (to prevent false disconnection notifications).
 fn collect_ports() -> Option<PortSnapshot> {
     let output = list_ports().ok()?;
     let input = list_input_ports().ok()?;
@@ -45,6 +56,8 @@ fn collect_ports() -> Option<PortSnapshot> {
 
 /// 前回と今回のスナップショットを比較し、接続/切断をログ出力する。
 /// 変更があった場合はtrueを返す。
+/// Compares the previous and current snapshots, logging connections/disconnections.
+/// Returns true if any changes were detected.
 fn detect_changes(prev: &PortSnapshot, curr: &PortSnapshot) -> bool {
     let mut changed = false;
 
@@ -74,6 +87,8 @@ fn detect_changes(prev: &PortSnapshot, curr: &PortSnapshot) -> bool {
 
 /// 起動時のMIDIポート一覧をログ出力する。
 /// ポート列挙に失敗した場合はエラーではなく空表示にする。
+/// Logs the MIDI port list at startup.
+/// If port enumeration fails, displays empty instead of raising an error.
 pub fn log_startup_ports() {
     let output_ports = list_ports().unwrap_or_default();
     let input_ports = list_input_ports().unwrap_or_default();
@@ -90,6 +105,8 @@ pub fn log_startup_ports() {
 
 /// MIDIポートの変更を定期的にポーリングして監視する非同期ループ。
 /// tokio::spawnで起動する想定。キャンセル（abort）で停止する。
+/// Async loop that periodically polls for MIDI port changes.
+/// Intended to be launched via tokio::spawn. Stopped by cancellation (abort).
 pub async fn run_port_monitor(config: PortMonitorConfig) {
     let interval = tokio::time::Duration::from_millis(config.interval_ms);
 
@@ -119,6 +136,7 @@ mod tests {
     use super::*;
 
     /// デフォルトのポーリング間隔が2000msであることを検証
+    /// Verifies that the default polling interval is 2000ms
     #[test]
     fn default_config_interval() {
         let config = PortMonitorConfig::default();
@@ -126,6 +144,7 @@ mod tests {
     }
 
     /// 変化なしの場合、detect_changesがfalseを返すことを検証
+    /// Verifies that detect_changes returns false when there are no changes
     #[test]
     fn detect_changes_no_change() {
         let snapshot = PortSnapshot {
@@ -136,6 +155,7 @@ mod tests {
     }
 
     /// 出力ポートが接続された場合、detect_changesがtrueを返すことを検証
+    /// Verifies that detect_changes returns true when an output port is connected
     #[test]
     fn detect_changes_output_connected() {
         let prev = PortSnapshot {
@@ -150,6 +170,7 @@ mod tests {
     }
 
     /// 出力ポートが切断された場合、detect_changesがtrueを返すことを検証
+    /// Verifies that detect_changes returns true when an output port is disconnected
     #[test]
     fn detect_changes_output_disconnected() {
         let prev = PortSnapshot {
@@ -164,6 +185,7 @@ mod tests {
     }
 
     /// 入力ポートが接続された場合、detect_changesがtrueを返すことを検証
+    /// Verifies that detect_changes returns true when an input port is connected
     #[test]
     fn detect_changes_input_connected() {
         let prev = PortSnapshot {
@@ -178,6 +200,7 @@ mod tests {
     }
 
     /// 入力ポートが切断された場合、detect_changesがtrueを返すことを検証
+    /// Verifies that detect_changes returns true when an input port is disconnected
     #[test]
     fn detect_changes_input_disconnected() {
         let prev = PortSnapshot {
@@ -192,6 +215,7 @@ mod tests {
     }
 
     /// run_port_monitorが起動後にabortで正常停止できることを検証
+    /// Verifies that run_port_monitor can be cleanly stopped via abort after startup
     #[tokio::test]
     async fn run_port_monitor_abort() {
         let config = PortMonitorConfig { interval_ms: 50 };

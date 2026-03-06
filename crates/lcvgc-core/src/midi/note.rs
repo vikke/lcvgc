@@ -1,8 +1,23 @@
+//! ノートナンバー変換モジュール
+//! Note number conversion module
+
 use crate::ast::common::NoteName;
 
-/// NoteName + octave -> MIDI note number (0-127)
+/// 音名とオクターブからMIDIノートナンバー(0-127)に変換する
+/// Converts note name and octave to MIDI note number (0-127)
+///
+/// C4 = 60 基準。計算式: (octave + 1) * 12 + semitone
 /// C4 = 60 basis. Formula: (octave + 1) * 12 + semitone
-/// octave uses MIDI standard -1 offset (octave=0 -> MIDI C-1 = 0)
+///
+/// オクターブはMIDI標準の-1オフセットを使用 (octave=0 -> MIDI C-1 = 0)
+/// Octave uses MIDI standard -1 offset (octave=0 -> MIDI C-1 = 0)
+///
+/// # 引数 / Arguments
+/// * `name` - 音名 / Note name
+/// * `octave` - オクターブ番号 / Octave number
+///
+/// # 戻り値 / Returns
+/// MIDIノートナンバー (0-127) / MIDI note number (0-127)
 pub fn note_number(name: NoteName, octave: u8) -> u8 {
     let semitone: u8 = match name {
         NoteName::C => 0,
