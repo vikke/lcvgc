@@ -698,13 +698,27 @@ stop
         assert!(results.iter().any(
             |r| matches!(r, EvalResult::TempoChanged(t) if (*t - 140.0).abs() < f64::EPSILON)
         ));
-        assert!(results.iter().any(|r| matches!(r, EvalResult::Registered { kind, .. } if kind == "Device")));
-        assert!(results.iter().any(|r| matches!(r, EvalResult::Registered { kind, .. } if kind == "Instrument")));
-        assert!(results.iter().any(|r| matches!(r, EvalResult::Registered { kind, .. } if kind == "Clip")));
-        assert!(results.iter().any(|r| matches!(r, EvalResult::Registered { kind, .. } if kind == "Scene")));
-        assert!(results.iter().any(|r| matches!(r, EvalResult::Registered { kind, .. } if kind == "Session")));
-        assert!(results.iter().any(|r| matches!(r, EvalResult::ScaleChanged)));
-        assert!(results.iter().any(|r| matches!(r, EvalResult::VarDefined { .. })));
+        assert!(results
+            .iter()
+            .any(|r| matches!(r, EvalResult::Registered { kind, .. } if kind == "Device")));
+        assert!(results
+            .iter()
+            .any(|r| matches!(r, EvalResult::Registered { kind, .. } if kind == "Instrument")));
+        assert!(results
+            .iter()
+            .any(|r| matches!(r, EvalResult::Registered { kind, .. } if kind == "Clip")));
+        assert!(results
+            .iter()
+            .any(|r| matches!(r, EvalResult::Registered { kind, .. } if kind == "Scene")));
+        assert!(results
+            .iter()
+            .any(|r| matches!(r, EvalResult::Registered { kind, .. } if kind == "Session")));
+        assert!(results
+            .iter()
+            .any(|r| matches!(r, EvalResult::ScaleChanged)));
+        assert!(results
+            .iter()
+            .any(|r| matches!(r, EvalResult::VarDefined { .. })));
 
         // Play, Stop はスキップされる（結果に含まれない）
         // Play and Stop are skipped (not included in results)

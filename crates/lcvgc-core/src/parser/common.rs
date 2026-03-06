@@ -372,15 +372,9 @@ mod tests {
 
     #[test]
     fn test_unquoted_value() {
-        assert_eq!(
-            unquoted_value("Mutant Brain\n}"),
-            Ok(("}", "Mutant Brain"))
-        );
+        assert_eq!(unquoted_value("Mutant Brain\n}"), Ok(("}", "Mutant Brain")));
         assert_eq!(unquoted_value("IAC Bus 1 }"), Ok(("}", "IAC Bus 1")));
-        assert_eq!(
-            unquoted_value("  volca keys  \n}"),
-            Ok(("}", "volca keys"))
-        );
+        assert_eq!(unquoted_value("  volca keys  \n}"), Ok(("}", "volca keys")));
     }
 
     #[test]

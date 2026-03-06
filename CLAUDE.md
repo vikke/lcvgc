@@ -36,6 +36,13 @@
 - **厳守**: まず、 test code を実装し、それが動く product code を実装する事。
 - 実装が、並列で行なえる物は、sub agent で実装させる。 sub agent 毎に `git worktree` を作成し、実装が終わったら、current branch に rebase する事。
 
+## テスト
+
+### nvim側のみの話
+
+- nvim の headless mode を使ったE2Eテストを実装する事。
+- 挙動の調査の際にも、nvim headless mode を積極的に使う事。
+
 ## ドキュメント
 
 - 日本語で書いた物は、英語でも書く事。skill を使っての翻訳で良い。
@@ -47,6 +54,7 @@
 
 ## バージョン管理
 
+- **厳守**: commit 前に、それぞれの言語に合った `formatter` でformatして。
 - **厳守**: mainブランチへのコミット前に、変更に関連するコンポーネントのバージョンインクリメントをユーザーに確認する事。
 - 対象コンポーネント:
     - lcvgc: `crates/lcvgc/Cargo.toml`
