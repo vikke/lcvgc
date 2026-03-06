@@ -66,7 +66,12 @@ impl CarryOverState {
     /// 解決済みのノート情報 [`ResolvedNote`]
     ///
     /// Resolved note information as [`ResolvedNote`].
-    pub fn resolve(&mut self, octave: Option<u8>, duration: Option<u16>, dotted: bool) -> ResolvedNote {
+    pub fn resolve(
+        &mut self,
+        octave: Option<u8>,
+        duration: Option<u16>,
+        dotted: bool,
+    ) -> ResolvedNote {
         if let Some(oct) = octave {
             self.octave = oct;
         }
