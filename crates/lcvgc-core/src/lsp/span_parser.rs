@@ -1,6 +1,15 @@
+//! スパン情報付きパーサーモジュール
+//! Span-aware parser module
+//!
+//! ソーステキストを位置情報（スパン）付きでパースし、
+//! LSP機能に必要なブロック位置情報を提供する。
+//! Parses source text with position information (spans),
+//! providing block location data needed by LSP features.
+
 use crate::ast::Block;
 use crate::parser::parse_block;
 
+/// ネストされたブロックコメント(`/* ... */`)をスキップし、残りの入力を返す
 /// Skip a nested block comment (`/* ... */`) and return the remaining input.
 ///
 /// Supports arbitrary nesting (e.g. `/* outer /* inner */ outer */`).
@@ -32,34 +41,57 @@ fn skip_block_comment(input: &str) -> Option<&str> {
 }
 
 /// ソース内のバイトオフセット範囲
+/// Byte offset range within the source text
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Span {
+    /// 開始バイトオフセット
+    /// Start byte offset
     pub start: usize,
+    /// 終了バイトオフセット
+    /// End byte offset
     pub end: usize,
 }
 
-/// Span付きBlock
+/// スパン付きブロック
+/// Block with span information
 #[derive(Debug, Clone)]
 pub struct SpannedBlock {
+    /// パース済みブロック
+    /// Parsed block
     pub block: Block,
+    /// ブロック全体のスパン
+    /// Span covering the entire block
     pub span: Span,
+    /// ブロック名のスパン（名前付きブロックのみ）
+    /// Span of the block name (only for named blocks)
     pub name_span: Option<Span>,
 }
 
 /// パースエラー（位置付き）
+/// Parse error with position information
 #[derive(Debug, Clone)]
 pub struct SpanError {
+    /// エラー発生箇所のスパン
+    /// Span of the error location
     pub span: Span,
+    /// エラーメッセージ
+    /// Error message
     pub message: String,
 }
 
 /// パース結果
+/// Parse outcome containing blocks and errors
 pub struct ParseOutcome {
+    /// パース成功したブロック一覧
+    /// List of successfully parsed blocks
     pub blocks: Vec<SpannedBlock>,
+    /// パースエラー一覧
+    /// List of parse errors
     pub errors: Vec<SpanError>,
 }
 
-/// ブロック名を取得
+/// ブロック名を取得する
+/// Retrieves the name of a block, if it has one
 fn block_name(block: &Block) -> Option<&str> {
     match block {
         Block::Device(d) => Some(&d.name),
@@ -73,7 +105,8 @@ fn block_name(block: &Block) -> Option<&str> {
     }
 }
 
-/// 既知キーワードで始まる行を探してスキップ
+/// 既知キーワード一覧（エラー回復用）
+/// Known keywords for error recovery
 const KEYWORDS: &[&str] = &[
     "device ",
     "instrument ",
@@ -89,6 +122,8 @@ const KEYWORDS: &[&str] = &[
     "stop",
 ];
 
+/// 次のキーワードの開始位置を探す（エラー回復用）
+/// Finds the start position of the next keyword (for error recovery)
 fn find_next_keyword(source: &str) -> Option<usize> {
     for (i, _) in source.char_indices() {
         if i == 0 {
@@ -109,7 +144,20 @@ fn find_next_keyword(source: &str) -> Option<usize> {
     None
 }
 
-/// ソーステキストをSpan付きでパース
+/// ソーステキストをスパン付きでパースする
+/// Parses source text with span information
+///
+/// コメントをスキップしつつブロックを順次パースし、
+/// エラー発生時は次のキーワードまでスキップして回復を試みる。
+/// Parses blocks sequentially while skipping comments,
+/// and attempts recovery by skipping to the next keyword on error.
+///
+/// # Arguments
+/// * `source` - パース対象のソーステキスト / Source text to parse
+///
+/// # Returns
+/// パース結果（成功ブロックとエラーの両方を含む）
+/// Parse outcome containing both successful blocks and errors
 pub fn span_parse_source(source: &str) -> ParseOutcome {
     let mut blocks = Vec::new();
     let mut errors = Vec::new();

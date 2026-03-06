@@ -1,28 +1,37 @@
 //! 定義ジャンプ（Go to Definition）プロバイダモジュール
+//! Go to definition provider module
 //!
 //! 識別子名からブロック定義位置を検索し、
 //! LSPの定義ジャンプ機能を提供する。
+//! Searches for block definition positions by identifier name
+//! and provides the LSP go to definition feature.
 
 use super::span_parser::{Span, SpannedBlock};
 use crate::ast::Block;
 
 /// 定義ジャンププロバイダ
+/// Go to definition provider
 ///
 /// ブロック名から定義位置（`Span`）を検索する静的メソッドを提供する。
+/// Provides static methods to search for definition positions (`Span`) by block name.
 pub struct GotoDefinitionProvider;
 
 impl GotoDefinitionProvider {
     /// 指定名前に一致するブロック定義の位置を返す
+    /// Returns the position of the block definition matching the given name
     ///
     /// 名前付きブロック（device, instrument, kit, clip, scene, session, var）を
     /// 走査し、最初に一致したブロックの `name_span`（存在しない場合は `span`）を返す。
+    /// Scans named blocks (device, instrument, kit, clip, scene, session, var)
+    /// and returns the `name_span` (or `span` if absent) of the first match.
     ///
     /// # Arguments
-    /// * `name` - 検索する識別子名
-    /// * `blocks` - スパン付きブロック一覧
+    /// * `name` - 検索する識別子名 / Identifier name to search for
+    /// * `blocks` - スパン付きブロック一覧 / List of spanned blocks
     ///
     /// # Returns
     /// 定義が見つかった場合は `Some(Span)`、見つからない場合は `None`
+    /// `Some(Span)` if a definition is found, `None` otherwise
     pub fn find_definition(name: &str, blocks: &[SpannedBlock]) -> Option<Span> {
         for sb in blocks {
             let block_name = match &sb.block {
