@@ -3,7 +3,11 @@
 //! エディタで開かれたドキュメントのソースコードを解析し、
 //! ブロック情報・エラー情報・レジストリを管理する。
 
+use std::collections::HashSet;
+use std::path::{Path, PathBuf};
+
 use super::span_parser::{span_parse_source, SpanError, SpannedBlock};
+use crate::ast::Block;
 use crate::engine::registry::Registry;
 
 /// LSP用ドキュメント解析器
@@ -107,6 +111,88 @@ impl LspAnalyzer {
             .iter()
             .find(|sb| offset >= sb.span.start && offset < sb.span.end)
     }
+
+    /// ソースを更新し、ファイルパスを基にinclude先も再帰的に解決する
+    /// Updates source and recursively resolves includes based on file path
+    ///
+    /// # Arguments
+    /// * `new_source` - 新しいソーステキスト / New source text
+    /// * `file_path` - メインファイルのパス（include相対パス解決用） / Main file path (for resolving relative include paths)
+    pub fn update_with_file_path(&mut self, new_source: String, file_path: &Path) {
+        // まず通常のupdateを実行
+        // First perform the normal update
+        self.update(new_source);
+
+        // include先を再帰的に解決してregistryに登録
+        // Recursively resolve includes and register them in the registry
+        let base_dir = file_path.parent().unwrap_or(Path::new("."));
+        let mut visited = HashSet::new();
+        if let Ok(canonical) = file_path.canonicalize() {
+            visited.insert(canonical);
+        }
+        self.resolve_includes_recursive(base_dir, &self.spanned_blocks.clone(), &mut visited);
+    }
+
+    /// include先ファイルを再帰的に解決し、registryにブロックを登録する（内部メソッド）
+    /// Recursively resolves included files and registers blocks in the registry (internal method)
+    ///
+    /// includeはファイル先頭にのみ許可される。非includeブロックが出現した時点で
+    /// includeフェーズを終了する。
+    /// Includes are only allowed at the top of the file. The include phase ends
+    /// when a non-include block is encountered.
+    ///
+    /// # Arguments
+    /// * `base_dir` - includeパス解決のベースディレクトリ / Base directory for resolving include paths
+    /// * `blocks` - パース済みのスパン付きブロック / Parsed spanned blocks
+    /// * `visited` - 循環検出用の訪問済みパスセット / Set of visited paths for cycle detection
+    fn resolve_includes_recursive(
+        &mut self,
+        base_dir: &Path,
+        blocks: &[SpannedBlock],
+        visited: &mut HashSet<PathBuf>,
+    ) {
+        for sb in blocks {
+            if let Block::Include(ref inc) = sb.block {
+                let include_path = base_dir.join(&inc.path);
+
+                // ファイルの正規化パスを取得（失敗時はスキップ）
+                // Get canonical path (skip on failure)
+                let canonical = match include_path.canonicalize() {
+                    Ok(c) => c,
+                    Err(_) => continue, // ファイル未検出時は静かにスキップ
+                };
+
+                // 循環検出: 既に訪問済みならスキップ
+                // Cycle detection: skip if already visited
+                if !visited.insert(canonical.clone()) {
+                    continue;
+                }
+
+                // ファイル読み込み（失敗時はスキップ）
+                // Read file (skip on failure)
+                let source = match std::fs::read_to_string(&canonical) {
+                    Ok(s) => s,
+                    Err(_) => continue,
+                };
+
+                // パースしてregistryに登録
+                // Parse and register in registry
+                let outcome = span_parse_source(&source);
+                for child_sb in &outcome.blocks {
+                    self.registry.register_block(child_sb.block.clone());
+                }
+
+                // include先のincludeも再帰的に解決（先頭のみ）
+                // Recursively resolve includes in included files (top only)
+                let child_base = canonical.parent().unwrap_or(Path::new("."));
+                self.resolve_includes_recursive(child_base, &outcome.blocks, visited);
+            } else {
+                // 非includeブロックが出現したらincludeフェーズ終了
+                // Non-include block encountered, end include phase
+                break;
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -205,5 +291,148 @@ mod tests {
         let mut a = LspAnalyzer::new();
         a.update("var bpm = 120".into());
         assert_eq!(a.registry().get_var("bpm"), Some("120"));
+    }
+
+    /// include先のクリップ定義がregistryに登録されることを検証
+    /// Verifies that clip definitions from included files are registered in the registry
+    #[test]
+    fn update_with_file_path_resolves_include() {
+        use std::io::Write;
+        let dir = tempfile::tempdir().unwrap();
+
+        // include先ファイル: クリップ定義
+        let inc_path = dir.path().join("bass.cvg");
+        let mut f = std::fs::File::create(&inc_path).unwrap();
+        writeln!(f, "clip bass {{\n  c4\n}}").unwrap();
+
+        // メインファイル: include + tempo
+        let main_path = dir.path().join("main.cvg");
+        let main_source = "include bass.cvg\ntempo 120";
+
+        let mut a = LspAnalyzer::new();
+        a.update_with_file_path(main_source.into(), &main_path);
+
+        // include先のクリップがregistryに登録されている
+        assert!(a.registry().get_clip("bass").is_some());
+        // メインファイルのtempoも登録されている
+        assert!(a.registry().tempo().is_some());
+    }
+
+    /// ネストされたinclude解決を検証
+    /// Verifies nested include resolution
+    #[test]
+    fn update_with_file_path_nested_include() {
+        use std::io::Write;
+        let dir = tempfile::tempdir().unwrap();
+
+        // 2段目のinclude
+        let deep_path = dir.path().join("deep.cvg");
+        let mut f = std::fs::File::create(&deep_path).unwrap();
+        writeln!(f, "clip deep {{\n  e4\n}}").unwrap();
+
+        // 1段目のinclude
+        let mid_path = dir.path().join("mid.cvg");
+        let mut f = std::fs::File::create(&mid_path).unwrap();
+        writeln!(f, "include deep.cvg\nclip mid {{\n  d4\n}}").unwrap();
+
+        // メインファイル
+        let main_path = dir.path().join("main.cvg");
+        let main_source = "include mid.cvg\ntempo 120";
+
+        let mut a = LspAnalyzer::new();
+        a.update_with_file_path(main_source.into(), &main_path);
+
+        assert!(a.registry().get_clip("deep").is_some());
+        assert!(a.registry().get_clip("mid").is_some());
+        assert!(a.registry().tempo().is_some());
+    }
+
+    /// 循環includeが無限ループにならないことを検証
+    /// Verifies that circular includes do not cause infinite loops
+    #[test]
+    fn update_with_file_path_circular_include() {
+        use std::io::Write;
+        let dir = tempfile::tempdir().unwrap();
+
+        let a_path = dir.path().join("a.cvg");
+        let b_path = dir.path().join("b.cvg");
+
+        // a.cvg includes b.cvg, b.cvg includes a.cvg
+        let mut f = std::fs::File::create(&a_path).unwrap();
+        writeln!(f, "include b.cvg\nclip a {{\n  c4\n}}").unwrap();
+        let mut f = std::fs::File::create(&b_path).unwrap();
+        writeln!(f, "include a.cvg\nclip b {{\n  d4\n}}").unwrap();
+
+        let main_source = std::fs::read_to_string(&a_path).unwrap();
+        let mut analyzer = LspAnalyzer::new();
+        analyzer.update_with_file_path(main_source, &a_path);
+
+        // 循環してもパニックしない。両方のクリップが登録される
+        assert!(analyzer.registry().get_clip("a").is_some());
+        assert!(analyzer.registry().get_clip("b").is_some());
+    }
+
+    /// 存在しないincludeファイルを静かにスキップすることを検証
+    /// Verifies that missing include files are silently skipped
+    #[test]
+    fn update_with_file_path_missing_include() {
+        let dir = tempfile::tempdir().unwrap();
+        let main_path = dir.path().join("main.cvg");
+        let main_source = "include nonexistent.cvg\ntempo 120";
+
+        let mut a = LspAnalyzer::new();
+        a.update_with_file_path(main_source.into(), &main_path);
+
+        // 存在しないincludeをスキップし、tempoは正常に登録される
+        assert!(a.registry().tempo().is_some());
+        // エラーにならない（静かにスキップ）
+        assert!(a.errors().is_empty());
+    }
+
+    /// メインファイルのブロックが保持されることを検証
+    /// Verifies that main file blocks are preserved
+    #[test]
+    fn update_with_file_path_preserves_main_blocks() {
+        use std::io::Write;
+        let dir = tempfile::tempdir().unwrap();
+
+        let inc_path = dir.path().join("inc.cvg");
+        let mut f = std::fs::File::create(&inc_path).unwrap();
+        writeln!(f, "clip inc {{\n  c4\n}}").unwrap();
+
+        let main_path = dir.path().join("main.cvg");
+        let main_source = "include inc.cvg\ntempo 120\nvar x = 42";
+
+        let mut a = LspAnalyzer::new();
+        a.update_with_file_path(main_source.into(), &main_path);
+
+        // メインファイルのブロック数（include, tempo, var）
+        assert_eq!(a.blocks().len(), 3);
+        // include先のクリップもregistryに登録
+        assert!(a.registry().get_clip("inc").is_some());
+    }
+
+    /// 先頭以外のincludeはregistryに解決されないことを検証
+    /// Verifies that non-top includes are not resolved in registry
+    #[test]
+    fn update_with_file_path_non_top_include_not_resolved() {
+        use std::io::Write;
+        let dir = tempfile::tempdir().unwrap();
+
+        let inc_path = dir.path().join("late.cvg");
+        let mut f = std::fs::File::create(&inc_path).unwrap();
+        writeln!(f, "clip late {{\n  c4\n}}").unwrap();
+
+        let main_path = dir.path().join("main.cvg");
+        // tempoの後にinclude → 先頭以外なので解決されない
+        let main_source = "tempo 120\ninclude late.cvg";
+
+        let mut a = LspAnalyzer::new();
+        a.update_with_file_path(main_source.into(), &main_path);
+
+        // 先頭以外のincludeは解決されない
+        assert!(a.registry().get_clip("late").is_none());
+        // tempoは登録される
+        assert!(a.registry().tempo().is_some());
     }
 }

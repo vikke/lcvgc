@@ -105,14 +105,36 @@ pub async fn handle_request(evaluator: &Arc<Mutex<Evaluator>>, request: Request)
                 .map(|content| LspHoverInfo { content });
             Response::lsp(LspResult::Hover { info })
         }
-        Request::LspDiagnostics { source } => {
+        Request::LspDiagnostics { source, file_path } => {
             let mut analyzer = LspAnalyzer::new();
-            analyzer.update(source.clone());
+            // file_pathがある場合はinclude解決付きで更新、ない場合は従来通り
+            // Use include resolution when file_path is provided, otherwise use standard update
+            if let Some(ref fp) = file_path {
+                let path = std::path::Path::new(fp);
+                analyzer.update_with_file_path(source.clone(), path);
+            } else {
+                analyzer.update(source.clone());
+            }
             let mut diags = DiagnosticProvider::from_parse_errors(analyzer.errors());
             diags.extend(DiagnosticProvider::undefined_references(
                 analyzer.blocks(),
                 analyzer.registry(),
             ));
+            // includeの位置チェック（先頭以外はエラー）
+            // Check include position (non-top includes are errors)
+            diags.extend(DiagnosticProvider::include_position_diagnostics(
+                analyzer.blocks(),
+            ));
+            // file_pathがある場合はincludeファイル存在チェックも実施
+            // Also check include file existence when file_path is provided
+            if let Some(ref fp) = file_path {
+                let path = std::path::Path::new(fp);
+                let base_dir = path.parent().unwrap_or(std::path::Path::new("."));
+                diags.extend(DiagnosticProvider::include_diagnostics(
+                    analyzer.blocks(),
+                    base_dir,
+                ));
+            }
             let items: Vec<LspDiagnosticItem> = diags
                 .into_iter()
                 .map(|d| {
@@ -294,6 +316,7 @@ mod tests {
         let ev = Arc::new(Mutex::new(Evaluator::new(120.0)));
         let req = Request::LspDiagnostics {
             source: "tempo 120".into(),
+            file_path: None,
         };
         let resp = handle_request(&ev, req).await;
         assert!(resp.success);
@@ -347,6 +370,67 @@ mod tests {
                 assert_eq!(items[0].kind, "Tempo");
             }
             _ => panic!("Expected DocumentSymbols"),
+        }
+    }
+
+    /// include先のクリップがsceneから参照されても偽エラーが出ないことを検証する
+    /// Verifies that clips from included files don't cause false "undefined clip" errors in scenes
+    #[tokio::test]
+    async fn handle_lsp_diagnostics_with_include_resolves_clips() {
+        use std::io::Write;
+        let dir = tempfile::tempdir().unwrap();
+
+        // include先ファイル: クリップ定義
+        let inc_path = dir.path().join("bass.cvg");
+        let mut f = std::fs::File::create(&inc_path).unwrap();
+        writeln!(f, "clip bass {{\n  c4\n}}").unwrap();
+
+        // メインファイルのソース: include + scene
+        let main_path = dir.path().join("main.cvg");
+        let source = "include bass.cvg\ndevice synth {\n  port \"IAC\"\n}\ninstrument inst {\n  device synth\n  channel 1\n}\nscene main {\n  inst: bass\n}";
+
+        let ev = Arc::new(Mutex::new(Evaluator::new(120.0)));
+        let req = Request::LspDiagnostics {
+            source: source.into(),
+            file_path: Some(main_path.to_string_lossy().into_owned()),
+        };
+        let resp = handle_request(&ev, req).await;
+        assert!(resp.success);
+        let lsp = resp.lsp.unwrap();
+        match lsp {
+            super::super::protocol::LspResult::Diagnostics { items } => {
+                // include先のclipが解決されるため、未定義エラーは出ない
+                let undef_errors: Vec<_> = items
+                    .iter()
+                    .filter(|i| i.message.contains("未定義"))
+                    .collect();
+                assert!(
+                    undef_errors.is_empty(),
+                    "Expected no undefined clip errors, but got: {:?}",
+                    undef_errors
+                );
+            }
+            _ => panic!("Expected Diagnostics"),
+        }
+    }
+
+    /// file_pathなしの場合、既存の動作と同じであることを検証する
+    /// Verifies that behavior without file_path remains the same
+    #[tokio::test]
+    async fn handle_lsp_diagnostics_without_file_path_unchanged() {
+        let ev = Arc::new(Mutex::new(Evaluator::new(120.0)));
+        let req = Request::LspDiagnostics {
+            source: "tempo 120".into(),
+            file_path: None,
+        };
+        let resp = handle_request(&ev, req).await;
+        assert!(resp.success);
+        let lsp = resp.lsp.unwrap();
+        match lsp {
+            super::super::protocol::LspResult::Diagnostics { items } => {
+                assert!(items.is_empty());
+            }
+            _ => panic!("Expected Diagnostics"),
         }
     }
 }

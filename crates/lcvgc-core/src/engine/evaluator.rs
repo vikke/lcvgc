@@ -192,6 +192,11 @@ impl Evaluator {
     /// 再帰的にファイルを評価する（内部メソッド）
     /// Recursively evaluates a file (internal method)
     ///
+    /// includeはファイル先頭にのみ許可される。非includeブロックの後に
+    /// includeが出現した場合はエラーとなる。
+    /// Includes are only allowed at the top of the file. An include appearing
+    /// after a non-include block will result in an error.
+    ///
     /// # Arguments
     /// * `path` - 正規化済みのファイルパス / Canonicalized file path
     /// * `include_stack` - 循環検出用のインクルードスタック / Include stack for cycle detection
@@ -203,6 +208,7 @@ impl Evaluator {
     /// - `EngineError::CircularInclude` - 循環インクルード / Circular include
     /// - `EngineError::IncludeNotFound` - インクルードファイル未検出 / Include file not found
     /// - `EngineError::IncludeReadError` - ファイル読み込みエラー / File read error
+    /// - `EngineError::IncludeNotAtTop` - includeがファイル先頭にない / Include not at top of file
     fn eval_file_recursive(
         &mut self,
         path: &Path,
@@ -216,9 +222,19 @@ impl Evaluator {
             .map_err(|e| EngineError::ParseError(e.to_string()))?;
 
         let mut results = Vec::new();
+        // includeフェーズが終了したかどうかを追跡
+        // Track whether the include phase has ended
+        let mut include_phase_ended = false;
+
         for block in blocks {
             match block {
                 Block::Include(ref inc) => {
+                    // 非includeブロックの後にincludeがある場合はエラー
+                    // Error if include appears after a non-include block
+                    if include_phase_ended {
+                        return Err(EngineError::IncludeNotAtTop(inc.path.clone()));
+                    }
+
                     let base_dir = path.parent().unwrap_or(Path::new("."));
                     let include_path = base_dir.join(&inc.path);
                     let canonical = include_path
@@ -248,6 +264,7 @@ impl Evaluator {
                     include_stack.remove(&canonical);
                 }
                 _ => {
+                    include_phase_ended = true;
                     results.push(self.eval_block(block)?);
                 }
             }
@@ -615,6 +632,50 @@ mod tests {
             result.unwrap_err(),
             EngineError::IncludeNotFound(_)
         ));
+    }
+
+    /// includeがファイル先頭以外にある場合にエラーになることを検証
+    /// Verifies that include not at the top of the file causes an error
+    #[test]
+    fn eval_file_include_not_at_top() {
+        let dir = tempfile::tempdir().unwrap();
+        let inc_file = dir.path().join("inc.cvg");
+        std::fs::write(&inc_file, "tempo 120\n").unwrap();
+
+        let main_file = dir.path().join("main.cvg");
+        std::fs::write(
+            &main_file,
+            format!("tempo 120\ninclude {}\n", inc_file.display()),
+        )
+        .unwrap();
+
+        let mut ev = Evaluator::new(120.0);
+        let result = ev.eval_file(&main_file);
+        assert!(result.is_err());
+        assert!(matches!(
+            result.unwrap_err(),
+            EngineError::IncludeNotAtTop(_)
+        ));
+    }
+
+    /// includeがファイル先頭にある場合は正常に動作することを検証
+    /// Verifies that include at the top of the file works correctly
+    #[test]
+    fn eval_file_include_at_top_ok() {
+        let dir = tempfile::tempdir().unwrap();
+        let inc_file = dir.path().join("inc.cvg");
+        std::fs::write(&inc_file, "tempo 120\n").unwrap();
+
+        let main_file = dir.path().join("main.cvg");
+        std::fs::write(
+            &main_file,
+            format!("include {}\nvar x = 42\n", inc_file.display()),
+        )
+        .unwrap();
+
+        let mut ev = Evaluator::new(120.0);
+        let result = ev.eval_file(&main_file);
+        assert!(result.is_ok());
     }
 
     #[test]

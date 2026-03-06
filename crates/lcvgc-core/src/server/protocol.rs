@@ -58,6 +58,10 @@ pub enum Request {
     LspDiagnostics {
         /// DSLソース / DSL source
         source: String,
+        /// ファイルパス（include解決用、省略時はinclude解決なし）
+        /// File path (for include resolution, omit to skip include resolution)
+        #[serde(default)]
+        file_path: Option<String>,
     },
     /// LSP定義ジャンプリクエスト
     /// LSP go-to-definition request
@@ -443,7 +447,25 @@ mod tests {
         let json = r#"{"type":"lsp_diagnostics","source":"tempo 120"}"#;
         let req: Request = serde_json::from_str(json).unwrap();
         match req {
-            Request::LspDiagnostics { source } => assert_eq!(source, "tempo 120"),
+            Request::LspDiagnostics { source, file_path } => {
+                assert_eq!(source, "tempo 120");
+                assert_eq!(file_path, None);
+            }
+            _ => panic!("Expected LspDiagnostics"),
+        }
+    }
+
+    /// file_path付きのLspDiagnosticsリクエストのデシリアライズテスト
+    /// Test deserialization of LspDiagnostics request with file_path
+    #[test]
+    fn deserialize_lsp_diagnostics_request_with_file_path() {
+        let json = r#"{"type":"lsp_diagnostics","source":"tempo 120","file_path":"/tmp/test.cvg"}"#;
+        let req: Request = serde_json::from_str(json).unwrap();
+        match req {
+            Request::LspDiagnostics { source, file_path } => {
+                assert_eq!(source, "tempo 120");
+                assert_eq!(file_path, Some("/tmp/test.cvg".to_string()));
+            }
             _ => panic!("Expected LspDiagnostics"),
         }
     }

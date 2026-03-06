@@ -128,16 +128,19 @@ Returns hover information (Markdown text) about the symbol at the cursor positio
 
 Analyzes the entire source and returns a list of errors and warnings.
 
+> **Note**: `include` statements are only allowed at the top of the file. An `include` appearing after a non-`include` block will be reported as an error.
+
 #### Request
 
 ```json
-{"type": "lsp_diagnostics", "source": "<DSL source text>"}
+{"type": "lsp_diagnostics", "source": "<DSL source text>", "file_path": "/path/to/file.cvg"}
 ```
 
-| Field    | Type   | Description                     |
-|----------|--------|---------------------------------|
-| `type`   | string | Fixed value `"lsp_diagnostics"` |
-| `source` | string | Full DSL source text            |
+| Field       | Type            | Description                                                              |
+|-------------|-----------------|--------------------------------------------------------------------------|
+| `type`      | string          | Fixed value `"lsp_diagnostics"`                                          |
+| `source`    | string          | Full DSL source text                                                     |
+| `file_path` | string \| null  | File path (optional). When provided, resolves definitions from includes  |
 
 #### Response
 

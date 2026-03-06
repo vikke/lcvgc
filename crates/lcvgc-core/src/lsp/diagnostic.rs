@@ -119,6 +119,37 @@ impl DiagnosticProvider {
         }
         diagnostics
     }
+
+    /// includeがファイル先頭以外にある場合のエラー診断を生成する
+    /// Generates error diagnostics when include is not at the top of the file
+    ///
+    /// C言語と同様に、includeはファイル先頭に集めなければならない。
+    /// Like C, includes must be placed at the top of the file.
+    ///
+    /// # Arguments
+    /// * `blocks` - スパン付きブロックのスライス / Slice of spanned blocks
+    ///
+    /// # Returns
+    /// 先頭以外にあるincludeに対するError診断リスト / List of Error diagnostics for non-top includes
+    pub fn include_position_diagnostics(blocks: &[SpannedBlock]) -> Vec<Diagnostic> {
+        let mut diagnostics = Vec::new();
+        let mut include_phase_ended = false;
+
+        for sb in blocks {
+            if let Block::Include(inc) = &sb.block {
+                if include_phase_ended {
+                    diagnostics.push(Diagnostic {
+                        span: sb.span,
+                        message: format!("includeはファイル先頭に記述してください: '{}'", inc.path),
+                        severity: DiagnosticSeverity::Error,
+                    });
+                }
+            } else {
+                include_phase_ended = true;
+            }
+        }
+        diagnostics
+    }
 }
 
 #[cfg(test)]
@@ -331,5 +362,52 @@ mod tests {
         assert_eq!(diags.len(), 1);
         assert_eq!(diags[0].severity, DiagnosticSeverity::Warning);
         assert!(diags[0].message.contains("missing.cvg"));
+    }
+
+    /// includeが先頭にある場合はエラー診断が出ないことを検証
+    /// Verifies no error when include is at the top of the file
+    #[test]
+    fn include_position_at_top_ok() {
+        let blocks = vec![
+            spanned(Block::Include(crate::ast::include::IncludeDef {
+                path: "sub.cvg".into(),
+            })),
+            spanned(Block::Tempo(Tempo::Absolute(120))),
+        ];
+        let diags = DiagnosticProvider::include_position_diagnostics(&blocks);
+        assert!(diags.is_empty());
+    }
+
+    /// includeが先頭以外にある場合にError診断が出ることを検証
+    /// Verifies error when include is not at the top of the file
+    #[test]
+    fn include_position_not_at_top_error() {
+        let blocks = vec![
+            spanned(Block::Tempo(Tempo::Absolute(120))),
+            spanned(Block::Include(crate::ast::include::IncludeDef {
+                path: "sub.cvg".into(),
+            })),
+        ];
+        let diags = DiagnosticProvider::include_position_diagnostics(&blocks);
+        assert_eq!(diags.len(), 1);
+        assert_eq!(diags[0].severity, DiagnosticSeverity::Error);
+        assert!(diags[0].message.contains("先頭"));
+    }
+
+    /// 複数のincludeが先頭に連続している場合はエラーが出ないことを検証
+    /// Verifies no error when multiple includes are at the top consecutively
+    #[test]
+    fn include_position_multiple_at_top_ok() {
+        let blocks = vec![
+            spanned(Block::Include(crate::ast::include::IncludeDef {
+                path: "a.cvg".into(),
+            })),
+            spanned(Block::Include(crate::ast::include::IncludeDef {
+                path: "b.cvg".into(),
+            })),
+            spanned(Block::Tempo(Tempo::Absolute(120))),
+        ];
+        let diags = DiagnosticProvider::include_position_diagnostics(&blocks);
+        assert!(diags.is_empty());
     }
 }

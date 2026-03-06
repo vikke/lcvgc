@@ -315,7 +315,7 @@ If `[scale ...]` is not specified on a clip, the global scale applies. If the gl
 
 ## 5. File Splitting (include)
 
-Loads another `.cvg` file by relative path. Circular includes result in a parse error. If the same file is included more than once, subsequent includes are silently skipped (the engine tracks loaded paths).
+Loads another `.cvg` file by relative path. **Includes are only allowed at the top of the file** (similar to C's `#include`). An include appearing after a non-include block will result in an error. Circular includes result in a parse error. If the same file is included more than once, subsequent includes are silently skipped (the engine tracks loaded paths).
 
 ```
 include "./setup.cvg"
@@ -1268,6 +1268,7 @@ The engine continues playback as-is. Restarting Neovim and reconnecting allows c
 - CC automation uses step mode (shared resolution) and time-based + interpolation mode (`@bar.beat`, `-` for linear, `-exp` for exponential curve)
 - `var name = value` defines variables; referenced without `$`. Variable lookup takes priority; if not found, treated as a literal
 - Scope is two-level: global (top-level) and block (inside `{}`). Inner scope takes priority
+- Includes are only allowed at the top of the file. An include after a non-include block results in an error
 - Global variables from included files are merged into the caller. Name conflicts are resolved by last-eval-wins
 - Duplicate includes of the same file are silently skipped
 - Time signature is specified per clip (default is 4/4 if omitted)

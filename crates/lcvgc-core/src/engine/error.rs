@@ -35,6 +35,10 @@ pub enum EngineError {
         /// エラー原因 / Error reason
         reason: String,
     },
+
+    /// インクルードがファイル先頭にない / Include is not at the top of the file
+    #[error("includeはファイル先頭に記述してください: {0}")]
+    IncludeNotAtTop(String),
 }
 
 #[cfg(test)]
