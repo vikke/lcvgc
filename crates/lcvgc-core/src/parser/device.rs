@@ -3,8 +3,8 @@ use nom::{bytes::complete::tag, IResult};
 use crate::ast::device::DeviceDef;
 use crate::parser::common::*;
 
-/// デバイスブロックをパースする: `device NAME { port "PORT_STRING" }`
-/// Parse a device block: `device NAME { port "PORT_STRING" }`
+/// デバイスブロックをパースする: `device NAME { port PORT_STRING }`
+/// Parse a device block: `device NAME { port PORT_STRING }`
 pub fn parse_device(input: &str) -> IResult<&str, DeviceDef> {
     let (input, _) = ws(input)?;
     let (input, _) = tag("device")(input)?;
@@ -15,8 +15,7 @@ pub fn parse_device(input: &str) -> IResult<&str, DeviceDef> {
     let (input, _) = ws(input)?;
     let (input, _) = tag("port")(input)?;
     let (input, _) = ws(input)?;
-    let (input, port) = quoted_string(input)?;
-    let (input, _) = ws(input)?;
+    let (input, port) = unquoted_value(input)?;
     let (input, _) = tag("}")(input)?;
 
     Ok((
@@ -35,7 +34,7 @@ mod tests {
 
     #[test]
     fn test_parse_device_basic() {
-        let input = r#"device mutant_brain { port "Mutant Brain" }"#;
+        let input = "device mutant_brain {\n  port Mutant Brain\n}";
         let result = parse_device(input);
         assert_eq!(
             result,
@@ -51,7 +50,7 @@ mod tests {
 
     #[test]
     fn test_parse_device_space_in_port() {
-        let input = r#"device volca_keys { port "volca keys" }"#;
+        let input = "device volca_keys {\n  port volca keys\n}";
         let result = parse_device(input);
         assert_eq!(
             result,
@@ -66,9 +65,25 @@ mod tests {
     }
 
     #[test]
+    fn test_parse_device_single_word_port() {
+        let input = "device mb {\n  port IAC\n}";
+        let result = parse_device(input);
+        assert_eq!(
+            result,
+            Ok((
+                "",
+                DeviceDef {
+                    name: "mb".to_string(),
+                    port: "IAC".to_string(),
+                }
+            ))
+        );
+    }
+
+    #[test]
     fn test_parse_device_multiple_independent() {
-        let input1 = r#"device mutant_brain { port "Mutant Brain" }"#;
-        let input2 = r#"device volca_keys { port "volca keys" }"#;
+        let input1 = "device mutant_brain {\n  port Mutant Brain\n}";
+        let input2 = "device volca_keys {\n  port volca keys\n}";
 
         let result1 = parse_device(input1);
         let result2 = parse_device(input2);

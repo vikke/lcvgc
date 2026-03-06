@@ -158,7 +158,7 @@ mod tests {
 tempo 120
 
 device my_synth {
-  port "IAC Driver"
+  port IAC Driver
 }
 
 clip bass_a [bars 1] {
