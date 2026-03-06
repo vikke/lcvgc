@@ -6,13 +6,29 @@ use nom::IResult;
 use crate::ast::scale::{ScaleDef, ScaleType};
 use crate::parser::common::{note_name, parse_u32, parse_u8, ws, ws1};
 
+/// クリップに付与できるオプション群を保持する構造体。
+/// `[bars N]`、`[time N/N]`、`[scale ROOT TYPE]` の各指定を格納する。
+///
+/// A struct that holds clip-level options.
+/// Stores `[bars N]`, `[time N/N]`, and `[scale ROOT TYPE]` specifications.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct ClipOptions {
+    /// 小節数の指定（例: `[bars 4]`）。
+    ///
+    /// Number of bars (e.g. `[bars 4]`).
     pub bars: Option<u32>,
+    /// 拍子の指定（分子, 分母）（例: `[time 3/4]`）。
+    ///
+    /// Time signature as (numerator, denominator) (e.g. `[time 3/4]`).
     pub time_sig: Option<(u8, u8)>,
+    /// スケールの指定（例: `[scale c minor]`）。
+    ///
+    /// Scale specification (e.g. `[scale c minor]`).
     pub scale: Option<ScaleDef>,
 }
 
+/// スケールタイプのキーワードをパースする。
+///
 /// Parse a scale type keyword.
 fn scale_type(input: &str) -> IResult<&str, ScaleType> {
     alt((
@@ -28,7 +44,9 @@ fn scale_type(input: &str) -> IResult<&str, ScaleType> {
     ))(input)
 }
 
-/// Parse `[bars N]`
+/// `[bars N]` 形式の小節数指定をパースする。
+///
+/// Parse `[bars N]` option.
 fn parse_bars_option(input: &str) -> IResult<&str, ClipOptions> {
     let (input, _) = char('[')(input)?;
     let (input, _) = ws(input)?;
@@ -46,7 +64,9 @@ fn parse_bars_option(input: &str) -> IResult<&str, ClipOptions> {
     ))
 }
 
-/// Parse `[time N/N]`
+/// `[time N/N]` 形式の拍子指定をパースする。
+///
+/// Parse `[time N/N]` option.
 fn parse_time_option(input: &str) -> IResult<&str, ClipOptions> {
     let (input, _) = char('[')(input)?;
     let (input, _) = ws(input)?;
@@ -66,7 +86,9 @@ fn parse_time_option(input: &str) -> IResult<&str, ClipOptions> {
     ))
 }
 
-/// Parse `[scale ROOT TYPE]`
+/// `[scale ROOT TYPE]` 形式のスケール指定をパースする。
+///
+/// Parse `[scale ROOT TYPE]` option.
 fn parse_scale_option(input: &str) -> IResult<&str, ClipOptions> {
     let (input, _) = char('[')(input)?;
     let (input, _) = ws(input)?;
@@ -89,12 +111,16 @@ fn parse_scale_option(input: &str) -> IResult<&str, ClipOptions> {
     ))
 }
 
+/// 単一のクリップオプション括弧をパースする。
+///
 /// Parse a single clip option bracket.
 fn parse_single_option(input: &str) -> IResult<&str, ClipOptions> {
     alt((parse_bars_option, parse_time_option, parse_scale_option))(input)
 }
 
-/// Merge two ClipOptions, with `other` overriding fields set in it.
+/// 2つの `ClipOptions` をマージする。`other` に設定されたフィールドが優先される。
+///
+/// Merge two `ClipOptions`, with `other` overriding fields set in it.
 fn merge(base: ClipOptions, other: ClipOptions) -> ClipOptions {
     ClipOptions {
         bars: other.bars.or(base.bars),
@@ -103,6 +129,9 @@ fn merge(base: ClipOptions, other: ClipOptions) -> ClipOptions {
     }
 }
 
+/// `[bars 1] [time 3/4] [scale c minor]` のようなクリップオプションを
+/// 0個以上パースする。オプションは任意の順序で指定可能。
+///
 /// Parse zero or more clip options like `[bars 1] [time 3/4] [scale c minor]`.
 /// Options can appear in any order.
 pub fn parse_clip_options(input: &str) -> IResult<&str, ClipOptions> {
