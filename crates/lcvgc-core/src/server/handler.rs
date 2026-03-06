@@ -37,7 +37,7 @@ pub async fn handle_request(evaluator: &Arc<Mutex<Evaluator>>, request: Request)
         }
         Request::Load { path } => {
             let mut ev = evaluator.lock().await;
-            match ev.load_file(&path) {
+            match ev.eval_file(std::path::Path::new(&path)) {
                 Ok(results) => Response::ok(format!("{} blocks evaluated", results.len())),
                 Err(e) => Response::err(e.to_string()),
             }

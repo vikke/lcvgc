@@ -49,7 +49,7 @@ async fn main() {
 
     if let Some(ref file) = cli.file {
         let mut ev = evaluator.lock().await;
-        match ev.load_file(&file.to_string_lossy()) {
+        match ev.eval_file(file) {
             Ok(results) => info!("  {} ブロックを評価しました", results.len()),
             Err(e) => error!("  ファイル読み込みエラー: {}", e),
         }
