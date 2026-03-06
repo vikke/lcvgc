@@ -18,7 +18,6 @@ use super::protocol::{
     PortInfo, Request, Response,
 };
 
-/// リクエストを処理してレスポンスを返す
 pub async fn handle_request(evaluator: &Arc<Mutex<Evaluator>>, request: Request) -> Response {
     match request {
         Request::Eval { source } => {
@@ -79,7 +78,14 @@ pub async fn handle_request(evaluator: &Arc<Mutex<Evaluator>>, request: Request)
             offset,
             include_sources,
         } => {
-            let ev = evaluator.lock().await;
+            // registryが空ならソースからプリロード
+            // Preload from source if registry is empty
+            let mut ev = evaluator.lock().await;
+            let additional: Vec<&str> = include_sources
+                .as_ref()
+                .map(|incs| incs.iter().map(|i| i.source.as_str()).collect())
+                .unwrap_or_default();
+            ev.preload_from_source(&source, &additional);
             let mut analyzer = LspAnalyzer::with_base_registry(ev.registry().clone());
             drop(ev);
             if let Some(ref includes) = include_sources {
@@ -104,7 +110,14 @@ pub async fn handle_request(evaluator: &Arc<Mutex<Evaluator>>, request: Request)
             offset,
             include_sources,
         } => {
-            let ev = evaluator.lock().await;
+            // registryが空ならソースからプリロード
+            // Preload from source if registry is empty
+            let mut ev = evaluator.lock().await;
+            let additional: Vec<&str> = include_sources
+                .as_ref()
+                .map(|incs| incs.iter().map(|i| i.source.as_str()).collect())
+                .unwrap_or_default();
+            ev.preload_from_source(&source, &additional);
             let mut analyzer = LspAnalyzer::with_base_registry(ev.registry().clone());
             drop(ev);
             if let Some(ref includes) = include_sources {
@@ -122,7 +135,14 @@ pub async fn handle_request(evaluator: &Arc<Mutex<Evaluator>>, request: Request)
             source,
             include_sources,
         } => {
-            let ev = evaluator.lock().await;
+            // registryが空ならソースからプリロード
+            // Preload from source if registry is empty
+            let mut ev = evaluator.lock().await;
+            let additional: Vec<&str> = include_sources
+                .as_ref()
+                .map(|incs| incs.iter().map(|i| i.source.as_str()).collect())
+                .unwrap_or_default();
+            ev.preload_from_source(&source, &additional);
             let mut analyzer = LspAnalyzer::with_base_registry(ev.registry().clone());
             drop(ev);
             // include_sourcesがある場合はinclude解決付きで更新、ない場合は従来通り
@@ -166,7 +186,14 @@ pub async fn handle_request(evaluator: &Arc<Mutex<Evaluator>>, request: Request)
             offset,
             include_sources,
         } => {
-            let ev = evaluator.lock().await;
+            // registryが空ならソースからプリロード
+            // Preload from source if registry is empty
+            let mut ev = evaluator.lock().await;
+            let additional: Vec<&str> = include_sources
+                .as_ref()
+                .map(|incs| incs.iter().map(|i| i.source.as_str()).collect())
+                .unwrap_or_default();
+            ev.preload_from_source(&source, &additional);
             let mut analyzer = LspAnalyzer::with_base_registry(ev.registry().clone());
             drop(ev);
             if let Some(ref includes) = include_sources {
@@ -192,7 +219,14 @@ pub async fn handle_request(evaluator: &Arc<Mutex<Evaluator>>, request: Request)
             source,
             include_sources,
         } => {
-            let ev = evaluator.lock().await;
+            // registryが空ならソースからプリロード
+            // Preload from source if registry is empty
+            let mut ev = evaluator.lock().await;
+            let additional: Vec<&str> = include_sources
+                .as_ref()
+                .map(|incs| incs.iter().map(|i| i.source.as_str()).collect())
+                .unwrap_or_default();
+            ev.preload_from_source(&source, &additional);
             let mut analyzer = LspAnalyzer::with_base_registry(ev.registry().clone());
             drop(ev);
             if let Some(ref includes) = include_sources {

@@ -302,6 +302,34 @@ impl Evaluator {
         Ok(results)
     }
 
+    /// registryが空の場合にソースからregistryを自動構築する
+    /// Auto-populates registry from source when registry is empty
+    ///
+    /// # Arguments
+    /// * `source` - メインのDSLソース文字列 / Main DSL source string
+    /// * `additional_sources` - include由来の追加ソース / Additional sources from includes
+    ///
+    /// # Returns
+    /// `true` if registry was populated, `false` if skipped (registry already has data)
+    pub fn preload_from_source(&mut self, source: &str, additional_sources: &[&str]) -> bool {
+        if !self.registry.is_empty() {
+            return false;
+        }
+        // メインソースをプリロード評価
+        // Preload-evaluate main source
+        if self.eval_source_preload(source).is_err() {
+            return false;
+        }
+        // 追加ソース（include分）をプリロード評価
+        // Preload-evaluate additional sources (from includes)
+        for additional in additional_sources {
+            if self.eval_source_preload(additional).is_err() {
+                return false;
+            }
+        }
+        true
+    }
+
     /// ソースコード文字列を全ブロック評価する
     pub fn eval_source(&mut self, source: &str) -> Result<Vec<EvalResult>, EngineError> {
         let (_, blocks) = crate::parser::parse_source(source)
@@ -785,5 +813,104 @@ stop
         // Play and Stop are skipped (not included in results)
         assert!(!results.iter().any(|r| matches!(r, EvalResult::PlayStarted)));
         assert!(!results.iter().any(|r| matches!(r, EvalResult::Stopped)));
+    }
+
+    /// 空registryの場合にpreload_from_sourceが成功することを検証
+    /// Verifies preload_from_source succeeds when registry is empty
+    #[test]
+    fn preload_from_source_populates_empty_registry() {
+        let mut ev = Evaluator::new(120.0);
+        let source = r#"
+device mb {
+  port Mutant Brain
+}
+
+instrument bass {
+  device mb
+  channel 1
+}
+"#;
+        assert!(ev.registry().is_empty());
+        let result = ev.preload_from_source(source, &[]);
+        assert!(result);
+        assert!(!ev.registry().is_empty());
+        assert!(ev.registry().get_device("mb").is_some());
+        assert!(ev.registry().get_instrument("bass").is_some());
+    }
+
+    /// 非空registryの場合にpreload_from_sourceがスキップされることを検証
+    /// Verifies preload_from_source skips when registry already has data
+    #[test]
+    fn preload_from_source_skips_non_empty_registry() {
+        let mut ev = Evaluator::new(120.0);
+        // 先にデバイスを登録
+        // Register a device first
+        ev.eval_source_preload("device d1 { port P1 }").unwrap();
+        assert!(!ev.registry().is_empty());
+
+        let result = ev.preload_from_source("device d2 { port P2 }", &[]);
+        assert!(!result);
+        // d2は登録されない
+        // d2 should not be registered
+        assert!(ev.registry().get_device("d2").is_none());
+    }
+
+    /// additional_sourcesが正しく登録されることを検証
+    /// Verifies additional_sources are properly registered
+    #[test]
+    fn preload_from_source_with_additional_sources() {
+        let mut ev = Evaluator::new(120.0);
+        let main_source = r#"
+device mb {
+  port Mutant Brain
+}
+"#;
+        let additional = r#"
+instrument bass {
+  device mb
+  channel 1
+}
+"#;
+        let result = ev.preload_from_source(main_source, &[additional]);
+        assert!(result);
+        assert!(ev.registry().get_device("mb").is_some());
+        assert!(ev.registry().get_instrument("bass").is_some());
+    }
+
+    /// preload_from_sourceでPlay/Stopがスキップされることを検証
+    /// Verifies preload_from_source skips Play/Stop blocks
+    #[test]
+    fn preload_from_source_skips_play_stop() {
+        let mut ev = Evaluator::new(120.0);
+        let source = r#"
+device mb {
+  port Mutant Brain
+}
+
+instrument bass {
+  device mb
+  channel 1
+}
+
+clip intro [bars 1] {
+  bass C3 _ _ _
+}
+
+scene verse {
+  intro
+}
+
+play verse
+
+stop
+"#;
+        let result = ev.preload_from_source(source, &[]);
+        assert!(result);
+        assert!(ev.registry().get_device("mb").is_some());
+        // play/stopがスキップされても他は登録される
+        // Other blocks are registered even though play/stop are skipped
+        assert!(ev.registry().get_instrument("bass").is_some());
+        assert!(ev.registry().get_clip("intro").is_some());
+        assert!(ev.registry().get_scene("verse").is_some());
     }
 }

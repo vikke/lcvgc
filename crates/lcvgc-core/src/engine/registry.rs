@@ -209,6 +209,20 @@ impl Registry {
     pub fn kits(&self) -> &HashMap<String, KitDef> {
         &self.kits
     }
+
+    /// 全フィールドが空（未登録）かどうかを返す
+    /// Returns true if all fields are empty (no definitions registered)
+    pub fn is_empty(&self) -> bool {
+        self.devices.is_empty()
+            && self.instruments.is_empty()
+            && self.kits.is_empty()
+            && self.clips.is_empty()
+            && self.scenes.is_empty()
+            && self.sessions.is_empty()
+            && self.variables.is_empty()
+            && self.tempo.is_none()
+            && self.scale.is_none()
+    }
 }
 
 #[cfg(test)]
@@ -234,6 +248,22 @@ mod tests {
         assert!(reg.get_var("any").is_none());
         assert!(reg.tempo().is_none());
         assert!(reg.scale().is_none());
+    }
+
+    #[test]
+    fn is_empty_on_new() {
+        let reg = Registry::new();
+        assert!(reg.is_empty());
+    }
+
+    #[test]
+    fn is_empty_after_register() {
+        let mut reg = Registry::new();
+        reg.register_block(Block::Device(DeviceDef {
+            name: "synth".into(),
+            port: "IAC Bus 1".into(),
+        }));
+        assert!(!reg.is_empty());
     }
 
     #[test]
