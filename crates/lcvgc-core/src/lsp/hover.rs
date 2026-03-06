@@ -23,10 +23,10 @@ impl HoverProvider {
     ///
     /// ブロック種別に応じて、名前・ポート・チャンネル・エントリ数等の
     /// 詳細情報を含むMarkdown文字列を返す。
-    /// play, stop, include ブロックにはホバー情報は提供しない。
+    /// play, stop ブロックにはホバー情報は提供しない。
     /// Returns a Markdown string containing details such as name, port, channel,
     /// and entry count depending on the block type.
-    /// No hover information is provided for play, stop, or include blocks.
+    /// No hover information is provided for play or stop blocks.
     ///
     /// # Arguments
     /// * `sb` - スパン付きブロック / Spanned block
@@ -88,7 +88,8 @@ impl HoverProvider {
             Block::Tempo(t) => Some(format!("**tempo** `{:?}`", t)),
             Block::Scale(s) => Some(format!("**scale** `{:?} {:?}`", s.root, s.scale_type)),
             Block::Var(v) => Some(format!("**var** `{}` = `{}`", v.name, v.value)),
-            _ => None,
+            Block::Include(inc) => Some(format!("**include** `{}`", inc.path)),
+            Block::Play(_) | Block::Stop(_) => None,
         }
     }
 }
@@ -268,10 +269,11 @@ mod tests {
     }
 
     #[test]
-    fn include_returns_none() {
+    fn include_shows_path() {
         let result = HoverProvider::hover_content(&sb(Block::Include(IncludeDef {
             path: "other.lcvgc".into(),
         })));
-        assert!(result.is_none());
+        let text = result.unwrap();
+        assert!(text.contains("**include** `other.lcvgc`"));
     }
 }

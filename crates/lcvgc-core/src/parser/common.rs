@@ -217,6 +217,23 @@ pub fn ws1(input: &str) -> IResult<&str, ()> {
     Ok((input, ()))
 }
 
+/// 引用符なしのパス文字列をパースする: 行末まで取得し、末尾をtrimする
+/// Parse an unquoted path string: reads until end of line and trims trailing whitespace
+///
+/// # Returns
+/// パス文字列のスライス / Path string slice
+pub fn path_string(input: &str) -> IResult<&str, &str> {
+    let (remaining, taken) = take_while(|c| c != '\n')(input)?;
+    let trimmed = taken.trim();
+    if trimmed.is_empty() {
+        return Err(nom::Err::Error(nom::error::Error::new(
+            input,
+            nom::error::ErrorKind::TakeWhile1,
+        )));
+    }
+    Ok((remaining, trimmed))
+}
+
 /// 引用符付き文字列をパースする: "..."
 /// Parse a quoted string: "..."
 pub fn quoted_string(input: &str) -> IResult<&str, &str> {
@@ -342,6 +359,22 @@ mod tests {
         assert!(is_reserved("clip"));
         assert!(!is_reserved("bass"));
         assert!(!is_reserved("tr808"));
+    }
+
+    #[test]
+    fn test_path_string() {
+        assert_eq!(path_string("./setup.cvg\n"), Ok(("\n", "./setup.cvg")));
+        assert_eq!(path_string("./setup.cvg  \n"), Ok(("\n", "./setup.cvg")));
+        assert_eq!(
+            path_string("path/to/file.cvg"),
+            Ok(("", "path/to/file.cvg"))
+        );
+    }
+
+    #[test]
+    fn test_path_string_empty_fails() {
+        assert!(path_string("").is_err());
+        assert!(path_string("\n").is_err());
     }
 
     #[test]

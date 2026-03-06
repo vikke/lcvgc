@@ -382,9 +382,18 @@ pub fn build_completion_items(ctx: &CompletionContext, registry: &Registry) -> V
 
         CompletionContext::AfterBlockKeyword
         | CompletionContext::AfterTempo
-        | CompletionContext::AfterInclude
         | CompletionContext::AfterVar
         | CompletionContext::NumberExpected => {
+            vec![]
+        }
+
+        CompletionContext::AfterInclude => {
+            // TODO: base_pathがbuild_completion_itemsに渡されていないため、
+            // 現段階ではregistryから取得できない。将来的にbase_pathを渡す必要がある。
+            // 今は空のベクターを返す（後方互換）
+            // TODO: base_path is not passed to build_completion_items yet,
+            // so it cannot be obtained from the registry. base_path needs to be passed in the future.
+            // For now, return an empty vector (backward compatible)
             vec![]
         }
 

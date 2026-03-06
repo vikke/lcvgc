@@ -156,16 +156,8 @@ pub async fn run_hot_reload(
 
         info!("ファイル変更検知: {}", file_path.display());
 
-        let source = match std::fs::read_to_string(&file_path) {
-            Ok(s) => s,
-            Err(e) => {
-                warn!("ファイル読み込み失敗: {}: {}", file_path.display(), e);
-                continue;
-            }
-        };
-
         let mut ev = evaluator.lock().await;
-        match ev.eval_source(&source) {
+        match ev.eval_file(&file_path) {
             Ok(results) => {
                 info!(
                     "ホットリロード成功: {} ブロック評価 ({})",

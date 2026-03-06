@@ -3,6 +3,8 @@
 //! LSP補完リクエストに対して、コンテキストに応じた補完候補を生成する。
 //! キーワード・ノート名・コード名・CC名・識別子など各種候補を提供する。
 
+use std::path::Path;
+
 use super::diatonic;
 use crate::ast::common::NoteName;
 use crate::ast::instrument::InstrumentDef;
@@ -346,6 +348,49 @@ impl CompletionProvider {
         })
         .collect()
     }
+
+    /// インクルードパスの補完候補を返す（.cvg/.lcvgc ファイル）
+    /// Returns completion candidates for include paths (.cvg/.lcvgc files)
+    ///
+    /// # Arguments
+    /// * `base_path` - ベースディレクトリのパス / Base directory path
+    ///
+    /// # Returns
+    /// .cvg/.lcvgc ファイルのパス補完候補リスト / List of .cvg/.lcvgc file path completion candidates
+    pub fn include_path_completions(base_path: &Path) -> Vec<CompletionItem> {
+        let mut items = Vec::new();
+        if let Ok(entries) = std::fs::read_dir(base_path) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.is_file() {
+                    if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
+                        if ext == "cvg" || ext == "lcvgc" {
+                            if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
+                                items.push(CompletionItem {
+                                    label: name.to_string(),
+                                    detail: Some("include file".to_string()),
+                                    kind: CompletionKind::Identifier,
+                                });
+                            }
+                        }
+                    }
+                } else if path.is_dir() {
+                    if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
+                        // ドットで始まるディレクトリはスキップ
+                        // Skip directories starting with a dot
+                        if !name.starts_with('.') {
+                            items.push(CompletionItem {
+                                label: format!("{}/", name),
+                                detail: Some("directory".to_string()),
+                                kind: CompletionKind::Identifier,
+                            });
+                        }
+                    }
+                }
+            }
+        }
+        items
+    }
 }
 
 #[cfg(test)]
@@ -437,6 +482,38 @@ mod tests {
     #[test]
     fn test_identifier_completions_empty() {
         let items = CompletionProvider::identifier_completions(&[], "clip");
+        assert!(items.is_empty());
+    }
+
+    #[test]
+    fn test_include_path_completions() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("setup.cvg"), "").unwrap();
+        std::fs::write(dir.path().join("drums.lcvgc"), "").unwrap();
+        std::fs::write(dir.path().join("readme.md"), "").unwrap();
+        std::fs::create_dir(dir.path().join("clips")).unwrap();
+        std::fs::create_dir(dir.path().join(".hidden")).unwrap();
+
+        let items = CompletionProvider::include_path_completions(dir.path());
+        // .cvg と .lcvgc ファイルのみ + ディレクトリ（.hidden除外）
+        assert!(items.iter().any(|i| i.label == "setup.cvg"));
+        assert!(items.iter().any(|i| i.label == "drums.lcvgc"));
+        assert!(items.iter().any(|i| i.label == "clips/"));
+        assert!(!items.iter().any(|i| i.label == "readme.md"));
+        assert!(!items.iter().any(|i| i.label.contains(".hidden")));
+    }
+
+    #[test]
+    fn test_include_path_completions_empty_dir() {
+        let dir = tempfile::tempdir().unwrap();
+        let items = CompletionProvider::include_path_completions(dir.path());
+        assert!(items.is_empty());
+    }
+
+    #[test]
+    fn test_include_path_completions_nonexistent() {
+        use std::path::Path;
+        let items = CompletionProvider::include_path_completions(Path::new("/nonexistent/path"));
         assert!(items.is_empty());
     }
 }

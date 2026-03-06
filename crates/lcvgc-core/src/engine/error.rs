@@ -18,6 +18,23 @@ pub enum EngineError {
     ParseError(String),
     #[error("IOエラー: {0}")]
     Io(#[from] std::io::Error),
+
+    /// 循環インクルード検出 / Circular include detected
+    #[error("循環インクルード: {0}")]
+    CircularInclude(String),
+
+    /// インクルードファイル未検出 / Include file not found
+    #[error("インクルードファイル未検出: {0}")]
+    IncludeNotFound(String),
+
+    /// インクルードファイル読み込みエラー / Include file read error
+    #[error("インクルードファイル読み込みエラー: {path}: {reason}")]
+    IncludeReadError {
+        /// ファイルパス / File path
+        path: String,
+        /// エラー原因 / Error reason
+        reason: String,
+    },
 }
 
 #[cfg(test)]
@@ -80,5 +97,29 @@ mod tests {
         let io_err = std::io::Error::other("test");
         let e: EngineError = io_err.into();
         assert!(matches!(e, EngineError::Io(_)));
+    }
+
+    #[test]
+    fn display_circular_include() {
+        let e = EngineError::CircularInclude("a.cvg -> b.cvg -> a.cvg".into());
+        assert_eq!(e.to_string(), "循環インクルード: a.cvg -> b.cvg -> a.cvg");
+    }
+
+    #[test]
+    fn display_include_not_found() {
+        let e = EngineError::IncludeNotFound("missing.cvg".into());
+        assert_eq!(e.to_string(), "インクルードファイル未検出: missing.cvg");
+    }
+
+    #[test]
+    fn display_include_read_error() {
+        let e = EngineError::IncludeReadError {
+            path: "broken.cvg".into(),
+            reason: "permission denied".into(),
+        };
+        assert_eq!(
+            e.to_string(),
+            "インクルードファイル読み込みエラー: broken.cvg: permission denied"
+        );
     }
 }
