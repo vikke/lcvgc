@@ -10,26 +10,56 @@ use crate::ast::session::SessionDef;
 use crate::ast::tempo::Tempo;
 use crate::ast::Block;
 
+/// DSL定義ブロックの名前付きレジストリ
+/// Named registry for DSL definition blocks
+///
+/// パース済みのデバイス・インストゥルメント・キット・クリップ・シーン・
+/// セッション・変数・テンポ・スケール定義を保持し、名前で検索可能にする。
+/// Holds parsed device, instrument, kit, clip, scene, session, variable,
+/// tempo, and scale definitions, making them searchable by name.
 #[derive(Debug, Default)]
 pub struct Registry {
+    /// デバイス定義のマップ（名前 → 定義）
+    /// Map of device definitions (name -> definition)
     devices: HashMap<String, DeviceDef>,
+    /// インストゥルメント定義のマップ（名前 → 定義）
+    /// Map of instrument definitions (name -> definition)
     instruments: HashMap<String, InstrumentDef>,
+    /// キット定義のマップ（名前 → 定義）
+    /// Map of kit definitions (name -> definition)
     kits: HashMap<String, KitDef>,
+    /// クリップ定義のマップ（名前 → 定義）
+    /// Map of clip definitions (name -> definition)
     clips: HashMap<String, ClipDef>,
+    /// シーン定義のマップ（名前 → 定義）
+    /// Map of scene definitions (name -> definition)
     scenes: HashMap<String, SceneDef>,
+    /// セッション定義のマップ（名前 → 定義）
+    /// Map of session definitions (name -> definition)
     sessions: HashMap<String, SessionDef>,
+    /// 変数のマップ（名前 → 値）
+    /// Map of variables (name -> value)
     variables: HashMap<String, String>,
+    /// グローバルテンポ設定
+    /// Global tempo setting
     tempo: Option<Tempo>,
+    /// グローバルスケール設定
+    /// Global scale setting
     scale: Option<ScaleDef>,
 }
 
 impl Registry {
+    /// 空のレジストリを作成する
+    /// Creates a new empty registry
     pub fn new() -> Self {
         Self::default()
     }
 
     /// Blockを種別に応じて登録。同名は上書き。
+    /// Registers a block by its type. Overwrites if the same name exists.
+    ///
     /// Play/Stop/Includeは登録対象外（falseを返す）
+    /// Play/Stop/Include are not registered (returns false)
     pub fn register_block(&mut self, block: Block) -> bool {
         match block {
             Block::Device(d) => {
@@ -72,74 +102,110 @@ impl Registry {
         }
     }
 
+    /// 指定名のデバイス定義を取得する
+    /// Retrieves the device definition with the given name
     pub fn get_device(&self, name: &str) -> Option<&DeviceDef> {
         self.devices.get(name)
     }
 
+    /// 指定名のインストゥルメント定義を取得する
+    /// Retrieves the instrument definition with the given name
     pub fn get_instrument(&self, name: &str) -> Option<&InstrumentDef> {
         self.instruments.get(name)
     }
 
+    /// 指定名のキット定義を取得する
+    /// Retrieves the kit definition with the given name
     pub fn get_kit(&self, name: &str) -> Option<&KitDef> {
         self.kits.get(name)
     }
 
+    /// 指定名のクリップ定義を取得する
+    /// Retrieves the clip definition with the given name
     pub fn get_clip(&self, name: &str) -> Option<&ClipDef> {
         self.clips.get(name)
     }
 
+    /// 指定名のシーン定義を取得する
+    /// Retrieves the scene definition with the given name
     pub fn get_scene(&self, name: &str) -> Option<&SceneDef> {
         self.scenes.get(name)
     }
 
+    /// 指定名のセッション定義を取得する
+    /// Retrieves the session definition with the given name
     pub fn get_session(&self, name: &str) -> Option<&SessionDef> {
         self.sessions.get(name)
     }
 
+    /// 指定名の変数の値を取得する
+    /// Retrieves the value of the variable with the given name
     pub fn get_var(&self, name: &str) -> Option<&str> {
         self.variables.get(name).map(|s| s.as_str())
     }
 
+    /// グローバルテンポ設定を取得する
+    /// Retrieves the global tempo setting
     pub fn tempo(&self) -> Option<&Tempo> {
         self.tempo.as_ref()
     }
 
+    /// グローバルスケール設定を取得する
+    /// Retrieves the global scale setting
     pub fn scale(&self) -> Option<&ScaleDef> {
         self.scale.as_ref()
     }
 
+    /// 登録済みデバイス名の一覧を返す
+    /// Returns a list of all registered device names
     pub fn device_names(&self) -> Vec<String> {
         self.devices.keys().cloned().collect()
     }
 
+    /// 登録済みインストゥルメント名の一覧を返す
+    /// Returns a list of all registered instrument names
     pub fn instrument_names(&self) -> Vec<String> {
         self.instruments.keys().cloned().collect()
     }
 
+    /// 登録済みキット名の一覧を返す
+    /// Returns a list of all registered kit names
     pub fn kit_names(&self) -> Vec<String> {
         self.kits.keys().cloned().collect()
     }
 
+    /// 登録済みクリップ名の一覧を返す
+    /// Returns a list of all registered clip names
     pub fn clip_names(&self) -> Vec<String> {
         self.clips.keys().cloned().collect()
     }
 
+    /// 登録済みシーン名の一覧を返す
+    /// Returns a list of all registered scene names
     pub fn scene_names(&self) -> Vec<String> {
         self.scenes.keys().cloned().collect()
     }
 
+    /// 登録済みセッション名の一覧を返す
+    /// Returns a list of all registered session names
     pub fn session_names(&self) -> Vec<String> {
         self.sessions.keys().cloned().collect()
     }
 
+    /// 登録済み変数名の一覧を返す
+    /// Returns a list of all registered variable names
     pub fn var_names(&self) -> Vec<String> {
         self.variables.keys().cloned().collect()
     }
 
+    /// インストゥルメント定義マップ全体への参照を返す
+    /// Returns a reference to the entire instrument definitions map
     pub fn instruments(&self) -> &HashMap<String, InstrumentDef> {
         &self.instruments
     }
 
+    /// キット定義マップ全体への参照を返す
+    /// Returns a reference to the entire kit definitions map
     pub fn kits(&self) -> &HashMap<String, KitDef> {
         &self.kits
     }

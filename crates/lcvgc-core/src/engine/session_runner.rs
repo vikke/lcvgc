@@ -1,31 +1,41 @@
 use crate::ast::session::{SessionDef, SessionEntry, SessionRepeat};
 
 /// セッション進行時のアクション
+/// Action during session progression
 #[derive(Debug, Clone, PartialEq)]
 pub enum SessionAction {
     /// 次のシーンを再生
+    /// Play the next scene
     PlayScene(String),
     /// セッション完了
+    /// Session completed
     Done,
 }
 
 /// セッション再生シーケンスを管理
+/// Manages the session playback sequence
 ///
 /// セッション内のエントリを順番に処理し、リピート制御を行う。
+/// Processes entries within a session sequentially and handles repeat control.
 #[derive(Debug)]
 pub struct SessionRunner {
     /// セッション内のエントリ一覧
+    /// List of entries within the session
     entries: Vec<SessionEntry>,
     /// 現在処理中のエントリインデックス
+    /// Index of the currently processing entry
     current_index: usize,
     /// 現在のエントリの残りリピート回数（None = Loop無限）
+    /// Remaining repeat count for the current entry (None = infinite loop)
     current_repeat_remaining: Option<u32>,
     /// セッション全体をループするか
+    /// Whether to loop the entire session
     session_looping: bool,
 }
 
 impl SessionRunner {
     /// セッション定義からランナーを作成する
+    /// Creates a runner from a session definition
     pub fn new(session: &SessionDef) -> Self {
         let repeat_remaining = session
             .entries
@@ -41,6 +51,7 @@ impl SessionRunner {
     }
 
     /// セッション全体のループを設定して作成する
+    /// Creates a runner with session-wide looping enabled
     pub fn new_looping(session: &SessionDef) -> Self {
         let mut runner = Self::new(session);
         runner.session_looping = true;
@@ -48,6 +59,7 @@ impl SessionRunner {
     }
 
     /// 次のアクションを返す。シーンの1サイクル完了ごとに呼ぶ。
+    /// Returns the next action. Called after each scene cycle completes.
     pub fn advance(&mut self) -> SessionAction {
         // エントリが空または末尾を超えた場合
         if self.current_index >= self.entries.len() {
@@ -87,22 +99,26 @@ impl SessionRunner {
     }
 
     /// 先頭にリセット
+    /// Resets to the beginning
     pub fn reset(&mut self) {
         self.current_index = 0;
         self.init_current_repeat();
     }
 
     /// 完了しているか
+    /// Returns whether the session has completed
     pub fn is_done(&self) -> bool {
         self.current_index >= self.entries.len()
     }
 
     /// 現在のエントリインデックス
+    /// Returns the current entry index
     pub fn current_index(&self) -> usize {
         self.current_index
     }
 
     /// リピートモードから初期残り回数を計算する
+    /// Calculates the initial remaining count from a repeat mode
     fn initial_remaining(repeat: &SessionRepeat) -> Option<u32> {
         match repeat {
             SessionRepeat::Once => Some(1),
@@ -112,6 +128,7 @@ impl SessionRunner {
     }
 
     /// 現在のエントリのリピート残り回数を初期化する
+    /// Initializes the remaining repeat count for the current entry
     fn init_current_repeat(&mut self) {
         self.current_repeat_remaining = self
             .entries

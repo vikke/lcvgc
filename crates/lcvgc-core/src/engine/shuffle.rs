@@ -3,7 +3,10 @@ use rand::Rng;
 use crate::ast::scene::ShuffleCandidate;
 
 /// 重み付きランダム選択。candidates から weight 比率で1つ選ぶ。
+/// Weighted random selection. Picks one from candidates based on weight ratios.
+///
 /// candidates が空の場合は None を返す。
+/// Returns None if candidates is empty.
 pub fn weighted_pick<'a, R: Rng>(
     candidates: &'a [ShuffleCandidate],
     rng: &mut R,
@@ -29,8 +32,13 @@ pub fn weighted_pick<'a, R: Rng>(
 }
 
 /// 確率判定。probability=None → 常にtrue (100%)
+/// Probability check. probability=None -> always true (100%)
+///
 /// probability=Some(n) where n=1..9 → n*10 % の確率でtrue
+/// probability=Some(n) where n=1..9 -> true with n*10% probability
+///
 /// n=0 → 常にfalse
+/// n=0 -> always false
 pub fn probability_check<R: Rng>(probability: Option<u8>, rng: &mut R) -> bool {
     match probability {
         None => true,
