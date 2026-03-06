@@ -608,7 +608,7 @@ dependencies = [
 
 [[package]]
 name = "lcvgc-core"
-version = "0.7.0"
+version = "0.7.1"
 dependencies = [
  "criterion",
  "ctrlc",
