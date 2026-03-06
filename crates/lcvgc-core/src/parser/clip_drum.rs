@@ -1,9 +1,21 @@
 use crate::ast::clip_drum::HitSymbol;
 
+/// ドラムパターン文字列中の `|` 省略記法を展開する。
+///
+/// `|` は次の拍境界まで `.` で埋める（拍境界は `beats_per_step` で決定）。
+/// 4/4拍子・分解能16の場合、`beats_per_step` は 4。
+///
 /// Expand `|` shorthand in a drum pattern string.
 ///
 /// `|` fills with `.` up to the next beat boundary (determined by `beats_per_step`).
 /// For resolution 16 in 4/4 time, `beats_per_step` is 4.
+///
+/// # Arguments
+/// * `pattern` - ドラムパターン文字列 / drum pattern string
+/// * `beats_per_step` - 1拍あたりのステップ数 / number of steps per beat
+///
+/// # Returns
+/// 展開済みのパターン文字列 / expanded pattern string
 pub fn expand_pipe(pattern: &str, beats_per_step: usize) -> String {
     let mut result = String::new();
     for ch in pattern.chars() {
@@ -21,7 +33,19 @@ pub fn expand_pipe(pattern: &str, beats_per_step: usize) -> String {
     result
 }
 
+/// 展開済み（`|` なし）のパターン文字列を `HitSymbol` のベクタにパースする。
+///
 /// Parse an expanded (no `|`) pattern string into a vector of `HitSymbol`.
+///
+/// # Arguments
+/// * `input` - 展開済みパターン文字列 (`x`, `X`, `o`, `.` で構成) / expanded pattern string (composed of `x`, `X`, `o`, `.`)
+///
+/// # Returns
+/// ヒットシンボルのベクタ / vector of hit symbols
+///
+/// # Panics
+/// 未知のシンボル文字が含まれる場合パニックする。
+/// Panics if an unknown symbol character is encountered.
 pub fn parse_hit_symbols(input: &str) -> Vec<HitSymbol> {
     input
         .chars()
@@ -35,11 +59,27 @@ pub fn parse_hit_symbols(input: &str) -> Vec<HitSymbol> {
         .collect()
 }
 
+/// 確率行文字列をステップごとの確率値（0-100）にパースする。
+///
+/// - `.` → 100（常に発音）
+/// - `0` → 0（発音しない）
+/// - `1`〜`9` → 10〜90
+///
 /// Parse a probability row string into per-step probabilities (0-100).
 ///
 /// - `.` → 100 (always fire)
 /// - `0` → 0 (never fire)
 /// - `1`-`9` → 10-90
+///
+/// # Arguments
+/// * `input` - 確率行文字列 (`.`, `0`-`9` で構成) / probability row string (composed of `.`, `0`-`9`)
+///
+/// # Returns
+/// ステップごとの確率値ベクタ (0-100) / vector of per-step probabilities (0-100)
+///
+/// # Panics
+/// 未知の確率シンボルが含まれる場合パニックする。
+/// Panics if an unknown probability symbol is encountered.
 pub fn parse_probability_row(input: &str) -> Vec<u8> {
     input
         .chars()
