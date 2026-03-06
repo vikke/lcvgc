@@ -6,7 +6,9 @@ use nom::{
 use crate::ast::clip_cc::*;
 use crate::parser::common::{identifier, parse_u32, parse_u8, ws, ws1};
 
-/// `instrument.param` をパース
+/// `instrument.param` 形式のCCターゲットをパース
+///
+/// Parses a CC target in the format `instrument.param`.
 pub fn parse_cc_target(input: &str) -> IResult<&str, CcTarget> {
     let (input, instrument) = identifier(input)?;
     let (input, _) = char('.')(input)?;
@@ -21,11 +23,15 @@ pub fn parse_cc_target(input: &str) -> IResult<&str, CcTarget> {
 }
 
 /// スペース区切りのu8値リストをパース
+///
+/// Parses a whitespace-separated list of u8 values.
 pub fn parse_cc_step_values(input: &str) -> IResult<&str, Vec<u8>> {
     separated_list1(ws1, parse_u8)(input)
 }
 
-/// `value@bar.beat` をパース
+/// `value@bar.beat` 形式のタイムポイントをパース
+///
+/// Parses a time point in the format `value@bar.beat`.
 pub fn parse_cc_time_point(input: &str) -> IResult<&str, CcTimePoint> {
     let (input, value) = parse_u8(input)?;
     let (input, _) = char('@')(input)?;
@@ -36,7 +42,11 @@ pub fn parse_cc_time_point(input: &str) -> IResult<&str, CcTimePoint> {
 }
 
 /// タイムセグメントをパース
+///
 /// `0@1.1` or `0@1.1-127@3.1` or `0@1.1-exp127@4.4`
+///
+/// Parses a time segment. Supports single points, linear ranges,
+/// and exponential interpolation ranges.
 pub fn parse_cc_time_segment(input: &str) -> IResult<&str, CcTimeSegment> {
     let (input, from) = parse_cc_time_point(input)?;
     let (input, to) = opt(|input| {
@@ -54,6 +64,8 @@ pub fn parse_cc_time_segment(input: &str) -> IResult<&str, CcTimeSegment> {
 }
 
 /// ステップ方式の全行パース: `bass.cutoff    0 10 20 30`
+///
+/// Parses a full step-mode CC automation line: `bass.cutoff    0 10 20 30`
 pub fn parse_cc_step(input: &str) -> IResult<&str, CcAutomation> {
     let (input, _) = ws(input)?;
     let (input, target) = parse_cc_target(input)?;
@@ -64,6 +76,8 @@ pub fn parse_cc_step(input: &str) -> IResult<&str, CcAutomation> {
 }
 
 /// 時間指定方式の全行パース: `bass.cutoff 0@1.1-127@3.1 64@4.1`
+///
+/// Parses a full time-mode CC automation line: `bass.cutoff 0@1.1-127@3.1 64@4.1`
 pub fn parse_cc_time(input: &str) -> IResult<&str, CcAutomation> {
     let (input, _) = ws(input)?;
     let (input, target) = parse_cc_target(input)?;
