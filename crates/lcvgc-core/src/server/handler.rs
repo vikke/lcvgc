@@ -35,6 +35,20 @@ pub async fn handle_request(evaluator: &Arc<Mutex<Evaluator>>, request: Request)
                 Err(e) => Response::err(e.to_string()),
             }
         }
+        Request::Preload { source } => {
+            let mut ev = evaluator.lock().await;
+            match ev.eval_source_preload(&source) {
+                Ok(results) => {
+                    let msg = results
+                        .iter()
+                        .map(|r| format!("{:?}", r))
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    Response::ok(msg)
+                }
+                Err(e) => Response::err(e.to_string()),
+            }
+        }
         Request::Load { path } => {
             let mut ev = evaluator.lock().await;
             match ev.eval_file(std::path::Path::new(&path)) {
@@ -169,6 +183,24 @@ mod tests {
         let resp = handle_request(&ev, req).await;
         assert!(resp.success);
         assert!(resp.message.unwrap().contains("TempoChanged"));
+    }
+
+    /// preloadリクエストでplay/stopがスキップされることを検証する
+    /// Verifies that preload request skips play/stop blocks
+    #[tokio::test]
+    async fn handle_preload_skips_play_stop() {
+        let ev = Arc::new(Mutex::new(Evaluator::new(120.0)));
+        let source = "tempo 140\n\nscene test_scene {}\n\nplay test_scene\nstop\n";
+        let req = Request::Preload {
+            source: source.into(),
+        };
+        let resp = handle_request(&ev, req).await;
+        assert!(resp.success);
+        let msg = resp.message.unwrap();
+        assert!(msg.contains("TempoChanged"));
+        assert!(msg.contains("Scene"));
+        assert!(!msg.contains("PlayStarted"));
+        assert!(!msg.contains("Stopped"));
     }
 
     #[tokio::test]

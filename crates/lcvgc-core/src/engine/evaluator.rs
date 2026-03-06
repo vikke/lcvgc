@@ -255,6 +255,36 @@ impl Evaluator {
         Ok(results)
     }
 
+    /// ソースコード文字列をプリロード評価する（play/stopをスキップ）
+    /// Preload-evaluates DSL source code, skipping play/stop blocks
+    ///
+    /// # Arguments
+    /// * `source` - 評価するDSLソース文字列 / DSL source string to evaluate
+    ///
+    /// # Returns
+    /// 評価結果のベクター（play/stopを除く） / Vector of evaluation results (excluding play/stop)
+    ///
+    /// # Errors
+    /// - `EngineError::ParseError` - パースエラー / Parse error
+    pub fn eval_source_preload(&mut self, source: &str) -> Result<Vec<EvalResult>, EngineError> {
+        let (_, blocks) = crate::parser::parse_source(source)
+            .map_err(|e| EngineError::ParseError(e.to_string()))?;
+        let mut results = Vec::new();
+        for block in blocks {
+            match block {
+                Block::Play(_) | Block::Stop(_) => {
+                    // preloadモードではplay/stopをスキップ
+                    // Skip play/stop blocks in preload mode
+                    continue;
+                }
+                _ => {
+                    results.push(self.eval_block(block)?);
+                }
+            }
+        }
+        Ok(results)
+    }
+
     /// ソースコード文字列を全ブロック評価する
     pub fn eval_source(&mut self, source: &str) -> Result<Vec<EvalResult>, EngineError> {
         let (_, blocks) = crate::parser::parse_source(source)
@@ -622,5 +652,63 @@ device mb {
         let mut ev = Evaluator::new(120.0);
         let result = ev.load_file("/nonexistent/path.cvg");
         assert!(result.is_err());
+    }
+
+    /// play/stopがスキップされ、それ以外のブロックは評価されることを検証する
+    /// Verifies that play/stop are skipped while other blocks are evaluated
+    #[test]
+    fn eval_source_preload_skips_play_and_stop() {
+        let mut ev = Evaluator::new(120.0);
+        let source = r#"
+tempo 140
+
+device mb {
+  port Mutant Brain
+}
+
+instrument bass {
+  device mb
+  channel 1
+}
+
+clip intro [bars 1] {
+  bass C3 _ _ _
+}
+
+scene verse {
+  intro
+}
+
+session main {
+  verse
+}
+
+scale c major
+
+var key = cm
+
+play verse
+
+stop
+"#;
+        let results = ev.eval_source_preload(source).unwrap();
+
+        // Device, Instrument, Clip, Scene, Session, Tempo, Scale, Var はevalされる
+        // Device, Instrument, Clip, Scene, Session, Tempo, Scale, Var are evaluated
+        assert!(results.iter().any(
+            |r| matches!(r, EvalResult::TempoChanged(t) if (*t - 140.0).abs() < f64::EPSILON)
+        ));
+        assert!(results.iter().any(|r| matches!(r, EvalResult::Registered { kind, .. } if kind == "Device")));
+        assert!(results.iter().any(|r| matches!(r, EvalResult::Registered { kind, .. } if kind == "Instrument")));
+        assert!(results.iter().any(|r| matches!(r, EvalResult::Registered { kind, .. } if kind == "Clip")));
+        assert!(results.iter().any(|r| matches!(r, EvalResult::Registered { kind, .. } if kind == "Scene")));
+        assert!(results.iter().any(|r| matches!(r, EvalResult::Registered { kind, .. } if kind == "Session")));
+        assert!(results.iter().any(|r| matches!(r, EvalResult::ScaleChanged)));
+        assert!(results.iter().any(|r| matches!(r, EvalResult::VarDefined { .. })));
+
+        // Play, Stop はスキップされる（結果に含まれない）
+        // Play and Stop are skipped (not included in results)
+        assert!(!results.iter().any(|r| matches!(r, EvalResult::PlayStarted)));
+        assert!(!results.iter().any(|r| matches!(r, EvalResult::Stopped)));
     }
 }
