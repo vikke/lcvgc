@@ -12,6 +12,13 @@ pub enum Request {
         /// 評価するDSLソース / DSL source to evaluate
         source: String,
     },
+    /// play/stopを除いてDSLソースを評価（ファイルオープン時用）
+    /// Evaluate DSL source excluding play/stop (for file open)
+    #[serde(rename = "preload")]
+    Preload {
+        /// 評価するDSLソース / DSL source to evaluate
+        source: String,
+    },
     /// ファイルを読み込んで評価
     /// Load and evaluate a file
     #[serde(rename = "load")]
@@ -294,6 +301,16 @@ mod tests {
         match req {
             Request::Eval { source } => assert_eq!(source, "tempo 140"),
             _ => panic!("Expected Eval"),
+        }
+    }
+
+    #[test]
+    fn deserialize_preload_request() {
+        let json = r#"{"type":"preload","source":"tempo 140"}"#;
+        let req: Request = serde_json::from_str(json).unwrap();
+        match req {
+            Request::Preload { source } => assert_eq!(source, "tempo 140"),
+            _ => panic!("Expected Preload"),
         }
     }
 
