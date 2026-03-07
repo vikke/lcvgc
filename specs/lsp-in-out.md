@@ -1,10 +1,9 @@
-# LSP over Daemon Protocol Specification
+# lcvgc Daemon Protocol Specification
 
 ## 1. Overview
 
-The lcvgc daemon provides LSP features over a TCP socket connection.
-The Neovim plugin (lcvgc-lsp) sends JSON messages to the daemon and receives editor
-assistance responses such as completion, hover information, and diagnostics.
+The lcvgc daemon provides DSL evaluation and LSP features over a TCP socket connection.
+The Neovim plugin (lcvgc.nvim) sends JSON messages to the daemon to use features such as DSL evaluation, status queries, MIDI port listing, completion, hover information, and diagnostics.
 
 This document defines the request and response message formats accepted and returned by the daemon.
 
@@ -31,9 +30,174 @@ Each request is an independent transaction. No session state is retained between
 
 ---
 
-## 3. Request / Response Specifications
+## 3. Common Response Structure
 
-### 3.1 lsp_completion (Completion Candidates)
+All responses share the following common structure. The fields used depend on the request type.
+
+```json
+{
+  "success": true,
+  "message": "<success message>",
+  "error": "<error message>",
+  "ports": [...],
+  "lsp": {...}
+}
+```
+
+| Field     | Type            | Description                                                  |
+|-----------|-----------------|--------------------------------------------------------------|
+| `success` | boolean         | Processing success flag                                      |
+| `message` | string \| null  | Success message (used by eval / preload / status)            |
+| `error`   | string \| null  | Error message (present only on failure)                      |
+| `ports`   | array \| null   | MIDI port list (used by list_ports)                          |
+| `lsp`     | object \| null  | LSP result (used by lsp_* requests)                          |
+
+> **Note**: `message`, `error`, `ports`, and `lsp` are omitted from the response JSON when their value is `null`.
+
+---
+
+## 4. Request / Response Specifications
+
+### 4.1 eval (DSL Source Evaluation)
+
+Evaluates DSL source and executes MIDI message sending, etc. All blocks including `play` / `stop` are evaluated.
+
+#### Request
+
+```json
+{"type": "eval", "source": "<DSL source text>"}
+```
+
+| Field    | Type   | Description                    |
+|----------|--------|--------------------------------|
+| `type`   | string | Fixed value `"eval"`           |
+| `source` | string | Full DSL source text to evaluate |
+
+#### Response (success)
+
+```json
+{"success": true, "message": "<string representation of evaluation results>"}
+```
+
+#### Response (error)
+
+```json
+{"success": false, "error": "<error message>"}
+```
+
+| Field     | Type    | Description                              |
+|-----------|---------|------------------------------------------|
+| `success` | boolean | Processing success flag                  |
+| `message` | string  | Debug string of evaluation results       |
+| `error`   | string  | Details of parse errors, etc.            |
+
+---
+
+### 4.2 preload (Preload Evaluation)
+
+Evaluates DSL source excluding `play` / `stop` blocks. Used for registering definitions into the registry when a file is opened.
+
+#### Request
+
+```json
+{"type": "preload", "source": "<DSL source text>"}
+```
+
+| Field    | Type   | Description                    |
+|----------|--------|--------------------------------|
+| `type`   | string | Fixed value `"preload"`        |
+| `source` | string | Full DSL source text to evaluate |
+
+#### Response (success)
+
+```json
+{"success": true, "message": "<string representation of evaluation results>"}
+```
+
+#### Response (error)
+
+```json
+{"success": false, "error": "<error message>"}
+```
+
+| Field     | Type    | Description                              |
+|-----------|---------|------------------------------------------|
+| `success` | boolean | Processing success flag                  |
+| `message` | string  | Debug string of evaluation results       |
+| `error`   | string  | Details of parse errors, etc.            |
+
+---
+
+### 4.3 status (Status Query)
+
+Returns the current state of the daemon (BPM, playback state).
+
+#### Request
+
+```json
+{"type": "status"}
+```
+
+| Field  | Type   | Description              |
+|--------|--------|--------------------------|
+| `type` | string | Fixed value `"status"`   |
+
+#### Response
+
+```json
+{"success": true, "message": "BPM: 120.0, State: Idle"}
+```
+
+| Field     | Type    | Description                                          |
+|-----------|---------|------------------------------------------------------|
+| `success` | boolean | Processing success flag                              |
+| `message` | string  | String in format `BPM: <value>, State: <state>`      |
+
+---
+
+### 4.4 list_ports (List MIDI Ports)
+
+Returns a list of available MIDI input and output ports.
+
+#### Request
+
+```json
+{"type": "list_ports"}
+```
+
+| Field  | Type   | Description                 |
+|--------|--------|-----------------------------|
+| `type` | string | Fixed value `"list_ports"`  |
+
+#### Response (success)
+
+```json
+{
+  "success": true,
+  "ports": [
+    {"name": "IAC Driver Bus 1", "direction": "out"},
+    {"name": "USB MIDI Interface", "direction": "out"},
+    {"name": "IAC Driver Bus 1", "direction": "in"}
+  ]
+}
+```
+
+#### Response (error)
+
+```json
+{"success": false, "error": "<error message>"}
+```
+
+| Field                | Type    | Description                                |
+|----------------------|---------|--------------------------------------------|
+| `success`            | boolean | Processing success flag                    |
+| `ports`              | array   | Array of MIDI port information             |
+| `ports[].name`       | string  | Port name                                  |
+| `ports[].direction`  | string  | Port direction (`"in"` or `"out"`)         |
+
+---
+
+### 4.5 lsp_completion (Completion Candidates)
 
 Returns a list of completion candidates at the cursor position.
 
@@ -78,7 +242,7 @@ Returns a list of completion candidates at the cursor position.
 
 ---
 
-### 3.2 lsp_hover (Hover Information)
+### 4.6 lsp_hover (Hover Information)
 
 Returns hover information (Markdown text) about the symbol at the cursor position.
 
@@ -128,11 +292,13 @@ Returns hover information (Markdown text) about the symbol at the cursor positio
 
 ---
 
-### 3.3 lsp_diagnostics (Diagnostic Information)
+### 4.7 lsp_diagnostics (Diagnostic Information)
 
 Analyzes the entire source and returns a list of errors and warnings.
 
 > **Note**: `include` statements are only allowed at the top of the file. An `include` appearing after a non-`include` block will be reported as an error.
+
+> **Note**: Include file existence checks (`include_diagnostics`) are not performed on the daemon side; they are handled on the Lua (client) side.
 
 #### Request
 
@@ -191,7 +357,7 @@ Analyzes the entire source and returns a list of errors and warnings.
 
 ---
 
-### 3.4 lsp_goto_definition (Go to Definition)
+### 4.8 lsp_goto_definition (Go to Definition)
 
 Returns the position where the symbol at the cursor position is defined.
 
@@ -249,7 +415,7 @@ Returns the position where the symbol at the cursor position is defined.
 
 ---
 
-### 3.5 lsp_document_symbols (Document Symbol List)
+### 4.9 lsp_document_symbols (Document Symbol List)
 
 Returns a list of symbols (blocks) defined in the source.
 
@@ -308,7 +474,7 @@ Returns a list of symbols (blocks) defined in the source.
 
 ---
 
-## 4. CompletionKind Values
+## 5. CompletionKind Values
 
 String values representing the kind of a completion candidate.
 
@@ -322,7 +488,7 @@ String values representing the kind of a completion candidate.
 
 ---
 
-## 5. DiagnosticSeverity Values
+## 6. DiagnosticSeverity Values
 
 String values representing the severity of a diagnostic item.
 
@@ -333,7 +499,7 @@ String values representing the severity of a diagnostic item.
 
 ---
 
-## 6. SymbolKind Values
+## 7. SymbolKind Values
 
 String values representing the kind of a document symbol. Corresponds to DSL block types.
 
@@ -354,7 +520,7 @@ String values representing the kind of a document symbol. Corresponds to DSL blo
 
 ---
 
-## 7. Error Response
+## 8. Error Response
 
 When the daemon fails to process a request, it returns the following error response.
 
@@ -373,3 +539,4 @@ When the daemon fails to process a request, it returns the following error respo
 - JSON parsing fails
 - The `source` field is missing
 - An unexpected exception occurs during internal processing
+- MIDI port retrieval fails
