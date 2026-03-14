@@ -50,8 +50,9 @@ pub enum CompletionContext {
     AfterInclude,
     /// "var " の後: 補完なし
     AfterVar,
-    /// clip オプション "[" 内: bars/time/scale
-    ClipOption,
+    /// clip オプション "[" 内: bars/time/scale（使用済みオプションを除外）
+    /// Clip option inside `[`: bars/time/scale (excluding already used options)
+    ClipOption { used_options: Vec<String> },
     /// clip オプション "[scale " 内: ノート名
     ClipOptionAfterScale,
     /// clip オプション "[scale <note> " 内: スケールタイプ
@@ -200,7 +201,26 @@ fn determine_toplevel_context(trimmed: &str) -> CompletionContext {
     let keyword = parts[0];
 
     match keyword {
-        "device" | "instrument" | "kit" | "clip" | "scene" | "session" => {
+        "clip" => {
+            if parts.len() >= 3 {
+                let rest = parts[2];
+                // rest 内の最後の "[" を探し、その後に "]" がなければオプション補完中
+                if let Some(last_bracket) = rest.rfind('[') {
+                    if !rest[last_bracket..].contains(']') {
+                        let after_bracket = &rest[last_bracket + 1..];
+                        let before_bracket = &rest[..last_bracket];
+                        let used_options = extract_used_options(before_bracket);
+                        return parse_clip_bracket_option(after_bracket, used_options);
+                    }
+                }
+                CompletionContext::AfterBlockKeyword
+            } else if parts.len() >= 2 {
+                CompletionContext::AfterBlockKeyword
+            } else {
+                CompletionContext::TopLevel
+            }
+        }
+        "device" | "instrument" | "kit" | "scene" | "session" => {
             if parts.len() >= 2 {
                 CompletionContext::AfterBlockKeyword
             } else {
@@ -304,6 +324,39 @@ fn determine_kit_context(trimmed: &str, depth: i32) -> CompletionContext {
     CompletionContext::KitBody
 }
 
+/// 閉じたブラケット `[...] ` から使用済みオプションキーワードを抽出する
+/// Extract used option keywords from closed brackets `[...]`
+fn extract_used_options(text: &str) -> Vec<String> {
+    let mut used = Vec::new();
+    let mut rest = text;
+    while let Some(open) = rest.find('[') {
+        if let Some(close) = rest[open..].find(']') {
+            let inner = rest[open + 1..open + close].trim();
+            if let Some(keyword) = inner.split_whitespace().next() {
+                used.push(keyword.to_string());
+            }
+            rest = &rest[open + close + 1..];
+        } else {
+            break;
+        }
+    }
+    used
+}
+
+/// `[` の後の文字列から clip オプションコンテキストを判定する
+/// Determine clip option context from the string after `[`
+fn parse_clip_bracket_option(after_bracket: &str, used_options: Vec<String>) -> CompletionContext {
+    let trimmed = after_bracket.trim_start();
+    if trimmed.starts_with("scale ") {
+        let after_scale = trimmed.strip_prefix("scale ").unwrap().trim_start();
+        if after_scale.contains(' ') {
+            return CompletionContext::ClipOptionAfterScaleNote;
+        }
+        return CompletionContext::ClipOptionAfterScale;
+    }
+    CompletionContext::ClipOption { used_options }
+}
+
 /// clip ブロック内のコンテキストを判定する
 fn determine_clip_context(
     trimmed: &str,
@@ -317,17 +370,11 @@ fn determine_clip_context(
     let full_line = &source[last_line_start..cursor_offset];
     if let Some(bracket_pos) = full_line.rfind('[') {
         let in_bracket = &full_line[bracket_pos + 1..];
-        let in_trimmed = in_bracket.trim_start();
-        if in_trimmed.starts_with("scale ") {
-            let after_scale = in_trimmed.strip_prefix("scale ").unwrap().trim_start();
-            if after_scale.contains(' ') {
-                return CompletionContext::ClipOptionAfterScaleNote;
-            }
-            return CompletionContext::ClipOptionAfterScale;
-        }
         // "[" の直後 or "[bars " 等の後
         if !full_line[bracket_pos..].contains(']') {
-            return CompletionContext::ClipOption;
+            let before_bracket = &full_line[..bracket_pos];
+            let used_options = extract_used_options(before_bracket);
+            return parse_clip_bracket_option(in_bracket, used_options);
         }
     }
 
@@ -482,7 +529,12 @@ pub fn build_completion_items(ctx: &CompletionContext, registry: &Registry) -> V
             CompletionProvider::identifier_completions(&registry.clip_names(), "clip")
         }
 
-        CompletionContext::ClipOption => CompletionProvider::clip_option_completions(),
+        CompletionContext::ClipOption { ref used_options } => {
+            CompletionProvider::clip_option_completions()
+                .into_iter()
+                .filter(|item| !used_options.contains(&item.label))
+                .collect()
+        }
 
         CompletionContext::ClipOptionAfterScale => CompletionProvider::note_completions(),
 
@@ -878,11 +930,52 @@ mod tests {
 
     #[test]
     fn ctx_clip_option() {
+        // トップレベルで "clip name [" → ClipOption（使用済みなし）
         let src = "clip bass_a [";
-        // This is at top-level since the { hasn't been opened yet
-        // But the "[" is part of the line context
-        // Actually, clip option detection is only inside clip body
-        // At top-level, "clip bass_a [" is after block keyword
+        assert_eq!(
+            determine_completion_context(src, src.len()),
+            CompletionContext::ClipOption {
+                used_options: vec![]
+            }
+        );
+    }
+
+    #[test]
+    fn ctx_clip_option_inside_body() {
+        // 前の clip が閉じた後、新しい clip のトップレベル "[" → ClipOption（使用済みなし）
+        let src = "clip bass_a [bars 1] {\n  bass c:3:8\n}\nclip lead_a [";
+        assert_eq!(
+            determine_completion_context(src, src.len()),
+            CompletionContext::ClipOption {
+                used_options: vec![]
+            }
+        );
+    }
+
+    #[test]
+    fn ctx_toplevel_clip_option_scale() {
+        // トップレベルで "clip name [scale " → ClipOptionAfterScale
+        let src = "clip bass_a [scale ";
+        assert_eq!(
+            determine_completion_context(src, src.len()),
+            CompletionContext::ClipOptionAfterScale
+        );
+    }
+
+    #[test]
+    fn ctx_toplevel_clip_option_scale_note() {
+        // トップレベルで "clip name [scale c " → ClipOptionAfterScaleNote
+        let src = "clip bass_a [scale c ";
+        assert_eq!(
+            determine_completion_context(src, src.len()),
+            CompletionContext::ClipOptionAfterScaleNote
+        );
+    }
+
+    #[test]
+    fn ctx_toplevel_clip_after_closed_bracket() {
+        // ブラケットが閉じている場合は AfterBlockKeyword
+        let src = "clip bass_a [bars 4] ";
         assert_eq!(
             determine_completion_context(src, src.len()),
             CompletionContext::AfterBlockKeyword
@@ -890,12 +983,38 @@ mod tests {
     }
 
     #[test]
-    fn ctx_clip_option_inside_body() {
-        let src = "clip bass_a [bars 1] {\n  bass c:3:8\n}\nclip lead_a [";
-        // At top-level, this is after block keyword
+    fn ctx_toplevel_clip_option_after_bars() {
+        // [bars 4] の後に [ → bars が除外される
+        let src = "clip bass_a [bars 4] [";
         assert_eq!(
             determine_completion_context(src, src.len()),
-            CompletionContext::AfterBlockKeyword
+            CompletionContext::ClipOption {
+                used_options: vec!["bars".to_string()]
+            }
+        );
+    }
+
+    #[test]
+    fn ctx_toplevel_clip_option_after_scale() {
+        // [scale c major] の後に [ → scale が除外される
+        let src = "clip bass_a [scale c major] [";
+        assert_eq!(
+            determine_completion_context(src, src.len()),
+            CompletionContext::ClipOption {
+                used_options: vec!["scale".to_string()]
+            }
+        );
+    }
+
+    #[test]
+    fn ctx_toplevel_clip_option_after_bars_and_scale() {
+        // [bars 4] [scale c major] の後に [ → bars と scale が除外される
+        let src = "clip bass_a [bars 4] [scale c major] [";
+        assert_eq!(
+            determine_completion_context(src, src.len()),
+            CompletionContext::ClipOption {
+                used_options: vec!["bars".to_string(), "scale".to_string()]
+            }
         );
     }
 
