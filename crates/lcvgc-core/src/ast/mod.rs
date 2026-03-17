@@ -14,6 +14,7 @@ pub mod scale;
 pub mod scene;
 pub mod session;
 pub mod tempo;
+pub mod unresolved;
 pub mod var;
 
 use clip::ClipDef;

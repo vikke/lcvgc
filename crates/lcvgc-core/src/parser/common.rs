@@ -243,6 +243,30 @@ pub fn quoted_string(input: &str) -> IResult<&str, &str> {
     Ok((input, s))
 }
 
+/// 数値リテラルまたは変数参照のどちらかを表す型
+/// Represents either a numeric literal or a variable reference
+#[derive(Debug, Clone, PartialEq)]
+pub enum Either<L, R> {
+    /// 数値リテラル / Numeric literal
+    Left(L),
+    /// 変数参照（識別子）/ Variable reference (identifier)
+    Right(R),
+}
+
+/// u8リテラルまたは変数参照（識別子）をパースする（§6 変数展開）
+/// Parse a u8 literal or a variable reference (identifier) (§6 variable expansion)
+///
+/// 数値を優先的にパースし、失敗した場合は識別子をフォールバックとして試行する。
+/// Tries to parse a number first; falls back to an identifier on failure.
+pub fn parse_u8_or_identifier(input: &str) -> IResult<&str, Either<u8, &str>> {
+    if let Ok((rest, val)) = parse_u8(input) {
+        Ok((rest, Either::Left(val)))
+    } else {
+        let (rest, ident) = identifier(input)?;
+        Ok((rest, Either::Right(ident)))
+    }
+}
+
 /// 閉じブレース `}` の前までを取得してtrimする引用符なし値パーサー
 /// Parse an unquoted value: reads until `}` and trims surrounding whitespace
 ///
@@ -446,5 +470,19 @@ mod tests {
     #[test]
     fn test_mixed_line_and_block_comments() {
         assert_eq!(ws("// line\n/* block */rest"), Ok(("rest", ())));
+    }
+
+    #[test]
+    fn test_parse_u8_or_identifier_number() {
+        let (rest, result) = parse_u8_or_identifier("42 rest").unwrap();
+        assert_eq!(result, Either::Left(42));
+        assert_eq!(rest, " rest");
+    }
+
+    #[test]
+    fn test_parse_u8_or_identifier_ident() {
+        let (rest, result) = parse_u8_or_identifier("bass_ch rest").unwrap();
+        assert_eq!(result, Either::Right("bass_ch"));
+        assert_eq!(rest, " rest");
     }
 }

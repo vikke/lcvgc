@@ -1,4 +1,5 @@
 use crate::ast::common::NoteName;
+use crate::ast::unresolved::UnresolvedVarRefs;
 use crate::ast::var::VarDef;
 
 /// CCパラメータのエイリアスマッピング
@@ -11,6 +12,9 @@ pub struct CcMapping {
     /// CCナンバー (0-127)
     /// CC number (0-127)
     pub cc_number: u8,
+    /// CCナンバーの変数参照（未解決時に使用）
+    /// Variable reference for CC number (used when unresolved)
+    pub cc_number_ref: Option<String>,
 }
 
 /// インストゥルメントのデフォルトノート指定
@@ -53,4 +57,7 @@ pub struct InstrumentDef {
     /// ブロック内ローカル変数定義（§6.1 ブロックスコープ）
     /// Local variable definitions within the block (§6.1 block scope)
     pub local_vars: Vec<VarDef>,
+    /// 未解決変数参照（§6 変数展開）
+    /// Unresolved variable references (§6 variable expansion)
+    pub unresolved: UnresolvedVarRefs,
 }
