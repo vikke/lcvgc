@@ -1,7 +1,9 @@
 use nom::{bytes::complete::tag, IResult};
 
 use crate::ast::instrument::{CcMapping, InstrumentDef, InstrumentNote};
+use crate::ast::var::VarDef;
 use crate::parser::common::{identifier, note_name, parse_u8, ws, ws1};
+use crate::parser::var::parse_var;
 
 /// デバイス参照をパースする: `device <identifier>`
 /// Parse `device <identifier>`
@@ -77,11 +79,16 @@ enum InstrumentProperty {
     GateStaccato(u8),
     /// CCマッピング / CC mapping
     Cc(CcMapping),
+    /// ブロック内ローカル変数定義（§6.1）/ Local variable definition (§6.1)
+    Var(VarDef),
 }
 
 /// インストゥルメントプロパティ行を1つパースする
 /// Parse a single instrument property line.
 fn parse_property(input: &str) -> IResult<&str, InstrumentProperty> {
+    if let Ok((rest, v)) = parse_var(input) {
+        return Ok((rest, InstrumentProperty::Var(v)));
+    }
     if let Ok((rest, dev)) = parse_device(input) {
         return Ok((rest, InstrumentProperty::Device(dev.to_string())));
     }
@@ -122,6 +129,7 @@ pub fn parse_instrument(input: &str) -> IResult<&str, InstrumentDef> {
     let mut gate_normal = None;
     let mut gate_staccato = None;
     let mut cc_mappings = Vec::new();
+    let mut local_vars = Vec::new();
 
     let mut rest = input;
     loop {
@@ -138,6 +146,7 @@ pub fn parse_instrument(input: &str) -> IResult<&str, InstrumentDef> {
             InstrumentProperty::GateNormal(g) => gate_normal = Some(g),
             InstrumentProperty::GateStaccato(g) => gate_staccato = Some(g),
             InstrumentProperty::Cc(cc) => cc_mappings.push(cc),
+            InstrumentProperty::Var(v) => local_vars.push(v),
         }
         rest = input;
     }
@@ -159,6 +168,7 @@ pub fn parse_instrument(input: &str) -> IResult<&str, InstrumentDef> {
             gate_normal,
             gate_staccato,
             cc_mappings,
+            local_vars,
         },
     ))
 }
@@ -247,5 +257,55 @@ mod tests {
         assert_eq!(inst.cc_mappings.len(), 1);
         assert_eq!(inst.cc_mappings[0].alias, "vibrato");
         assert_eq!(inst.cc_mappings[0].cc_number, 1);
+    }
+
+    /// ブロック内 var 定義をパースできること（§6.1）
+    /// Verify that var definitions inside instrument blocks are parsed (§6.1)
+    #[test]
+    fn test_instrument_with_local_vars() {
+        let input = r#"instrument bass {
+  var ch = 3
+  device mutant_brain
+  channel 3
+}"#;
+        let (rest, inst) = parse_instrument(input).unwrap();
+        assert_eq!(rest.trim(), "");
+        assert_eq!(inst.name, "bass");
+        assert_eq!(inst.device, "mutant_brain");
+        assert_eq!(inst.channel, 3);
+        assert_eq!(inst.local_vars.len(), 1);
+        assert_eq!(inst.local_vars[0].name, "ch");
+        assert_eq!(inst.local_vars[0].value, "3");
+    }
+
+    /// 複数の var がブロック内でパースできること
+    /// Verify that multiple vars can be parsed inside a block
+    #[test]
+    fn test_instrument_with_multiple_local_vars() {
+        let input = r#"instrument lead {
+  var dev = mb
+  var ch = 2
+  device mb
+  channel 2
+}"#;
+        let (rest, inst) = parse_instrument(input).unwrap();
+        assert_eq!(rest.trim(), "");
+        assert_eq!(inst.local_vars.len(), 2);
+        assert_eq!(inst.local_vars[0].name, "dev");
+        assert_eq!(inst.local_vars[0].value, "mb");
+        assert_eq!(inst.local_vars[1].name, "ch");
+        assert_eq!(inst.local_vars[1].value, "2");
+    }
+
+    /// var なしのインストゥルメントで local_vars が空であること
+    /// Verify local_vars is empty when no vars are defined
+    #[test]
+    fn test_instrument_no_local_vars() {
+        let input = r#"instrument synth {
+  device mb
+  channel 1
+}"#;
+        let (_, inst) = parse_instrument(input).unwrap();
+        assert!(inst.local_vars.is_empty());
     }
 }

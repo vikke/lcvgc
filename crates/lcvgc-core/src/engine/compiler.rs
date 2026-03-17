@@ -283,6 +283,7 @@ mod tests {
             gate_normal: Some(80),
             gate_staccato: Some(40),
             cc_mappings: vec![],
+            local_vars: vec![],
         }));
         registry
     }
@@ -680,6 +681,7 @@ mod tests {
             gate_normal: Some(100),
             gate_staccato: Some(60),
             cc_mappings: vec![],
+            local_vars: vec![],
         }));
 
         let clip = ClipDef {

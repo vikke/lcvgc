@@ -7,6 +7,7 @@ pub mod midi_sink;
 pub mod player;
 pub mod registry;
 pub mod scene_runner;
+pub mod scope;
 pub mod session_runner;
 pub mod shuffle;
 pub mod state;
