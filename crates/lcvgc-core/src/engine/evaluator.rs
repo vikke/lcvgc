@@ -34,6 +34,11 @@ pub enum EvalResult {
         /// 展開されたブロック数 / Number of expanded blocks
         results_count: usize,
     },
+    /// インクルード重複スキップ / Include duplicate skipped
+    IncludeSkipped {
+        /// スキップされたファイルパス / Path of the skipped file
+        path: String,
+    },
 }
 
 /// evalコマンドディスパッチャ
@@ -186,7 +191,11 @@ impl Evaluator {
             .map_err(|_| EngineError::IncludeNotFound(path.display().to_string()))?;
         let mut include_stack = HashSet::new();
         include_stack.insert(canonical.clone());
-        self.eval_file_recursive(&canonical, &mut include_stack)
+        // 重複インクルード検出用セット（単調増加、removeしない）
+        // Set for duplicate include detection (monotonically increasing, never removed)
+        let mut included_files = HashSet::new();
+        included_files.insert(canonical.clone());
+        self.eval_file_recursive(&canonical, &mut include_stack, &mut included_files)
     }
 
     /// 再帰的にファイルを評価する（内部メソッド）
@@ -197,9 +206,15 @@ impl Evaluator {
     /// Includes are only allowed at the top of the file. An include appearing
     /// after a non-include block will result in an error.
     ///
+    /// 同一ファイルを複数回インクルードした場合は `IncludeSkipped` を返し、
+    /// 再評価はスキップされる。
+    /// If the same file is included more than once, `IncludeSkipped` is returned
+    /// and re-evaluation is skipped.
+    ///
     /// # Arguments
     /// * `path` - 正規化済みのファイルパス / Canonicalized file path
-    /// * `include_stack` - 循環検出用のインクルードスタック / Include stack for cycle detection
+    /// * `include_stack` - 循環検出用のインクルードスタック（push/popする） / Include stack for cycle detection (push/pop)
+    /// * `included_files` - 重複インクルード検出用セット（単調増加、removeしない） / Set for duplicate include detection (monotonically increasing, never removed)
     ///
     /// # Returns
     /// 評価結果のベクター / Vector of evaluation results
@@ -213,6 +228,7 @@ impl Evaluator {
         &mut self,
         path: &Path,
         include_stack: &mut HashSet<PathBuf>,
+        included_files: &mut HashSet<PathBuf>,
     ) -> Result<Vec<EvalResult>, EngineError> {
         let source = std::fs::read_to_string(path).map_err(|e| EngineError::IncludeReadError {
             path: path.display().to_string(),
@@ -241,6 +257,17 @@ impl Evaluator {
                         .canonicalize()
                         .map_err(|_| EngineError::IncludeNotFound(inc.path.clone()))?;
 
+                    // 重複チェック（循環チェックの前に行う）
+                    // Duplicate check (before cycle detection)
+                    if !included_files.insert(canonical.clone()) {
+                        results.push(EvalResult::IncludeSkipped {
+                            path: inc.path.clone(),
+                        });
+                        continue;
+                    }
+
+                    // 循環チェック
+                    // Cycle detection
                     if !include_stack.insert(canonical.clone()) {
                         let chain: Vec<String> = include_stack
                             .iter()
@@ -253,7 +280,8 @@ impl Evaluator {
                         )));
                     }
 
-                    let sub_results = self.eval_file_recursive(&canonical, include_stack)?;
+                    let sub_results =
+                        self.eval_file_recursive(&canonical, include_stack, included_files)?;
                     let count = sub_results.len();
                     results.extend(sub_results);
                     results.push(EvalResult::IncludeProcessed {
@@ -261,6 +289,8 @@ impl Evaluator {
                         results_count: count,
                     });
 
+                    // include_stackはpush/popする（循環検出用）
+                    // Pop from include_stack (used for cycle detection)
                     include_stack.remove(&canonical);
                 }
                 _ => {
@@ -636,6 +666,13 @@ mod tests {
         ));
     }
 
+    /// 循環インクルード（a→b→a）は重複スキップとして処理されエラーにならないことを検証
+    /// Verifies that circular includes (a→b→a) are treated as duplicate skips and do not cause an error
+    ///
+    /// 重複チェックが循環チェックより先に行われるため、同一ファイルへの再インクルードは
+    /// IncludeSkipped として処理される。
+    /// Because duplicate check is performed before cycle detection, re-including the same
+    /// file results in IncludeSkipped rather than CircularInclude.
     #[test]
     fn eval_file_circular_include() {
         let dir = tempfile::tempdir().unwrap();
@@ -646,9 +683,13 @@ mod tests {
 
         let mut ev = Evaluator::new(120.0);
         let result = ev.eval_file(&file_a);
-        assert!(result.is_err());
-        let err = result.unwrap_err();
-        assert!(matches!(err, EngineError::CircularInclude(_)));
+        // 循環は重複スキップとして処理され、エラーにならない
+        // Circular include is treated as duplicate skip, not an error
+        assert!(result.is_ok());
+        let results = result.unwrap();
+        assert!(results
+            .iter()
+            .any(|r| matches!(r, EvalResult::IncludeSkipped { .. })));
     }
 
     #[test]
@@ -704,6 +745,50 @@ mod tests {
         let mut ev = Evaluator::new(120.0);
         let result = ev.eval_file(&main_file);
         assert!(result.is_ok());
+    }
+
+    /// 同じファイルを複数回インクルードした場合に IncludeSkipped が返ることを検証
+    /// Verifies that IncludeSkipped is returned when the same file is included more than once
+    #[test]
+    fn eval_file_duplicate_include_skipped() {
+        let dir = tempfile::tempdir().unwrap();
+        let common_file = dir.path().join("common.cvg");
+        std::fs::write(&common_file, "tempo 140\n").unwrap();
+
+        // shared.cvg は common.cvg を一度インクルード
+        // shared.cvg includes common.cvg once
+        let shared_file = dir.path().join("shared.cvg");
+        std::fs::write(&shared_file, format!("include {}\n", common_file.display())).unwrap();
+
+        // main.cvg は shared.cvg と common.cvg の両方をインクルード（common は重複）
+        // main.cvg includes both shared.cvg and common.cvg (common is duplicate)
+        let main_file = dir.path().join("main.cvg");
+        std::fs::write(
+            &main_file,
+            format!(
+                "include {}\ninclude {}\n",
+                shared_file.display(),
+                common_file.display()
+            ),
+        )
+        .unwrap();
+
+        let mut ev = Evaluator::new(120.0);
+        let results = ev.eval_file(&main_file).unwrap();
+
+        // TempoChanged は1回だけ（重複スキップにより2回目は評価されない）
+        // TempoChanged appears only once (second evaluation is skipped by dedup)
+        let tempo_count = results
+            .iter()
+            .filter(|r| matches!(r, EvalResult::TempoChanged(_)))
+            .count();
+        assert_eq!(tempo_count, 1);
+
+        // IncludeSkipped が含まれること
+        // IncludeSkipped must be present
+        assert!(results
+            .iter()
+            .any(|r| matches!(r, EvalResult::IncludeSkipped { .. })));
     }
 
     #[test]
