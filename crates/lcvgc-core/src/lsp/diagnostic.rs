@@ -279,6 +279,7 @@ mod tests {
             gate_normal: None,
             gate_staccato: None,
             cc_mappings: vec![],
+            local_vars: vec![],
         }));
         let blocks = vec![spanned(make_clip_block("c1", &["piano"]))];
         let diags = DiagnosticProvider::undefined_references(&blocks, &reg);

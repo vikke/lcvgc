@@ -100,6 +100,7 @@ mod tests {
                 gate_normal: None,
                 gate_staccato: None,
                 cc_mappings: vec![],
+                local_vars: vec![],
             }),
             span,
             name_span,

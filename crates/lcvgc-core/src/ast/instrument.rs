@@ -1,4 +1,5 @@
 use crate::ast::common::NoteName;
+use crate::ast::var::VarDef;
 
 /// CCパラメータのエイリアスマッピング
 /// CC parameter alias mapping
@@ -49,4 +50,7 @@ pub struct InstrumentDef {
     /// CCマッピングのリスト
     /// List of CC mappings
     pub cc_mappings: Vec<CcMapping>,
+    /// ブロック内ローカル変数定義（§6.1 ブロックスコープ）
+    /// Local variable definitions within the block (§6.1 block scope)
+    pub local_vars: Vec<VarDef>,
 }

@@ -309,6 +309,7 @@ mod tests {
             gate_normal: None,
             gate_staccato: None,
             cc_mappings: vec![],
+            local_vars: vec![],
         }));
         assert!(result);
         let i = reg.get_instrument("piano").unwrap();

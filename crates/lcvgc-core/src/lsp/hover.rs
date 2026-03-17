@@ -141,6 +141,7 @@ mod tests {
             gate_normal: None,
             gate_staccato: None,
             cc_mappings: vec![],
+            local_vars: vec![],
         })));
         let text = result.unwrap();
         assert!(text.contains("device: `synth`"));
@@ -160,6 +161,7 @@ mod tests {
                 alias: "mod".into(),
                 cc_number: 1,
             }],
+            local_vars: vec![],
         })));
         let text = result.unwrap();
         assert!(text.contains("gate_normal: `80%`"));

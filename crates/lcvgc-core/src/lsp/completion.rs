@@ -445,6 +445,7 @@ mod tests {
                 alias: "cutoff".to_string(),
                 cc_number: 74,
             }],
+            local_vars: vec![],
         };
         let items = CompletionProvider::instrument_cc_completions(&inst);
         assert_eq!(items.len(), 1);
@@ -462,6 +463,7 @@ mod tests {
             gate_normal: None,
             gate_staccato: None,
             cc_mappings: vec![],
+            local_vars: vec![],
         };
         assert!(CompletionProvider::instrument_cc_completions(&inst).is_empty());
     }

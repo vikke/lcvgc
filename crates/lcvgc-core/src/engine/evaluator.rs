@@ -10,6 +10,7 @@ use crate::ast::Block;
 use crate::engine::clock::Clock;
 use crate::engine::error::EngineError;
 use crate::engine::registry::Registry;
+use crate::engine::scope::ScopeChain;
 use crate::engine::state::{PlaybackCommand, StateManager};
 
 /// eval結果
@@ -47,6 +48,9 @@ pub struct Evaluator {
     registry: Registry,
     state: StateManager,
     clock: Clock,
+    /// 変数スコープチェーン（§6.1 ブロックスコープ対応）
+    /// Variable scope chain (§6.1 block scope support)
+    scope: ScopeChain,
 }
 
 impl Evaluator {
@@ -56,6 +60,7 @@ impl Evaluator {
             registry: Registry::new(),
             state: StateManager::new(),
             clock: Clock::new(bpm),
+            scope: ScopeChain::new(),
         }
     }
 
@@ -72,6 +77,15 @@ impl Evaluator {
             }
             Block::Instrument(ref i) => {
                 let name = i.name.clone();
+                // ブロックスコープをプッシュしてローカル変数を定義（§6.1）
+                // Push block scope and define local variables (§6.1)
+                if !i.local_vars.is_empty() {
+                    self.scope.push_scope();
+                    for var in &i.local_vars {
+                        self.scope.define(var.name.clone(), var.value.clone());
+                    }
+                    self.scope.pop_scope();
+                }
                 self.registry.register_block(block);
                 Ok(EvalResult::Registered {
                     kind: "Instrument".into(),
@@ -122,6 +136,9 @@ impl Evaluator {
             }
             Block::Var(ref v) => {
                 let name = v.name.clone();
+                // グローバルスコープに変数を定義（§6 変数）
+                // Define variable in global scope (§6 variables)
+                self.scope.define_global(v.name.clone(), v.value.clone());
                 self.registry.register_block(block);
                 Ok(EvalResult::VarDefined { name })
             }
@@ -169,6 +186,18 @@ impl Evaluator {
     /// 現在のBPM
     pub fn bpm(&self) -> f64 {
         self.clock.bpm()
+    }
+
+    /// ScopeChain参照（§6.1 ブロックスコープ）
+    /// Reference to the scope chain (§6.1 block scope)
+    pub fn scope(&self) -> &ScopeChain {
+        &self.scope
+    }
+
+    /// ScopeChain可変参照
+    /// Mutable reference to the scope chain
+    pub fn scope_mut(&mut self) -> &mut ScopeChain {
+        &mut self.scope
     }
 
     /// ファイルパスを指定して全ブロックを評価する（include展開付き）
@@ -427,6 +456,7 @@ mod tests {
                 gate_normal: None,
                 gate_staccato: None,
                 cc_mappings: vec![],
+                local_vars: vec![],
             }))
             .unwrap();
         assert_eq!(
@@ -561,6 +591,69 @@ mod tests {
             .unwrap();
         assert_eq!(result, EvalResult::VarDefined { name: "key".into() });
         assert_eq!(ev.registry().get_var("key"), Some("Cm"));
+    }
+
+    /// グローバル変数が ScopeChain に登録されることを検証（§6）
+    /// Verify global variables are registered in ScopeChain (§6)
+    #[test]
+    fn eval_var_registered_in_scope() {
+        let mut ev = Evaluator::new(120.0);
+        ev.eval_block(Block::Var(VarDef {
+            name: "dev".into(),
+            value: "mutant_brain".into(),
+        }))
+        .unwrap();
+        assert_eq!(ev.scope().resolve("dev"), Some("mutant_brain"));
+    }
+
+    /// グローバル変数の再定義で値が更新されること（§6.2）
+    /// Verify global variable redefinition updates value (§6.2)
+    #[test]
+    fn eval_var_redefinition_updates_scope() {
+        let mut ev = Evaluator::new(120.0);
+        ev.eval_block(Block::Var(VarDef {
+            name: "dev".into(),
+            value: "mutant_brain".into(),
+        }))
+        .unwrap();
+        ev.eval_block(Block::Var(VarDef {
+            name: "dev".into(),
+            value: "keystep".into(),
+        }))
+        .unwrap();
+        assert_eq!(ev.scope().resolve("dev"), Some("keystep"));
+    }
+
+    /// instrument ブロック内の local_vars がスコープ管理されること（§6.1）
+    /// Verify instrument block local_vars are scope-managed (§6.1)
+    #[test]
+    fn eval_instrument_with_local_vars() {
+        let mut ev = Evaluator::new(120.0);
+        // グローバル変数を定義
+        ev.eval_block(Block::Var(VarDef {
+            name: "ch".into(),
+            value: "1".into(),
+        }))
+        .unwrap();
+
+        // ブロック内 local_vars 付きのインストゥルメントを登録
+        ev.eval_block(Block::Instrument(InstrumentDef {
+            name: "bass".into(),
+            device: "mb".into(),
+            channel: 3,
+            note: None,
+            gate_normal: None,
+            gate_staccato: None,
+            cc_mappings: vec![],
+            local_vars: vec![VarDef {
+                name: "ch".into(),
+                value: "3".into(),
+            }],
+        }))
+        .unwrap();
+
+        // ブロック評価後はグローバルスコープに戻っていること
+        assert_eq!(ev.scope().resolve("ch"), Some("1"));
     }
 
     #[test]
