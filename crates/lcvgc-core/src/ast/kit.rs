@@ -1,4 +1,5 @@
 use crate::ast::common::NoteName;
+use crate::ast::unresolved::UnresolvedKitInstrumentVarRefs;
 
 /// キット内インストゥルメントのノート指定
 /// Note specification for an instrument within a kit
@@ -31,6 +32,9 @@ pub struct KitInstrument {
     /// スタッカートゲート値（オプション、0-127）
     /// Staccato gate value (optional, 0-127)
     pub gate_staccato: Option<u8>,
+    /// 未解決変数参照（§6 変数展開）
+    /// Unresolved variable references (§6 variable expansion)
+    pub unresolved: UnresolvedKitInstrumentVarRefs,
 }
 
 /// キット定義（ドラムキット等の複数インストゥルメントのグループ）

@@ -457,6 +457,7 @@ mod tests {
                 gate_staccato: None,
                 cc_mappings: vec![],
                 local_vars: vec![],
+                unresolved: Default::default(),
             }))
             .unwrap();
         assert_eq!(
@@ -649,6 +650,7 @@ mod tests {
                 name: "ch".into(),
                 value: "3".into(),
             }],
+            unresolved: Default::default(),
         }))
         .unwrap();
 

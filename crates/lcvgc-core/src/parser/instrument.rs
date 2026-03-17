@@ -60,6 +60,7 @@ fn parse_cc(input: &str) -> IResult<&str, CcMapping> {
         CcMapping {
             alias: alias.to_string(),
             cc_number,
+            cc_number_ref: None,
         },
     ))
 }
@@ -169,6 +170,7 @@ pub fn parse_instrument(input: &str) -> IResult<&str, InstrumentDef> {
             gate_staccato,
             cc_mappings,
             local_vars,
+            unresolved: Default::default(),
         },
     ))
 }

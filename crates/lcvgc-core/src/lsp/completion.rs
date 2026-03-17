@@ -444,8 +444,10 @@ mod tests {
             cc_mappings: vec![CcMapping {
                 alias: "cutoff".to_string(),
                 cc_number: 74,
+                cc_number_ref: None,
             }],
             local_vars: vec![],
+            unresolved: Default::default(),
         };
         let items = CompletionProvider::instrument_cc_completions(&inst);
         assert_eq!(items.len(), 1);
@@ -464,6 +466,7 @@ mod tests {
             gate_staccato: None,
             cc_mappings: vec![],
             local_vars: vec![],
+            unresolved: Default::default(),
         };
         assert!(CompletionProvider::instrument_cc_completions(&inst).is_empty());
     }

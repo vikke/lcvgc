@@ -135,6 +135,7 @@ fn parse_instrument(input: &str) -> IResult<&str, KitInstrument> {
             note,
             gate_normal,
             gate_staccato,
+            unresolved: Default::default(),
         },
     ))
 }

@@ -142,6 +142,7 @@ mod tests {
             gate_staccato: None,
             cc_mappings: vec![],
             local_vars: vec![],
+            unresolved: Default::default(),
         })));
         let text = result.unwrap();
         assert!(text.contains("device: `synth`"));
@@ -160,8 +161,10 @@ mod tests {
             cc_mappings: vec![CcMapping {
                 alias: "mod".into(),
                 cc_number: 1,
+                cc_number_ref: None,
             }],
             local_vars: vec![],
+            unresolved: Default::default(),
         })));
         let text = result.unwrap();
         assert!(text.contains("gate_normal: `80%`"));
@@ -183,6 +186,7 @@ mod tests {
                 },
                 gate_normal: None,
                 gate_staccato: None,
+                unresolved: Default::default(),
             }],
         })));
         let text = result.unwrap();
