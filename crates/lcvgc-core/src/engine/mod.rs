@@ -6,6 +6,7 @@ pub mod evaluator;
 pub mod midi_sink;
 pub mod player;
 pub mod registry;
+pub mod resolver;
 pub mod scene_runner;
 pub mod scope;
 pub mod session_runner;

@@ -39,6 +39,26 @@ pub enum EngineError {
     /// インクルードがファイル先頭にない / Include is not at the top of the file
     #[error("includeはファイル先頭に記述してください: {0}")]
     IncludeNotAtTop(String),
+
+    /// 未定義変数の参照 / Undefined variable reference
+    #[error("未定義変数: {name} (フィールド: {field})")]
+    UndefinedVariable {
+        /// 変数名 / Variable name
+        name: String,
+        /// 参照元フィールド名 / Referencing field name
+        field: String,
+    },
+
+    /// 変数値の型変換失敗 / Variable value type conversion failure
+    #[error("変数値の型変換失敗: {name} = \"{value}\" ({expected_type}に変換できません)")]
+    InvalidVariableValue {
+        /// 変数名 / Variable name
+        name: String,
+        /// 変数の値 / Variable value
+        value: String,
+        /// 期待される型の説明 / Expected type description
+        expected_type: String,
+    },
 }
 
 #[cfg(test)]
@@ -124,6 +144,28 @@ mod tests {
         assert_eq!(
             e.to_string(),
             "インクルードファイル読み込みエラー: broken.cvg: permission denied"
+        );
+    }
+
+    #[test]
+    fn display_undefined_variable() {
+        let err = EngineError::UndefinedVariable {
+            name: "bass_ch".into(),
+            field: "channel".into(),
+        };
+        assert_eq!(err.to_string(), "未定義変数: bass_ch (フィールド: channel)");
+    }
+
+    #[test]
+    fn display_invalid_variable_value() {
+        let err = EngineError::InvalidVariableValue {
+            name: "ch".into(),
+            value: "abc".into(),
+            expected_type: "u8".into(),
+        };
+        assert_eq!(
+            err.to_string(),
+            "変数値の型変換失敗: ch = \"abc\" (u8に変換できません)"
         );
     }
 }

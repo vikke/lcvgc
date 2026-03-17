@@ -9,7 +9,10 @@ use nom::{
 #[cfg(test)]
 use crate::ast::common::NoteName;
 use crate::ast::kit::{KitDef, KitInstrument, KitInstrumentNote};
-use crate::parser::common::{identifier, note_name, parse_u8, ws, ws1};
+use crate::ast::unresolved::UnresolvedKitInstrumentVarRefs;
+use crate::parser::common::{
+    identifier, note_name, parse_u8, parse_u8_or_identifier, ws, ws1, Either,
+};
 
 /// ノート（音名＋オクターブ）をパースする（例: `c2`, `f#2`, `a#2`）。
 /// Parse a note: note name + octave (e.g. `c2`, `f#2`, `a#2`).
@@ -34,29 +37,46 @@ enum InstrumentProp {
     /// スタッカート時のゲート値
     /// Gate value for staccato articulation
     GateStaccato(u8),
+    /// channel の変数参照（§6 変数展開）/ Variable reference for channel (§6)
+    ChannelRef(String),
+    /// gate_normal の変数参照（§6 変数展開）/ Variable reference for gate_normal (§6)
+    GateNormalRef(String),
+    /// gate_staccato の変数参照（§6 変数展開）/ Variable reference for gate_staccato (§6)
+    GateStaccatoRef(String),
 }
 
 /// カンマ区切りのインストゥルメントプロパティを1つパースする。
+/// channel, gate_normal, gate_staccato は数値または識別子（変数参照）を受け付ける。
 /// Parse a single comma-separated instrument property.
+/// channel, gate_normal, gate_staccato accept either a numeric value or an identifier (variable reference).
 fn parse_instrument_prop(input: &str) -> IResult<&str, InstrumentProp> {
     let (input, key) = identifier(input)?;
     let (input, _) = ws1(input)?;
     match key {
         "channel" => {
-            let (input, v) = parse_u8(input)?;
-            Ok((input, InstrumentProp::Channel(v)))
+            let (input, v) = parse_u8_or_identifier(input)?;
+            match v {
+                Either::Left(n) => Ok((input, InstrumentProp::Channel(n))),
+                Either::Right(r) => Ok((input, InstrumentProp::ChannelRef(r.to_string()))),
+            }
         }
         "note" => {
             let (input, v) = parse_instrument_note(input)?;
             Ok((input, InstrumentProp::Note(v)))
         }
         "gate_normal" => {
-            let (input, v) = parse_u8(input)?;
-            Ok((input, InstrumentProp::GateNormal(v)))
+            let (input, v) = parse_u8_or_identifier(input)?;
+            match v {
+                Either::Left(n) => Ok((input, InstrumentProp::GateNormal(n))),
+                Either::Right(r) => Ok((input, InstrumentProp::GateNormalRef(r.to_string()))),
+            }
         }
         "gate_staccato" => {
-            let (input, v) = parse_u8(input)?;
-            Ok((input, InstrumentProp::GateStaccato(v)))
+            let (input, v) = parse_u8_or_identifier(input)?;
+            match v {
+                Either::Left(n) => Ok((input, InstrumentProp::GateStaccato(n))),
+                Either::Right(r) => Ok((input, InstrumentProp::GateStaccatoRef(r.to_string()))),
+            }
         }
         _ => Err(nom::Err::Error(nom::error::Error::new(
             input,
@@ -110,13 +130,26 @@ fn parse_instrument(input: &str) -> IResult<&str, KitInstrument> {
     let mut note = None;
     let mut gate_normal = None;
     let mut gate_staccato = None;
+    let mut unresolved = UnresolvedKitInstrumentVarRefs::default();
 
     for prop in props {
         match prop {
             InstrumentProp::Channel(v) => channel = Some(v),
+            InstrumentProp::ChannelRef(r) => {
+                unresolved.channel = Some(r);
+                channel = Some(0); // placeholder
+            }
             InstrumentProp::Note(v) => note = Some(v),
             InstrumentProp::GateNormal(v) => gate_normal = Some(v),
+            InstrumentProp::GateNormalRef(r) => {
+                unresolved.gate_normal = Some(r);
+                gate_normal = Some(0); // placeholder
+            }
             InstrumentProp::GateStaccato(v) => gate_staccato = Some(v),
+            InstrumentProp::GateStaccatoRef(r) => {
+                unresolved.gate_staccato = Some(r);
+                gate_staccato = Some(0); // placeholder
+            }
         }
     }
 
@@ -135,7 +168,7 @@ fn parse_instrument(input: &str) -> IResult<&str, KitInstrument> {
             note,
             gate_normal,
             gate_staccato,
-            unresolved: Default::default(),
+            unresolved,
         },
     ))
 }
@@ -397,6 +430,35 @@ mod tests {
                 name: NoteName::As,
                 octave: 2
             }
+        );
+    }
+
+    /// channel に変数参照を使ったkit定義がパースできることを検証する（§6 変数展開）。
+    /// Verify that a kit definition with a variable reference for channel can be parsed (§6 variable expansion).
+    #[test]
+    fn test_kit_instrument_with_channel_var_ref() {
+        let input = "kit drums {\n  device td3\n  bd { channel drum_ch, note c2 }\n}";
+        let (_, kit) = parse_kit(input).unwrap();
+        assert_eq!(kit.instruments[0].channel, 0); // placeholder
+        assert_eq!(
+            kit.instruments[0].unresolved.channel,
+            Some("drum_ch".to_string())
+        );
+    }
+
+    /// gate_normal と gate_staccato に変数参照を使ったkit定義がパースできることを検証する（§6 変数展開）。
+    /// Verify that a kit definition with variable references for gate_normal and gate_staccato can be parsed (§6 variable expansion).
+    #[test]
+    fn test_kit_instrument_with_gate_var_refs() {
+        let input = "kit drums {\n  device td3\n  bd { channel 10, note c2, gate_normal gn_val, gate_staccato gs_val }\n}";
+        let (_, kit) = parse_kit(input).unwrap();
+        assert_eq!(
+            kit.instruments[0].unresolved.gate_normal,
+            Some("gn_val".to_string())
+        );
+        assert_eq!(
+            kit.instruments[0].unresolved.gate_staccato,
+            Some("gs_val".to_string())
         );
     }
 }
