@@ -3,6 +3,8 @@
 //! エディタで開かれたドキュメントのソースコードを解析し、
 //! ブロック情報・エラー情報・レジストリを管理する。
 
+use std::collections::HashSet;
+
 use super::span_parser::{span_parse_source, SpanError, SpannedBlock};
 use crate::engine::registry::Registry;
 use crate::server::protocol::IncludeSource;
@@ -135,8 +137,8 @@ impl LspAnalyzer {
             .find(|sb| offset >= sb.span.start && offset < sb.span.end)
     }
 
-    /// Lua側から受け取ったinclude sourcesを使ってレジストリを更新する
-    /// Updates registry using include sources received from Lua side
+    /// Lua側から受け取ったinclude sourcesを使ってレジストリを更新する（同一パス重複排除付き）
+    /// Updates registry using include sources received from Lua side (with duplicate path deduplication)
     ///
     /// # Arguments
     /// * `new_source` - メインファイルのソーステキスト / Main file source text
@@ -150,9 +152,13 @@ impl LspAnalyzer {
         // First perform the normal update
         self.update(new_source);
 
-        // include_sourcesを順にパースしてregistryに登録
-        // Parse include_sources in order and register in registry
+        // 同一パスの重複排除
+        // Deduplicate by path
+        let mut seen_paths = HashSet::new();
         for inc_src in include_sources {
+            if !seen_paths.insert(&inc_src.path) {
+                continue;
+            }
             let outcome = span_parse_source(&inc_src.source);
             for sb in &outcome.blocks {
                 self.registry.register_block(sb.block.clone());
@@ -300,6 +306,27 @@ mod tests {
         let mut a = LspAnalyzer::new();
         a.update_with_include_sources("tempo 120".into(), &[]);
         assert!(a.registry().tempo().is_some());
+    }
+
+    /// 同一パスの IncludeSource が重複排除されることを検証
+    /// Verifies that IncludeSource entries with the same path are deduplicated
+    #[test]
+    fn update_with_include_sources_dedup() {
+        let mut a = LspAnalyzer::new();
+        let inc = vec![
+            IncludeSource {
+                path: "shared.cvg".into(),
+                source: "device synth { port IAC }".into(),
+            },
+            IncludeSource {
+                path: "shared.cvg".into(),
+                source: "device synth { port IAC }".into(),
+            },
+        ];
+        a.update_with_include_sources("tempo 120".into(), &inc);
+        // device "synth" が1回だけ登録されている
+        // device "synth" is registered only once
+        assert!(a.registry().get_device("synth").is_some());
     }
 
     /// ベースレジストリの定義がupdate後も参照可能であることを検証
