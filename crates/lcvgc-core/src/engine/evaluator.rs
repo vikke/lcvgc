@@ -10,6 +10,7 @@ use crate::ast::Block;
 use crate::engine::clock::Clock;
 use crate::engine::error::EngineError;
 use crate::engine::registry::Registry;
+use crate::engine::resolver;
 use crate::engine::scope::ScopeChain;
 use crate::engine::state::{PlaybackCommand, StateManager};
 
@@ -75,26 +76,40 @@ impl Evaluator {
                     name,
                 })
             }
-            Block::Instrument(ref i) => {
-                let name = i.name.clone();
+            Block::Instrument(mut inst) => {
+                let name = inst.name.clone();
                 // ブロックスコープをプッシュしてローカル変数を定義（§6.1）
                 // Push block scope and define local variables (§6.1)
-                if !i.local_vars.is_empty() {
-                    self.scope.push_scope();
-                    for var in &i.local_vars {
-                        self.scope.define(var.name.clone(), var.value.clone());
-                    }
-                    self.scope.pop_scope();
+                self.scope.push_scope();
+                for var in &inst.local_vars {
+                    self.scope.define(var.name.clone(), var.value.clone());
                 }
-                self.registry.register_block(block);
+                // device フィールドの変数解決（String なので scope.resolve() で直接）
+                // Resolve device field variable reference (String, resolve directly)
+                if let Some(resolved) = self.scope.resolve(&inst.device) {
+                    inst.device = resolved.to_string();
+                }
+                // 未解決変数参照を resolver で解決（§6 変数展開）
+                // Resolve unresolved variable references via resolver (§6 variable expansion)
+                resolver::resolve_instrument(&mut inst, &self.scope)?;
+                self.scope.pop_scope();
+                self.registry.register_block(Block::Instrument(inst));
                 Ok(EvalResult::Registered {
                     kind: "Instrument".into(),
                     name,
                 })
             }
-            Block::Kit(ref k) => {
-                let name = k.name.clone();
-                self.registry.register_block(block);
+            Block::Kit(mut kit) => {
+                let name = kit.name.clone();
+                // device フィールドの変数解決（§6 変数展開）
+                // Resolve device field variable reference (§6 variable expansion)
+                if let Some(resolved) = self.scope.resolve(&kit.device) {
+                    kit.device = resolved.to_string();
+                }
+                // 未解決変数参照を resolver で解決（§6 変数展開）
+                // Resolve unresolved variable references via resolver (§6 variable expansion)
+                resolver::resolve_kit(&mut kit, &self.scope)?;
+                self.registry.register_block(Block::Kit(kit));
                 Ok(EvalResult::Registered {
                     kind: "Kit".into(),
                     name,
@@ -457,6 +472,7 @@ mod tests {
                 gate_staccato: None,
                 cc_mappings: vec![],
                 local_vars: vec![],
+                unresolved: Default::default(),
             }))
             .unwrap();
         assert_eq!(
@@ -649,6 +665,7 @@ mod tests {
                 name: "ch".into(),
                 value: "3".into(),
             }],
+            unresolved: Default::default(),
         }))
         .unwrap();
 
@@ -1090,5 +1107,148 @@ stop
         assert!(ev.registry().get_instrument("bass").is_some());
         assert!(ev.registry().get_clip("intro").is_some());
         assert!(ev.registry().get_scene("verse").is_some());
+    }
+
+    // === Phase 4: 変数展開 統合テスト（§6） ===
+    // === Phase 4: Variable expansion integration tests (§6) ===
+
+    /// device 変数展開: `var dev = mutant_brain` → `device dev` で展開される
+    /// Device variable expansion: `var dev = mutant_brain` → `device dev` is expanded
+    #[test]
+    fn eval_var_expansion_device() {
+        let mut ev = Evaluator::new(120.0);
+        let source = r#"
+var dev = mutant_brain
+
+device mutant_brain {
+  port Mutant Brain
+}
+
+instrument bass {
+  device dev
+  channel 1
+}
+"#;
+        ev.eval_source(source).unwrap();
+        let inst = ev.registry().get_instrument("bass").unwrap();
+        assert_eq!(inst.device, "mutant_brain");
+    }
+
+    /// channel 変数展開: `var ch = 3` → `channel ch` で展開される
+    /// Channel variable expansion: `var ch = 3` → `channel ch` is expanded
+    #[test]
+    fn eval_var_expansion_channel() {
+        let mut ev = Evaluator::new(120.0);
+        let source = r#"
+var ch = 3
+
+instrument bass {
+  device mb
+  channel ch
+}
+"#;
+        ev.eval_source(source).unwrap();
+        let inst = ev.registry().get_instrument("bass").unwrap();
+        assert_eq!(inst.channel, 3);
+    }
+
+    /// gate_normal 変数展開
+    /// gate_normal variable expansion
+    #[test]
+    fn eval_var_expansion_gate_normal() {
+        let mut ev = Evaluator::new(120.0);
+        let source = r#"
+var gn = 100
+
+instrument bass {
+  device mb
+  channel 1
+  gate_normal gn
+}
+"#;
+        ev.eval_source(source).unwrap();
+        let inst = ev.registry().get_instrument("bass").unwrap();
+        assert_eq!(inst.gate_normal, Some(100));
+    }
+
+    /// cc cc_number 変数展開
+    /// cc cc_number variable expansion
+    #[test]
+    fn eval_var_expansion_cc_number() {
+        let mut ev = Evaluator::new(120.0);
+        let source = r#"
+var cc_num = 74
+
+instrument bass {
+  device mb
+  channel 1
+  cc filter cc_num
+}
+"#;
+        ev.eval_source(source).unwrap();
+        let inst = ev.registry().get_instrument("bass").unwrap();
+        assert_eq!(inst.cc_mappings[0].cc_number, 74);
+    }
+
+    /// ブロックスコープ + シャドーイング: ブロック内 var がグローバルを上書き
+    /// Block scope + shadowing: block-local var overrides global
+    #[test]
+    fn eval_var_expansion_block_scope_shadowing() {
+        let mut ev = Evaluator::new(120.0);
+        let source = r#"
+var ch = 1
+
+instrument bass {
+  var ch = 3
+  device mb
+  channel ch
+}
+"#;
+        ev.eval_source(source).unwrap();
+        let inst = ev.registry().get_instrument("bass").unwrap();
+        assert_eq!(inst.channel, 3);
+        // ブロック後はグローバルスコープに戻る
+        // After block, global scope is restored
+        assert_eq!(ev.scope().resolve("ch"), Some("1"));
+    }
+
+    /// 未定義変数エラー
+    /// Undefined variable error
+    #[test]
+    fn eval_var_expansion_undefined_variable() {
+        let mut ev = Evaluator::new(120.0);
+        let source = r#"
+instrument bass {
+  device mb
+  channel missing_var
+}
+"#;
+        let result = ev.eval_source(source);
+        assert!(result.is_err());
+        assert!(matches!(
+            result.unwrap_err(),
+            EngineError::UndefinedVariable { .. }
+        ));
+    }
+
+    /// 数値変換失敗エラー
+    /// Numeric conversion failure error
+    #[test]
+    fn eval_var_expansion_invalid_value() {
+        let mut ev = Evaluator::new(120.0);
+        let source = r#"
+var ch = abc
+
+instrument bass {
+  device mb
+  channel ch
+}
+"#;
+        let result = ev.eval_source(source);
+        assert!(result.is_err());
+        assert!(matches!(
+            result.unwrap_err(),
+            EngineError::InvalidVariableValue { .. }
+        ));
     }
 }

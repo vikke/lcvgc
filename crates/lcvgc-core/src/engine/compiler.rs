@@ -284,6 +284,7 @@ mod tests {
             gate_staccato: Some(40),
             cc_mappings: vec![],
             local_vars: vec![],
+            unresolved: Default::default(),
         }));
         registry
     }
@@ -574,6 +575,7 @@ mod tests {
                 },
                 gate_normal: Some(50),
                 gate_staccato: Some(20),
+                unresolved: Default::default(),
             }],
         }));
 
@@ -639,6 +641,7 @@ mod tests {
                 },
                 gate_normal: Some(50),
                 gate_staccato: None,
+                unresolved: Default::default(),
             }],
         }));
 
@@ -682,6 +685,7 @@ mod tests {
             gate_staccato: Some(60),
             cc_mappings: vec![],
             local_vars: vec![],
+            unresolved: Default::default(),
         }));
 
         let clip = ClipDef {

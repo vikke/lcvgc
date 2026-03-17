@@ -101,6 +101,7 @@ mod tests {
                 gate_staccato: None,
                 cc_mappings: vec![],
                 local_vars: vec![],
+                unresolved: Default::default(),
             }),
             span,
             name_span,
