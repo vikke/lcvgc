@@ -147,6 +147,7 @@ mod tests {
                 .map(|(tick, message)| MidiEvent { tick, message })
                 .collect(),
             total_ticks,
+            warnings: vec![],
         }
     }
 
