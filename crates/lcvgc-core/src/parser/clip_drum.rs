@@ -41,20 +41,20 @@ pub fn expand_pipe(pattern: &str, beats_per_step: usize) -> String {
 /// * `input` - 展開済みパターン文字列 (`x`, `X`, `o`, `.` で構成) / expanded pattern string (composed of `x`, `X`, `o`, `.`)
 ///
 /// # Returns
-/// ヒットシンボルのベクタ / vector of hit symbols
+/// `Ok(Vec<HitSymbol>)` — パース成功時 / on success
 ///
-/// # Panics
-/// 未知のシンボル文字が含まれる場合パニックする。
-/// Panics if an unknown symbol character is encountered.
-pub fn parse_hit_symbols(input: &str) -> Vec<HitSymbol> {
+/// # Errors
+/// 未知のシンボル文字が含まれる場合エラーを返す。
+/// Returns an error if an unknown symbol character is encountered.
+pub fn parse_hit_symbols(input: &str) -> Result<Vec<HitSymbol>, String> {
     input
         .chars()
         .map(|ch| match ch {
-            'x' => HitSymbol::Normal,
-            'X' => HitSymbol::Accent,
-            'o' => HitSymbol::Ghost,
-            '.' => HitSymbol::Rest,
-            other => panic!("unknown hit symbol: '{}'", other),
+            'x' => Ok(HitSymbol::Normal),
+            'X' => Ok(HitSymbol::Accent),
+            'o' => Ok(HitSymbol::Ghost),
+            '.' => Ok(HitSymbol::Rest),
+            other => Err(format!("unknown hit symbol: '{}'", other)),
         })
         .collect()
 }
@@ -75,19 +75,19 @@ pub fn parse_hit_symbols(input: &str) -> Vec<HitSymbol> {
 /// * `input` - 確率行文字列 (`.`, `0`-`9` で構成) / probability row string (composed of `.`, `0`-`9`)
 ///
 /// # Returns
-/// ステップごとの確率値ベクタ (0-100) / vector of per-step probabilities (0-100)
+/// `Ok(Vec<u8>)` — パース成功時 / on success
 ///
-/// # Panics
-/// 未知の確率シンボルが含まれる場合パニックする。
-/// Panics if an unknown probability symbol is encountered.
-pub fn parse_probability_row(input: &str) -> Vec<u8> {
+/// # Errors
+/// 未知の確率シンボルが含まれる場合エラーを返す。
+/// Returns an error if an unknown probability symbol is encountered.
+pub fn parse_probability_row(input: &str) -> Result<Vec<u8>, String> {
     input
         .chars()
         .map(|ch| match ch {
-            '.' => 100,
-            '0' => 0,
-            '1'..='9' => (ch as u8 - b'0') * 10,
-            other => panic!("unknown probability symbol: '{}'", other),
+            '.' => Ok(100),
+            '0' => Ok(0),
+            '1'..='9' => Ok((ch as u8 - b'0') * 10),
+            other => Err(format!("unknown probability symbol: '{}'", other)),
         })
         .collect()
 }
@@ -196,7 +196,7 @@ mod tests {
     #[test]
     fn hit_symbols_basic() {
         assert_eq!(
-            parse_hit_symbols("x...x..."),
+            parse_hit_symbols("x...x...").unwrap(),
             vec![Normal, Rest, Rest, Rest, Normal, Rest, Rest, Rest]
         );
     }
@@ -204,9 +204,15 @@ mod tests {
     #[test]
     fn hit_symbols_accent_ghost() {
         assert_eq!(
-            parse_hit_symbols("x.o.X.o."),
+            parse_hit_symbols("x.o.X.o.").unwrap(),
             vec![Normal, Rest, Ghost, Rest, Accent, Rest, Ghost, Rest]
         );
+    }
+
+    #[test]
+    fn hit_symbols_unknown_char_returns_error() {
+        let err = parse_hit_symbols("x.?.x").unwrap_err();
+        assert!(err.contains("unknown hit symbol: '?'"));
     }
 
     // --- parse_probability_row tests ---
@@ -214,21 +220,27 @@ mod tests {
     #[test]
     fn probability_basic() {
         assert_eq!(
-            parse_probability_row("..5...7."),
+            parse_probability_row("..5...7.").unwrap(),
             vec![100, 100, 50, 100, 100, 100, 70, 100]
         );
     }
 
     #[test]
     fn probability_zero() {
-        assert_eq!(parse_probability_row("0"), vec![0]);
+        assert_eq!(parse_probability_row("0").unwrap(), vec![0]);
     }
 
     #[test]
     fn probability_full_row() {
         assert_eq!(
-            parse_probability_row("..5...7...3...5."),
+            parse_probability_row("..5...7...3...5.").unwrap(),
             vec![100, 100, 50, 100, 100, 100, 70, 100, 100, 100, 30, 100, 100, 100, 50, 100]
         );
+    }
+
+    #[test]
+    fn probability_unknown_char_returns_error() {
+        let err = parse_probability_row("..a..").unwrap_err();
+        assert!(err.contains("unknown probability symbol: 'a'"));
     }
 }
