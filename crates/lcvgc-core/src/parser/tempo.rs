@@ -1,6 +1,6 @@
 use nom::{
     branch::alt,
-    bytes::complete::tag_no_case,
+    bytes::complete::tag,
     character::complete::{char, u16 as nom_u16},
     combinator::map,
     sequence::{pair, preceded},
@@ -23,7 +23,7 @@ fn relative_tempo(input: &str) -> IResult<&str, Tempo> {
 /// テンポ定義をパースする: `tempo <value>`
 /// Parse `tempo <value>`.
 pub fn parse_tempo(input: &str) -> IResult<&str, Tempo> {
-    let (input, _) = tag_no_case("tempo")(input)?;
+    let (input, _) = tag("tempo")(input)?;
     let (input, _) = ws1(input)?;
     alt((relative_tempo, map(nom_u16, Tempo::Absolute)))(input)
 }
