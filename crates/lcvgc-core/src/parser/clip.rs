@@ -356,6 +356,63 @@ fn parse_drum_body(input: &str) -> IResult<&str, DrumClipBody> {
     ))
 }
 
+/// 繰り返し content 文字列をピッチド要素列にパースする。
+/// Repetition の content（括弧の中身）を PitchedElement のリストに変換する。
+///
+/// Parse repetition content string into a vector of pitched elements.
+/// Converts the content inside parentheses of a Repetition into PitchedElement list.
+pub fn parse_repetition_content(content: &str) -> Result<Vec<PitchedElement>, String> {
+    let mut elements = Vec::new();
+    let mut current = content;
+
+    while let Ok((r, _)) = ws(current) {
+        current = r;
+
+        if current.is_empty() {
+            break;
+        }
+
+        // 小節ジャンプを試行
+        // Try bar jump
+        if let Ok((r, bj)) = parse_bar_jump(current) {
+            elements.push(PitchedElement::BarJump(bj));
+            current = r;
+            continue;
+        }
+
+        // リピートを試行（ネスト対応）
+        // Try repetition (supports nesting)
+        if let Ok((r, rep)) = parse_repetition(current) {
+            elements.push(PitchedElement::Repetition(rep));
+            current = r;
+            continue;
+        }
+
+        // コード括弧を試行
+        // Try chord bracket
+        if current.starts_with('[') {
+            if let Ok((r, chord)) = parse_chord_bracket(current) {
+                elements.push(chord);
+                current = r;
+                continue;
+            }
+        }
+
+        // ノートイベントを試行（単音またはコード名）
+        // Try note event (single note or chord name)
+        if let Ok((r, note)) = parse_note_event(current) {
+            let (r, art) = parse_articulation(r).map_err(|e| format!("{:?}", e))?;
+            elements.push(PitchedElement::Note(note, art));
+            current = r;
+            continue;
+        }
+
+        break;
+    }
+
+    Ok(elements)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
