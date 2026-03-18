@@ -106,7 +106,38 @@ fn compile_pitched_line(
     let mut current_octave: u8 = 4;
     let mut current_duration: u16 = 4;
 
-    for element in &line.elements {
+    compile_elements(
+        &line.elements,
+        clock,
+        channel,
+        gate_normal,
+        gate_staccato,
+        &mut current_tick,
+        &mut current_octave,
+        &mut current_duration,
+        &mut events,
+    )?;
+
+    Ok(events)
+}
+
+/// ピッチド要素列をMIDIイベントにコンパイルする（再帰対応）。
+/// Repetition の展開時に再帰呼び出しされる。
+///
+/// Compile a slice of pitched elements into MIDI events (supports recursion for Repetition).
+#[allow(clippy::too_many_arguments)]
+fn compile_elements(
+    elements: &[PitchedElement],
+    clock: &Clock,
+    channel: u8,
+    gate_normal: u8,
+    gate_staccato: u8,
+    current_tick: &mut u64,
+    current_octave: &mut u8,
+    current_duration: &mut u16,
+    events: &mut Vec<MidiEvent>,
+) -> Result<(), EngineError> {
+    for element in elements {
         match element {
             PitchedElement::Note(note_event, articulation) => match note_event {
                 NoteEvent::Single {
@@ -115,10 +146,10 @@ fn compile_pitched_line(
                     duration,
                     dotted,
                 } => {
-                    let oct = octave.unwrap_or(current_octave);
-                    let dur = duration.unwrap_or(current_duration);
-                    current_octave = oct;
-                    current_duration = dur;
+                    let oct = octave.unwrap_or(*current_octave);
+                    let dur = duration.unwrap_or(*current_duration);
+                    *current_octave = oct;
+                    *current_duration = dur;
 
                     let note = note_number(*name, oct);
                     let note_ticks = clock.duration_to_ticks(dur, *dotted);
@@ -131,7 +162,7 @@ fn compile_pitched_line(
                     };
 
                     events.push(MidiEvent {
-                        tick: current_tick,
+                        tick: *current_tick,
                         message: MidiMessage::NoteOn {
                             channel,
                             note,
@@ -139,7 +170,7 @@ fn compile_pitched_line(
                         },
                     });
                     events.push(MidiEvent {
-                        tick: current_tick + gate_ticks,
+                        tick: *current_tick + gate_ticks,
                         message: MidiMessage::NoteOff {
                             channel,
                             note,
@@ -147,13 +178,13 @@ fn compile_pitched_line(
                         },
                     });
 
-                    current_tick += note_ticks;
+                    *current_tick += note_ticks;
                 }
                 NoteEvent::Rest { duration, dotted } => {
-                    let dur = duration.unwrap_or(current_duration);
-                    current_duration = dur;
+                    let dur = duration.unwrap_or(*current_duration);
+                    *current_duration = dur;
                     let note_ticks = clock.duration_to_ticks(dur, *dotted);
-                    current_tick += note_ticks;
+                    *current_tick += note_ticks;
                 }
                 NoteEvent::ChordName {
                     octave,
@@ -162,35 +193,49 @@ fn compile_pitched_line(
                     ..
                 } => {
                     // TODO: コード名展開（ChordSuffix → ノート群）
-                    let dur = duration.unwrap_or(current_duration);
-                    current_duration = dur;
+                    let dur = duration.unwrap_or(*current_duration);
+                    *current_duration = dur;
                     if let Some(oct) = octave {
-                        current_octave = *oct;
+                        *current_octave = *oct;
                     }
                     let note_ticks = clock.duration_to_ticks(dur, *dotted);
-                    current_tick += note_ticks;
+                    *current_tick += note_ticks;
                 }
             },
             PitchedElement::ChordBracket {
                 duration, dotted, ..
             } => {
                 // TODO: 和音ブラケット展開
-                let dur = duration.unwrap_or(current_duration);
-                current_duration = dur;
+                let dur = duration.unwrap_or(*current_duration);
+                *current_duration = dur;
                 let note_ticks = clock.duration_to_ticks(dur, *dotted);
-                current_tick += note_ticks;
+                *current_tick += note_ticks;
             }
-            PitchedElement::Repetition(_rep) => {
-                // TODO: 繰り返し展開
+            PitchedElement::Repetition(rep) => {
+                let inner_elements = crate::parser::clip::parse_repetition_content(&rep.content)
+                    .map_err(EngineError::CompileError)?;
+                for _ in 0..rep.count {
+                    compile_elements(
+                        &inner_elements,
+                        clock,
+                        channel,
+                        gate_normal,
+                        gate_staccato,
+                        current_tick,
+                        current_octave,
+                        current_duration,
+                        events,
+                    )?;
+                }
             }
             PitchedElement::BarJump(jump) => {
                 let bar_ticks = clock.ticks_per_bar();
-                current_tick = (jump.bar_number as u64 - 1) * bar_ticks;
+                *current_tick = (jump.bar_number as u64 - 1) * bar_ticks;
             }
         }
     }
 
-    Ok(events)
+    Ok(())
 }
 
 /// アーティキュレーションからゲート比率を解決
@@ -754,5 +799,67 @@ mod tests {
             resolve_gate_percent(&Articulation::GateDirect(95), 80, 40),
             95
         );
+    }
+
+    #[test]
+    fn repetition_pitched_basic() {
+        let registry = make_registry_with_bass();
+        let clock = Clock::new(120.0);
+        let clip = make_pitched_clip(
+            "test",
+            None,
+            vec![PitchedLine {
+                instrument: "bass".to_string(),
+                elements: vec![PitchedElement::Repetition(
+                    crate::parser::clip_repetition::Repetition {
+                        content: "c:3:8 c eb".to_string(),
+                        count: 4,
+                    },
+                )],
+            }],
+        );
+
+        let compiled = compile_clip(&clip, &clock, &registry).unwrap();
+        // 3 notes * 4 reps = 12 notes = 24 events (NoteOn + NoteOff)
+        let note_on_count = compiled
+            .events
+            .iter()
+            .filter(|e| matches!(e.message, MidiMessage::NoteOn { .. }))
+            .count();
+        assert_eq!(note_on_count, 12);
+    }
+
+    #[test]
+    fn repetition_carries_octave_and_duration() {
+        let registry = make_registry_with_bass();
+        let clock = Clock::new(120.0);
+        // (c:3:8)*2 → 第2回もオクターブ3、8分音符を引き継ぐ
+        let clip = make_pitched_clip(
+            "test",
+            None,
+            vec![PitchedLine {
+                instrument: "bass".to_string(),
+                elements: vec![PitchedElement::Repetition(
+                    crate::parser::clip_repetition::Repetition {
+                        content: "c:3:8".to_string(),
+                        count: 2,
+                    },
+                )],
+            }],
+        );
+
+        let compiled = compile_clip(&clip, &clock, &registry).unwrap();
+        let note_ons: Vec<_> = compiled
+            .events
+            .iter()
+            .filter(|e| matches!(e.message, MidiMessage::NoteOn { .. }))
+            .collect();
+        assert_eq!(note_ons.len(), 2);
+        // 両方 C3 = 48
+        for ev in &note_ons {
+            assert!(matches!(ev.message, MidiMessage::NoteOn { note: 48, .. }));
+        }
+        // 2nd note at tick 240 (8th note = 240 ticks)
+        assert_eq!(note_ons[1].tick, 240);
     }
 }

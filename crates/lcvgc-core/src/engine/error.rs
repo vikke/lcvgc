@@ -49,6 +49,10 @@ pub enum EngineError {
         field: String,
     },
 
+    /// コンパイルエラー / Compile error
+    #[error("コンパイルエラー: {0}")]
+    CompileError(String),
+
     /// 変数値の型変換失敗 / Variable value type conversion failure
     #[error("変数値の型変換失敗: {name} = \"{value}\" ({expected_type}に変換できません)")]
     InvalidVariableValue {
@@ -154,6 +158,12 @@ mod tests {
             field: "channel".into(),
         };
         assert_eq!(err.to_string(), "未定義変数: bass_ch (フィールド: channel)");
+    }
+
+    #[test]
+    fn display_compile_error() {
+        let e = EngineError::CompileError("bad content".into());
+        assert_eq!(e.to_string(), "コンパイルエラー: bad content");
     }
 
     #[test]
