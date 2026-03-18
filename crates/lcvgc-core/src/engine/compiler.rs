@@ -1,4 +1,5 @@
 use crate::ast::clip::{ClipBody, ClipDef, PitchedClipBody, PitchedElement, PitchedLine};
+use crate::ast::clip_cc::{CcAutomation, Interpolation};
 use crate::ast::clip_drum::HitSymbol;
 use crate::ast::clip_note::NoteEvent;
 use crate::engine::clock::Clock;
@@ -101,7 +102,9 @@ fn compile_pitched(
         let line_events = compile_pitched_line(line, clock, registry, bars)?;
         events.extend(line_events);
     }
-    // TODO: CC automationのコンパイル
+    // CCオートメーションのコンパイル
+    let cc_events = compile_cc_automations(&body.cc_automations, clock, registry)?;
+    events.extend(cc_events);
     Ok(events)
 }
 
@@ -352,6 +355,139 @@ fn apply_min_gate_off(note_ticks: u64, gate_percent: u8, clock: &Clock) -> u64 {
     gate_ticks.min(max_gate)
 }
 
+/// CCオートメーション列をMIDI CCイベントにコンパイルする
+/// Compile CC automations into MIDI ControlChange events
+fn compile_cc_automations(
+    automations: &[CcAutomation],
+    clock: &Clock,
+    registry: &Registry,
+) -> Result<Vec<MidiEvent>, EngineError> {
+    let mut events = Vec::new();
+
+    for automation in automations {
+        match automation {
+            CcAutomation::Step(step) => {
+                let inst = registry
+                    .get_instrument(&step.target.instrument)
+                    .ok_or_else(|| {
+                        EngineError::UnknownInstrument(step.target.instrument.clone())
+                    })?;
+                let channel = inst.channel;
+                let cc_number = inst
+                    .cc_mappings
+                    .iter()
+                    .find(|m| m.alias == step.target.param)
+                    .map(|m| m.cc_number)
+                    .ok_or_else(|| {
+                        EngineError::CompileError(format!(
+                            "CC mapping '{}' not found in instrument '{}'",
+                            step.target.param, step.target.instrument
+                        ))
+                    })?;
+
+                // ステップ方式: resolutionベースのticks_per_step を使う
+                // Step mode: use resolution-based ticks_per_step
+                // ステップ方式は仕様上 resolution=16 のドラム解像度を共有
+                // デフォルト16分音符
+                let ticks_per_step = clock.duration_to_ticks(16, false);
+                for (i, &value) in step.values.iter().enumerate() {
+                    events.push(MidiEvent {
+                        tick: i as u64 * ticks_per_step,
+                        message: MidiMessage::ControlChange {
+                            channel,
+                            cc: cc_number,
+                            value,
+                        },
+                    });
+                }
+            }
+            CcAutomation::Time(time) => {
+                let inst = registry
+                    .get_instrument(&time.target.instrument)
+                    .ok_or_else(|| {
+                        EngineError::UnknownInstrument(time.target.instrument.clone())
+                    })?;
+                let channel = inst.channel;
+                let cc_number = inst
+                    .cc_mappings
+                    .iter()
+                    .find(|m| m.alias == time.target.param)
+                    .map(|m| m.cc_number)
+                    .ok_or_else(|| {
+                        EngineError::CompileError(format!(
+                            "CC mapping '{}' not found in instrument '{}'",
+                            time.target.param, time.target.instrument
+                        ))
+                    })?;
+
+                let bar_ticks = clock.ticks_per_bar();
+                let beat_ticks = bar_ticks / u64::from(clock.time_sig().numerator);
+
+                for segment in &time.segments {
+                    let from_tick = (segment.from.bar as u64 - 1) * bar_ticks
+                        + (segment.from.beat as u64 - 1) * beat_ticks;
+
+                    events.push(MidiEvent {
+                        tick: from_tick,
+                        message: MidiMessage::ControlChange {
+                            channel,
+                            cc: cc_number,
+                            value: segment.from.value,
+                        },
+                    });
+
+                    // 補間処理
+                    // Interpolation processing
+                    if let Some((interp, to_point)) = &segment.to {
+                        let to_tick = (to_point.bar as u64 - 1) * bar_ticks
+                            + (to_point.beat as u64 - 1) * beat_ticks;
+                        if to_tick > from_tick {
+                            let tick_span = to_tick - from_tick;
+                            // 補間ステップ数: 概ね1ステップ = 16分音符相当
+                            let step_ticks = clock.duration_to_ticks(16, false);
+                            let num_steps = (tick_span / step_ticks).max(1);
+
+                            for s in 1..=num_steps {
+                                let t = s as f64 / num_steps as f64;
+                                let value = match interp {
+                                    Interpolation::None => to_point.value,
+                                    Interpolation::Linear => {
+                                        let v = segment.from.value as f64
+                                            + (to_point.value as f64 - segment.from.value as f64)
+                                                * t;
+                                        v.round() as u8
+                                    }
+                                    Interpolation::Exponential => {
+                                        // 指数カーブ: t^2 で近似
+                                        let t_exp = t * t;
+                                        let v = segment.from.value as f64
+                                            + (to_point.value as f64 - segment.from.value as f64)
+                                                * t_exp;
+                                        v.round() as u8
+                                    }
+                                };
+                                let tick = from_tick + s * step_ticks;
+                                if tick <= to_tick {
+                                    events.push(MidiEvent {
+                                        tick,
+                                        message: MidiMessage::ControlChange {
+                                            channel,
+                                            cc: cc_number,
+                                            value,
+                                        },
+                                    });
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    Ok(events)
+}
+
 /// ドラムクリップのコンパイル
 fn compile_drum(
     body: &crate::ast::clip::DrumClipBody,
@@ -409,7 +545,9 @@ fn compile_drum(
         }
     }
 
-    // TODO: ドラムCC automationのコンパイル
+    // ドラムクリップのCCオートメーションコンパイル
+    let cc_events = compile_cc_automations(&body.cc_automations, clock, registry)?;
+    events.extend(cc_events);
     Ok(events)
 }
 
@@ -1471,5 +1609,207 @@ mod tests {
             .find(|e| matches!(e.message, MidiMessage::NoteOff { .. }))
             .unwrap();
         assert_eq!(note_off.tick, 480);
+    }
+
+    // --- CCオートメーション テスト ---
+
+    use crate::ast::clip_cc::{
+        CcAutomation, CcStepValues, CcTarget, CcTimePoint, CcTimeSegment, CcTimeValues,
+    };
+    use crate::ast::instrument::CcMapping;
+
+    /// cc_mappings付きのregistryを作成するヘルパー
+    fn make_registry_with_bass_cc() -> Registry {
+        let mut registry = Registry::default();
+        registry.register_block(crate::ast::Block::Instrument(InstrumentDef {
+            name: "bass".to_string(),
+            device: "dev".to_string(),
+            channel: 1,
+            note: None,
+            gate_normal: Some(80),
+            gate_staccato: Some(40),
+            cc_mappings: vec![CcMapping {
+                alias: "cutoff".to_string(),
+                cc_number: 74,
+                cc_number_ref: None,
+            }],
+            local_vars: vec![],
+            unresolved: Default::default(),
+        }));
+        registry
+    }
+
+    /// ステップ方式のCCオートメーションがMIDI CCイベントに変換されることを検証
+    /// Verify step-mode CC automation produces MIDI CC events
+    #[test]
+    fn cc_automation_step_basic() {
+        let registry = make_registry_with_bass_cc();
+        let clock = Clock::new(120.0);
+        let clip = ClipDef {
+            name: "test".to_string(),
+            options: ClipOptions::default(),
+            body: ClipBody::Pitched(PitchedClipBody {
+                lines: vec![PitchedLine {
+                    instrument: "bass".to_string(),
+                    elements: vec![single_note(NoteName::C, Some(4), Some(4), false)],
+                }],
+                cc_automations: vec![CcAutomation::Step(CcStepValues {
+                    target: CcTarget {
+                        instrument: "bass".to_string(),
+                        param: "cutoff".to_string(),
+                    },
+                    values: vec![0, 32, 64, 127],
+                })],
+            }),
+        };
+
+        let compiled = compile_clip(&clip, &clock, &registry).unwrap();
+        let cc_events: Vec<_> = compiled
+            .events
+            .iter()
+            .filter(|e| matches!(e.message, MidiMessage::ControlChange { .. }))
+            .collect();
+        assert_eq!(cc_events.len(), 4);
+
+        // 最初のCC: tick=0, cc=74, value=0
+        assert!(matches!(
+            cc_events[0].message,
+            MidiMessage::ControlChange {
+                channel: 1,
+                cc: 74,
+                value: 0
+            }
+        ));
+        // 最後のCC: tick=360(16分音符*3=120*3), cc=74, value=127
+        assert!(matches!(
+            cc_events[3].message,
+            MidiMessage::ControlChange {
+                channel: 1,
+                cc: 74,
+                value: 127
+            }
+        ));
+    }
+
+    /// 時間指定方式のCCオートメーション（ポイント指定のみ）
+    /// Time-specified CC automation with point values only
+    #[test]
+    fn cc_automation_time_point() {
+        let registry = make_registry_with_bass_cc();
+        let clock = Clock::new(120.0);
+        let clip = ClipDef {
+            name: "test".to_string(),
+            options: ClipOptions::default(),
+            body: ClipBody::Pitched(PitchedClipBody {
+                lines: vec![PitchedLine {
+                    instrument: "bass".to_string(),
+                    elements: vec![single_note(NoteName::C, Some(4), Some(4), false)],
+                }],
+                cc_automations: vec![CcAutomation::Time(CcTimeValues {
+                    target: CcTarget {
+                        instrument: "bass".to_string(),
+                        param: "cutoff".to_string(),
+                    },
+                    segments: vec![
+                        CcTimeSegment {
+                            from: CcTimePoint {
+                                value: 0,
+                                bar: 1,
+                                beat: 1,
+                            },
+                            to: None,
+                        },
+                        CcTimeSegment {
+                            from: CcTimePoint {
+                                value: 127,
+                                bar: 2,
+                                beat: 1,
+                            },
+                            to: None,
+                        },
+                    ],
+                })],
+            }),
+        };
+
+        let compiled = compile_clip(&clip, &clock, &registry).unwrap();
+        let cc_events: Vec<_> = compiled
+            .events
+            .iter()
+            .filter(|e| matches!(e.message, MidiMessage::ControlChange { .. }))
+            .collect();
+        assert_eq!(cc_events.len(), 2);
+        // 1:1 → tick=0, value=0
+        assert_eq!(cc_events[0].tick, 0);
+        assert!(matches!(
+            cc_events[0].message,
+            MidiMessage::ControlChange { value: 0, .. }
+        ));
+        // 2:1 → tick=1920 (1小節=1920 at 4/4 120BPM), value=127
+        assert_eq!(cc_events[1].tick, 1920);
+        assert!(matches!(
+            cc_events[1].message,
+            MidiMessage::ControlChange { value: 127, .. }
+        ));
+    }
+
+    /// ドラムクリップでのCCオートメーション
+    /// CC automation in drum clip
+    #[test]
+    fn cc_automation_in_drum_clip() {
+        let mut registry = make_registry_with_bass_cc();
+        registry.register_block(crate::ast::Block::Kit(KitDef {
+            name: "kit".to_string(),
+            device: "dev".to_string(),
+            instruments: vec![KitInstrument {
+                name: "bd".to_string(),
+                channel: 10,
+                note: KitInstrumentNote {
+                    name: NoteName::C,
+                    octave: 2,
+                },
+                gate_normal: Some(50),
+                gate_staccato: None,
+                unresolved: Default::default(),
+            }],
+        }));
+
+        let clock = Clock::new(120.0);
+        let clip = ClipDef {
+            name: "drums".to_string(),
+            options: ClipOptions::default(),
+            body: ClipBody::Drum(crate::ast::clip::DrumClipBody {
+                kit: "kit".to_string(),
+                resolution: 16,
+                rows: vec![crate::ast::clip_drum::DrumRow {
+                    instrument: "bd".to_string(),
+                    hits: vec![HitSymbol::Normal, HitSymbol::Rest],
+                    probability: None,
+                }],
+                cc_automations: vec![CcAutomation::Step(CcStepValues {
+                    target: CcTarget {
+                        instrument: "bass".to_string(),
+                        param: "cutoff".to_string(),
+                    },
+                    values: vec![64, 127],
+                })],
+            }),
+        };
+
+        let compiled = compile_clip(&clip, &clock, &registry).unwrap();
+        let cc_events: Vec<_> = compiled
+            .events
+            .iter()
+            .filter(|e| matches!(e.message, MidiMessage::ControlChange { .. }))
+            .collect();
+        assert_eq!(cc_events.len(), 2);
+        assert!(matches!(
+            cc_events[0].message,
+            MidiMessage::ControlChange {
+                channel: 1,
+                cc: 74,
+                value: 64
+            }
+        ));
     }
 }
