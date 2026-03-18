@@ -5,7 +5,9 @@ use crate::parser::clip_arpeggio::parse_arpeggio;
 use crate::parser::clip_articulation::parse_articulation;
 use crate::parser::clip_bar_jump::parse_bar_jump;
 use crate::parser::clip_cc::{parse_cc_step, parse_cc_target, parse_cc_time};
-use crate::parser::clip_drum::{expand_pipe, parse_hit_symbols, parse_probability_row};
+use crate::parser::clip_drum::{
+    expand_pipe, expand_repetition, parse_hit_symbols, parse_probability_row,
+};
 use crate::parser::clip_note::parse_note_event;
 use crate::parser::clip_options::parse_clip_options;
 use crate::parser::clip_repetition::parse_repetition;
@@ -330,7 +332,8 @@ fn parse_drum_body(input: &str) -> IResult<&str, DrumClipBody> {
         } else {
             // ヒットパターン行
             // It's a hit pattern row
-            let expanded = expand_pipe(pattern, beats_per_step);
+            let after_rep = expand_repetition(pattern);
+            let expanded = expand_pipe(&after_rep, beats_per_step);
             let hits = parse_hit_symbols(&expanded);
             rows.push(crate::ast::clip_drum::DrumRow {
                 instrument: inst_name.to_string(),

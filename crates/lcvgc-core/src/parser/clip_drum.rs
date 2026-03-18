@@ -92,10 +92,86 @@ pub fn parse_probability_row(input: &str) -> Vec<u8> {
         .collect()
 }
 
+/// ドラムパターン文字列中の `(pattern)*N` 繰り返し記法を展開する。
+/// ネストした繰り返し（内側から順に展開）に対応。
+///
+/// Expand `(pattern)*N` repetition notation in drum pattern strings.
+/// Handles nested repetitions (expands inner ones first).
+///
+/// # Arguments
+/// * `input` - 繰り返し記法を含むドラムパターン文字列 / drum pattern string with repetition notation
+///
+/// # Returns
+/// 展開済みのパターン文字列 / expanded pattern string
+pub fn expand_repetition(input: &str) -> String {
+    let mut s = input.to_string();
+    loop {
+        // 内側に `(` を含まない最も内側の `(...)` ペアを探す
+        // Find the innermost `(...)` pair (no `(` inside)
+        let Some(close) = s.find(')') else {
+            break;
+        };
+        let prefix = &s[..close];
+        let Some(open) = prefix.rfind('(') else {
+            break;
+        };
+        let inner = &s[open + 1..close];
+        let after = &s[close + 1..];
+
+        // `)*N` 形式を検出（N は1桁以上の数値）
+        // Detect `)*N` form (N is one or more digits)
+        if let Some(stripped) = after.strip_prefix('*') {
+            let digits_len = stripped
+                .find(|c: char| !c.is_ascii_digit())
+                .unwrap_or(stripped.len());
+            if digits_len > 0 {
+                let n: usize = stripped[..digits_len].parse().unwrap_or(1);
+                let repeated = inner.repeat(n);
+                let rest = &stripped[digits_len..];
+                s = format!("{}{}{}", &s[..open], repeated, rest);
+                continue;
+            }
+        }
+
+        // `(...)` だが `*N` がない場合、括弧を除去してスキップ
+        // `(...)` without `*N` — remove parentheses and skip
+        s = format!("{}{}{}", &s[..open], inner, after);
+    }
+    s
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::ast::clip_drum::HitSymbol::*;
+
+    // --- expand_repetition tests ---
+
+    #[test]
+    fn expand_repetition_basic() {
+        assert_eq!(expand_repetition("(x.x.)*4"), "x.x.x.x.x.x.x.x.");
+    }
+
+    #[test]
+    fn expand_repetition_with_surrounding() {
+        assert_eq!(expand_repetition("x.(x.)*2.x"), "x.x.x..x");
+    }
+
+    #[test]
+    fn expand_repetition_nested() {
+        // 内側: (ab)*2 → abab → (ababc)*3 → ababcababcababc
+        assert_eq!(expand_repetition("((ab)*2c)*3"), "ababcababcababc");
+    }
+
+    #[test]
+    fn expand_repetition_no_repetition() {
+        assert_eq!(expand_repetition("x.x.x.x."), "x.x.x.x.");
+    }
+
+    #[test]
+    fn expand_repetition_multiple() {
+        assert_eq!(expand_repetition("(x.)*2(X.)*2"), "x.x.X.X.");
+    }
 
     // --- expand_pipe tests ---
 
