@@ -9,6 +9,7 @@ use crate::midi::chord::chord_notes;
 use crate::midi::message::MidiMessage;
 use crate::midi::note::note_number;
 use crate::parser::clip_articulation::Articulation;
+use crate::parser::clip_shorthand::CarryOverState;
 
 /// tickベースMIDIイベント
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -109,6 +110,8 @@ fn compile_pitched(
 }
 
 /// ピッチドライン1行のコンパイル
+///
+/// Compiles a single pitched line into MIDI events.
 fn compile_pitched_line(
     line: &PitchedLine,
     clock: &Clock,
@@ -125,8 +128,7 @@ fn compile_pitched_line(
 
     let mut events = Vec::new();
     let mut current_tick: u64 = 0;
-    let mut current_octave: u8 = 4;
-    let mut current_duration: u16 = 4;
+    let mut carry = CarryOverState::new();
 
     compile_elements(
         &line.elements,
@@ -135,8 +137,7 @@ fn compile_pitched_line(
         gate_normal,
         gate_staccato,
         &mut current_tick,
-        &mut current_octave,
-        &mut current_duration,
+        &mut carry,
         &mut events,
         bars,
     )?;
@@ -156,8 +157,7 @@ fn compile_elements(
     gate_normal: u8,
     gate_staccato: u8,
     current_tick: &mut u64,
-    current_octave: &mut u8,
-    current_duration: &mut u16,
+    carry: &mut CarryOverState,
     events: &mut Vec<MidiEvent>,
     bars: Option<u32>,
 ) -> Result<(), EngineError> {
@@ -170,13 +170,10 @@ fn compile_elements(
                     duration,
                     dotted,
                 } => {
-                    let oct = octave.unwrap_or(*current_octave);
-                    let dur = duration.unwrap_or(*current_duration);
-                    *current_octave = oct;
-                    *current_duration = dur;
+                    let resolved = carry.resolve(*octave, *duration, *dotted);
 
-                    let note = note_number(*name, oct);
-                    let note_ticks = clock.duration_to_ticks(dur, *dotted);
+                    let note = note_number(*name, resolved.octave);
+                    let note_ticks = clock.duration_to_ticks(resolved.duration, resolved.dotted);
                     let gate_percent =
                         resolve_gate_percent(articulation, gate_normal, gate_staccato);
                     let gate_ticks = apply_min_gate_off(note_ticks, gate_percent, clock);
@@ -201,9 +198,8 @@ fn compile_elements(
                     *current_tick += note_ticks;
                 }
                 NoteEvent::Rest { duration, dotted } => {
-                    let dur = duration.unwrap_or(*current_duration);
-                    *current_duration = dur;
-                    let note_ticks = clock.duration_to_ticks(dur, *dotted);
+                    let resolved = carry.resolve_duration_only(*duration, *dotted);
+                    let note_ticks = clock.duration_to_ticks(resolved.duration, resolved.dotted);
                     *current_tick += note_ticks;
                 }
                 NoteEvent::ChordName {
@@ -215,13 +211,10 @@ fn compile_elements(
                 } => {
                     // コード名→MIDIノート群に展開してNoteOn/NoteOffを生成
                     // Expand chord name to MIDI notes and generate NoteOn/NoteOff events
-                    let oct = octave.unwrap_or(*current_octave);
-                    let dur = duration.unwrap_or(*current_duration);
-                    *current_octave = oct;
-                    *current_duration = dur;
+                    let resolved = carry.resolve(*octave, *duration, *dotted);
 
-                    let notes = chord_notes(*root, oct, suffix);
-                    let note_ticks = clock.duration_to_ticks(dur, *dotted);
+                    let notes = chord_notes(*root, resolved.octave, suffix);
+                    let note_ticks = clock.duration_to_ticks(resolved.duration, resolved.dotted);
                     let gate_percent =
                         resolve_gate_percent(articulation, gate_normal, gate_staccato);
                     let gate_ticks = apply_min_gate_off(note_ticks, gate_percent, clock);
@@ -257,15 +250,14 @@ fn compile_elements(
             } => {
                 // 和音ブラケット→同時発音のNoteOn/NoteOff生成
                 // Chord bracket → generate simultaneous NoteOn/NoteOff events
-                let dur = duration.unwrap_or(*current_duration);
-                *current_duration = dur;
+                let resolved = carry.resolve_duration_only(*duration, *dotted);
 
-                let note_ticks = clock.duration_to_ticks(dur, *dotted);
+                let note_ticks = clock.duration_to_ticks(resolved.duration, resolved.dotted);
                 let gate_percent = resolve_gate_percent(articulation, gate_normal, gate_staccato);
                 let gate_ticks = apply_min_gate_off(note_ticks, gate_percent, clock);
 
                 for &(name, oct_opt) in notes {
-                    let oct = oct_opt.unwrap_or(*current_octave);
+                    let oct = oct_opt.unwrap_or(carry.octave);
                     let note = note_number(name, oct);
                     events.push(MidiEvent {
                         tick: *current_tick,
@@ -298,8 +290,7 @@ fn compile_elements(
                         gate_normal,
                         gate_staccato,
                         current_tick,
-                        current_octave,
-                        current_duration,
+                        carry,
                         events,
                         bars,
                     )?;
