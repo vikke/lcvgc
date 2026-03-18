@@ -176,11 +176,7 @@ fn compile_elements(
                     let note_ticks = clock.duration_to_ticks(dur, *dotted);
                     let gate_percent =
                         resolve_gate_percent(articulation, gate_normal, gate_staccato);
-                    let gate_ticks = if gate_percent == 100 {
-                        note_ticks
-                    } else {
-                        note_ticks * gate_percent as u64 / 100
-                    };
+                    let gate_ticks = apply_min_gate_off(note_ticks, gate_percent, clock);
 
                     events.push(MidiEvent {
                         tick: *current_tick,
@@ -225,11 +221,7 @@ fn compile_elements(
                     let note_ticks = clock.duration_to_ticks(dur, *dotted);
                     let gate_percent =
                         resolve_gate_percent(articulation, gate_normal, gate_staccato);
-                    let gate_ticks = if gate_percent == 100 {
-                        note_ticks
-                    } else {
-                        note_ticks * gate_percent as u64 / 100
-                    };
+                    let gate_ticks = apply_min_gate_off(note_ticks, gate_percent, clock);
 
                     for &note in &notes {
                         events.push(MidiEvent {
@@ -267,11 +259,7 @@ fn compile_elements(
 
                 let note_ticks = clock.duration_to_ticks(dur, *dotted);
                 let gate_percent = resolve_gate_percent(articulation, gate_normal, gate_staccato);
-                let gate_ticks = if gate_percent == 100 {
-                    note_ticks
-                } else {
-                    note_ticks * gate_percent as u64 / 100
-                };
+                let gate_ticks = apply_min_gate_off(note_ticks, gate_percent, clock);
 
                 for &(name, oct_opt) in notes {
                     let oct = oct_opt.unwrap_or(*current_octave);
@@ -343,6 +331,27 @@ fn resolve_gate_percent(art: &Articulation, gate_normal: u8, gate_staccato: u8) 
     }
 }
 
+/// 最小Gate Off 5ms保証付きでgate_ticksを計算する（§7.7）
+/// Calculate gate_ticks with minimum 5ms Gate Off guarantee (§7.7)
+///
+/// gate_percent=100 の場合はレガート（off=0）でそのまま返す。
+/// それ以外の場合、off期間が5ms未満ならgate_ticksをクランプする。
+fn apply_min_gate_off(note_ticks: u64, gate_percent: u8, clock: &Clock) -> u64 {
+    if gate_percent == 100 {
+        return note_ticks;
+    }
+    let gate_ticks = note_ticks * gate_percent as u64 / 100;
+    let tick_us = clock.tick_duration_us();
+    // 5ms = 5000us → 最小off ticks（切り上げ）
+    let min_off_ticks = if tick_us > 0 {
+        5000_u64.div_ceil(tick_us)
+    } else {
+        0
+    };
+    let max_gate = note_ticks.saturating_sub(min_off_ticks);
+    gate_ticks.min(max_gate)
+}
+
 /// ドラムクリップのコンパイル
 fn compile_drum(
     body: &crate::ast::clip::DrumClipBody,
@@ -379,7 +388,7 @@ fn compile_drum(
             }
 
             let tick = i as u64 * ticks_per_step;
-            let gate_ticks = ticks_per_step * gate_percent as u64 / 100;
+            let gate_ticks = apply_min_gate_off(ticks_per_step, gate_percent, clock);
 
             events.push(MidiEvent {
                 tick,
@@ -1390,5 +1399,77 @@ mod tests {
             .collect();
         // C3=48, E5=76, G4=67
         assert_eq!(notes, vec![48, 76, 67]);
+    }
+
+    // --- 最小Gate Off 5ms テスト ---
+
+    /// apply_min_gate_off の単体テスト: gate100%はレガート（off=0）
+    /// Unit test: gate 100% returns legato (off=0)
+    #[test]
+    fn min_gate_off_legato_unchanged() {
+        let clock = Clock::new(120.0);
+        // gate100% → レガート、note_ticksそのまま
+        let result = apply_min_gate_off(480, 100, &clock);
+        assert_eq!(result, 480);
+    }
+
+    /// apply_min_gate_off: 通常のgate比率では5ms保証に影響しない
+    /// Normal gate ratio is not affected by 5ms guarantee
+    #[test]
+    fn min_gate_off_normal_unaffected() {
+        let clock = Clock::new(120.0);
+        // 120BPM, PPQ480: tick_duration_us = 1041us
+        // 480ticks * 80% = 384 → off = 96 ticks ≈ 100ms >> 5ms → 変更なし
+        let result = apply_min_gate_off(480, 80, &clock);
+        assert_eq!(result, 384);
+    }
+
+    /// apply_min_gate_off: 極端なgate比率で5ms保証が効く
+    /// Extreme gate ratio triggers 5ms guarantee
+    #[test]
+    fn min_gate_off_extreme_gate_clamped() {
+        let clock = Clock::new(120.0);
+        // 120BPM, PPQ480: tick_duration_us = 1041us
+        // min_off_ticks = ceil(5000/1041) = 5
+        // 10ticks * 99% = 9 → off = 1 tick < 5 → gate_ticks = 10 - 5 = 5
+        let result = apply_min_gate_off(10, 99, &clock);
+        assert_eq!(result, 5);
+    }
+
+    /// gate100%でも5ms保証がコンパイル結果に影響しないことを検証（統合テスト）
+    /// Verify gate 100% (legato) produces full note_ticks as gate in compiled clip
+    #[test]
+    fn min_gate_off_legato_compile() {
+        let mut registry = Registry::default();
+        registry.register_block(crate::ast::Block::Instrument(InstrumentDef {
+            name: "pad".to_string(),
+            device: "dev".to_string(),
+            channel: 3,
+            note: None,
+            gate_normal: Some(100),
+            gate_staccato: Some(60),
+            cc_mappings: vec![],
+            local_vars: vec![],
+            unresolved: Default::default(),
+        }));
+
+        let clock = Clock::new(120.0);
+        let clip = make_pitched_clip(
+            "test",
+            None,
+            vec![PitchedLine {
+                instrument: "pad".to_string(),
+                elements: vec![single_note(NoteName::C, Some(4), Some(4), false)],
+            }],
+        );
+
+        let compiled = compile_clip(&clip, &clock, &registry).unwrap();
+        // gate100% → NoteOff at tick 480 (レガート)
+        let note_off = compiled
+            .events
+            .iter()
+            .find(|e| matches!(e.message, MidiMessage::NoteOff { .. }))
+            .unwrap();
+        assert_eq!(note_off.tick, 480);
     }
 }
