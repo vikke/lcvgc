@@ -325,7 +325,9 @@ fn parse_drum_body(input: &str) -> IResult<&str, DrumClipBody> {
         if is_prob && !rows.is_empty() {
             // 直前のドラム行に対する確率行
             // It's a probability row for the last drum row
-            let prob = parse_probability_row(pattern);
+            let prob = parse_probability_row(pattern).map_err(|_| {
+                nom::Err::Failure(nom::error::Error::new(current, nom::error::ErrorKind::Char))
+            })?;
             if let Some(last) = rows.last_mut() {
                 last.probability = Some(prob);
             }
@@ -334,7 +336,9 @@ fn parse_drum_body(input: &str) -> IResult<&str, DrumClipBody> {
             // It's a hit pattern row
             let after_rep = expand_repetition(pattern);
             let expanded = expand_pipe(&after_rep, beats_per_step);
-            let hits = parse_hit_symbols(&expanded);
+            let hits = parse_hit_symbols(&expanded).map_err(|_| {
+                nom::Err::Failure(nom::error::Error::new(current, nom::error::ErrorKind::Char))
+            })?;
             rows.push(crate::ast::clip_drum::DrumRow {
                 instrument: inst_name.to_string(),
                 hits,
