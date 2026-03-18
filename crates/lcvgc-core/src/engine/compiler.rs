@@ -36,7 +36,7 @@ pub fn compile_clip(
     registry: &Registry,
 ) -> Result<CompiledClip, EngineError> {
     let mut events = match &clip.body {
-        ClipBody::Pitched(body) => compile_pitched(body, clock, registry)?,
+        ClipBody::Pitched(body) => compile_pitched(body, clock, registry, clip.options.bars)?,
         ClipBody::Drum(body) => compile_drum(body, clock, registry)?,
     };
 
@@ -94,10 +94,11 @@ fn compile_pitched(
     body: &PitchedClipBody,
     clock: &Clock,
     registry: &Registry,
+    bars: Option<u32>,
 ) -> Result<Vec<MidiEvent>, EngineError> {
     let mut events = Vec::new();
     for line in &body.lines {
-        let line_events = compile_pitched_line(line, clock, registry)?;
+        let line_events = compile_pitched_line(line, clock, registry, bars)?;
         events.extend(line_events);
     }
     // TODO: CC automationのコンパイル
@@ -109,6 +110,7 @@ fn compile_pitched_line(
     line: &PitchedLine,
     clock: &Clock,
     registry: &Registry,
+    bars: Option<u32>,
 ) -> Result<Vec<MidiEvent>, EngineError> {
     let inst = registry
         .get_instrument(&line.instrument)
@@ -133,6 +135,7 @@ fn compile_pitched_line(
         &mut current_octave,
         &mut current_duration,
         &mut events,
+        bars,
     )?;
 
     Ok(events)
@@ -153,6 +156,7 @@ fn compile_elements(
     current_octave: &mut u8,
     current_duration: &mut u16,
     events: &mut Vec<MidiEvent>,
+    bars: Option<u32>,
 ) -> Result<(), EngineError> {
     for element in elements {
         match element {
@@ -306,10 +310,21 @@ fn compile_elements(
                         current_octave,
                         current_duration,
                         events,
+                        bars,
                     )?;
                 }
             }
             PitchedElement::BarJump(jump) => {
+                // bars制約がある場合、bar_numberが範囲外ならエラー
+                // If bars constraint exists, validate bar_number is within range
+                if let Some(max_bars) = bars {
+                    if jump.bar_number > max_bars {
+                        return Err(EngineError::CompileError(format!(
+                            ">{}はbars={}の範囲外です",
+                            jump.bar_number, max_bars
+                        )));
+                    }
+                }
                 let bar_ticks = clock.ticks_per_bar();
                 *current_tick = (jump.bar_number as u64 - 1) * bar_ticks;
             }
@@ -867,6 +882,83 @@ mod tests {
             .iter()
             .find(|e| matches!(e.message, MidiMessage::NoteOn { note: 64, .. }));
         assert_eq!(e_on.unwrap().tick, 3840);
+    }
+
+    /// bars=4 で >5 がエラーになることを検証
+    /// Verify that >5 with bars=4 returns an error
+    #[test]
+    fn bar_jump_out_of_range_error() {
+        let registry = make_registry_with_bass();
+        let clock = Clock::new(120.0);
+        let clip = make_pitched_clip(
+            "test",
+            Some(4),
+            vec![PitchedLine {
+                instrument: "bass".to_string(),
+                elements: vec![
+                    single_note(NoteName::C, Some(4), Some(4), false),
+                    PitchedElement::BarJump(crate::parser::clip_bar_jump::BarJump {
+                        bar_number: 5,
+                    }),
+                    single_note(NoteName::E, None, Some(4), false),
+                ],
+            }],
+        );
+
+        let result = compile_clip(&clip, &clock, &registry);
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(err.to_string().contains("範囲外"));
+    }
+
+    /// bars=4 で >4 が正常であることを検証
+    /// Verify that >4 with bars=4 is valid
+    #[test]
+    fn bar_jump_at_boundary_ok() {
+        let registry = make_registry_with_bass();
+        let clock = Clock::new(120.0);
+        let clip = make_pitched_clip(
+            "test",
+            Some(4),
+            vec![PitchedLine {
+                instrument: "bass".to_string(),
+                elements: vec![
+                    single_note(NoteName::C, Some(4), Some(4), false),
+                    PitchedElement::BarJump(crate::parser::clip_bar_jump::BarJump {
+                        bar_number: 4,
+                    }),
+                    single_note(NoteName::E, None, Some(4), false),
+                ],
+            }],
+        );
+
+        let result = compile_clip(&clip, &clock, &registry);
+        assert!(result.is_ok());
+    }
+
+    /// bars未指定で >N が正常であることを検証
+    /// Verify that >N without bars is always valid
+    #[test]
+    fn bar_jump_no_bars_always_ok() {
+        let registry = make_registry_with_bass();
+        let clock = Clock::new(120.0);
+        let clip = make_pitched_clip(
+            "test",
+            None,
+            vec![PitchedLine {
+                instrument: "bass".to_string(),
+                elements: vec![
+                    single_note(NoteName::C, Some(4), Some(4), false),
+                    PitchedElement::BarJump(crate::parser::clip_bar_jump::BarJump {
+                        bar_number: 100,
+                    }),
+                    single_note(NoteName::E, None, Some(4), false),
+                ],
+            }],
+        );
+
+        let result = compile_clip(&clip, &clock, &registry);
+        assert!(result.is_ok());
     }
 
     #[test]
