@@ -4,6 +4,7 @@ use crate::ast::clip_note::NoteEvent;
 use crate::engine::clock::Clock;
 use crate::engine::error::EngineError;
 use crate::engine::registry::Registry;
+use crate::midi::chord::chord_notes;
 use crate::midi::message::MidiMessage;
 use crate::midi::note::note_number;
 use crate::parser::clip_articulation::Articulation;
@@ -187,18 +188,48 @@ fn compile_elements(
                     *current_tick += note_ticks;
                 }
                 NoteEvent::ChordName {
+                    root,
+                    suffix,
                     octave,
                     duration,
                     dotted,
-                    ..
                 } => {
-                    // TODO: コード名展開（ChordSuffix → ノート群）
+                    // コード名→MIDIノート群に展開してNoteOn/NoteOffを生成
+                    // Expand chord name to MIDI notes and generate NoteOn/NoteOff events
+                    let oct = octave.unwrap_or(*current_octave);
                     let dur = duration.unwrap_or(*current_duration);
+                    *current_octave = oct;
                     *current_duration = dur;
-                    if let Some(oct) = octave {
-                        *current_octave = *oct;
-                    }
+
+                    let notes = chord_notes(*root, oct, suffix);
                     let note_ticks = clock.duration_to_ticks(dur, *dotted);
+                    let gate_percent =
+                        resolve_gate_percent(articulation, gate_normal, gate_staccato);
+                    let gate_ticks = if gate_percent == 100 {
+                        note_ticks
+                    } else {
+                        note_ticks * gate_percent as u64 / 100
+                    };
+
+                    for &note in &notes {
+                        events.push(MidiEvent {
+                            tick: *current_tick,
+                            message: MidiMessage::NoteOn {
+                                channel,
+                                note,
+                                velocity: 100,
+                            },
+                        });
+                        events.push(MidiEvent {
+                            tick: *current_tick + gate_ticks,
+                            message: MidiMessage::NoteOff {
+                                channel,
+                                note,
+                                velocity: 0,
+                            },
+                        });
+                    }
+
                     *current_tick += note_ticks;
                 }
             },
@@ -861,5 +892,184 @@ mod tests {
         }
         // 2nd note at tick 240 (8th note = 240 ticks)
         assert_eq!(note_ons[1].tick, 240);
+    }
+
+    // --- ChordName コンパイルテスト ---
+
+    use crate::ast::clip_note::ChordSuffix;
+
+    /// Cm7:4:2 → 4音(C4=60, Eb4=63, G4=67, Bb4=70)、gate80%
+    /// Cm7:4:2 → 4 notes (C4=60, Eb4=63, G4=67, Bb4=70), gate 80%
+    #[test]
+    fn chord_name_cm7_basic() {
+        let registry = make_registry_with_bass();
+        let clock = Clock::new(120.0);
+        let clip = make_pitched_clip(
+            "test",
+            None,
+            vec![PitchedLine {
+                instrument: "bass".to_string(),
+                elements: vec![PitchedElement::Note(
+                    NoteEvent::ChordName {
+                        root: NoteName::C,
+                        suffix: ChordSuffix::Min7,
+                        octave: Some(4),
+                        duration: Some(2),
+                        dotted: false,
+                    },
+                    Articulation::Normal,
+                )],
+            }],
+        );
+
+        let compiled = compile_clip(&clip, &clock, &registry).unwrap();
+        let note_ons: Vec<_> = compiled
+            .events
+            .iter()
+            .filter(|e| matches!(e.message, MidiMessage::NoteOn { .. }))
+            .collect();
+        // Cm7 = 4構成音
+        assert_eq!(note_ons.len(), 4);
+        let notes: Vec<u8> = note_ons
+            .iter()
+            .map(|e| match e.message {
+                MidiMessage::NoteOn { note, .. } => note,
+                _ => unreachable!(),
+            })
+            .collect();
+        assert_eq!(notes, vec![60, 63, 67, 70]);
+
+        // 全NoteOnは同一tick(0)
+        assert!(note_ons.iter().all(|e| e.tick == 0));
+
+        // gate 80%: 半音符=960ticks, 960*80%=768
+        let note_offs: Vec<_> = compiled
+            .events
+            .iter()
+            .filter(|e| matches!(e.message, MidiMessage::NoteOff { .. }))
+            .collect();
+        assert_eq!(note_offs.len(), 4);
+        assert!(note_offs.iter().all(|e| e.tick == 768));
+    }
+
+    /// octave/duration の carry forward 検証
+    /// Verify octave/duration carry forward
+    #[test]
+    fn chord_name_carry_forward() {
+        let registry = make_registry_with_bass();
+        let clock = Clock::new(120.0);
+        // ChordName(oct=3, dur=8) → Single(oct=None, dur=None)
+        // Singleは oct=3, dur=8 を引き継ぐべき
+        let clip = make_pitched_clip(
+            "test",
+            None,
+            vec![PitchedLine {
+                instrument: "bass".to_string(),
+                elements: vec![
+                    PitchedElement::Note(
+                        NoteEvent::ChordName {
+                            root: NoteName::C,
+                            suffix: ChordSuffix::Maj,
+                            octave: Some(3),
+                            duration: Some(8),
+                            dotted: false,
+                        },
+                        Articulation::Normal,
+                    ),
+                    single_note(NoteName::E, None, None, false),
+                ],
+            }],
+        );
+
+        let compiled = compile_clip(&clip, &clock, &registry).unwrap();
+        // Cmaj:3:8 = 3音 + 後続E = 計4 NoteOn
+        let note_ons: Vec<_> = compiled
+            .events
+            .iter()
+            .filter(|e| matches!(e.message, MidiMessage::NoteOn { .. }))
+            .collect();
+        assert_eq!(note_ons.len(), 4);
+
+        // 後続 E は oct=3 を引き継ぎ → E3=52
+        let e_note = note_ons.last().unwrap();
+        assert!(matches!(
+            e_note.message,
+            MidiMessage::NoteOn { note: 52, .. }
+        ));
+        // 8分音符=240ticks でのオフセット
+        assert_eq!(e_note.tick, 240);
+    }
+
+    /// スタッカート時のgate40%検証
+    /// Verify gate 40% with staccato articulation
+    #[test]
+    fn chord_name_staccato() {
+        let registry = make_registry_with_bass();
+        let clock = Clock::new(120.0);
+        let clip = make_pitched_clip(
+            "test",
+            None,
+            vec![PitchedLine {
+                instrument: "bass".to_string(),
+                elements: vec![PitchedElement::Note(
+                    NoteEvent::ChordName {
+                        root: NoteName::C,
+                        suffix: ChordSuffix::Maj,
+                        octave: Some(4),
+                        duration: Some(4),
+                        dotted: false,
+                    },
+                    Articulation::Staccato,
+                )],
+            }],
+        );
+
+        let compiled = compile_clip(&clip, &clock, &registry).unwrap();
+        // gate_staccato=40%, 480*40%=192
+        let note_offs: Vec<_> = compiled
+            .events
+            .iter()
+            .filter(|e| matches!(e.message, MidiMessage::NoteOff { .. }))
+            .collect();
+        assert!(note_offs.iter().all(|e| e.tick == 192));
+    }
+
+    /// 繰り返し内でのコード名使用検証
+    /// Verify chord name usage inside repetition
+    #[test]
+    fn chord_name_in_repetition() {
+        let registry = make_registry_with_bass();
+        let clock = Clock::new(120.0);
+        // (cm7:4:4)*2 → Cm7 4音 × 2回 = 8 NoteOn
+        let clip = make_pitched_clip(
+            "test",
+            None,
+            vec![PitchedLine {
+                instrument: "bass".to_string(),
+                elements: vec![PitchedElement::Repetition(
+                    crate::parser::clip_repetition::Repetition {
+                        content: "cm7:4:4".to_string(),
+                        count: 2,
+                    },
+                )],
+            }],
+        );
+
+        let compiled = compile_clip(&clip, &clock, &registry).unwrap();
+        let note_on_count = compiled
+            .events
+            .iter()
+            .filter(|e| matches!(e.message, MidiMessage::NoteOn { .. }))
+            .count();
+        // Cm7=4音 × 2回 = 8
+        assert_eq!(note_on_count, 8);
+
+        // 2回目は tick=480 から開始
+        let second_round: Vec<_> = compiled
+            .events
+            .iter()
+            .filter(|e| e.tick == 480 && matches!(e.message, MidiMessage::NoteOn { .. }))
+            .collect();
+        assert_eq!(second_round.len(), 4);
     }
 }
