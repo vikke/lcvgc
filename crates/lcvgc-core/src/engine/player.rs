@@ -1,10 +1,14 @@
 use crate::engine::compiler::{CompiledClip, MidiEvent};
 
 /// 単一クリップの再生状態を管理するプレイヤー
+/// Player managing playback state for a single clip
 #[derive(Debug, Clone)]
 pub struct ClipPlayer {
     /// 再生対象のコンパイル済みクリップ
     clip: CompiledClip,
+    /// 次ループ頭で差し替える待機クリップ（§7: 動的上書き対応）
+    /// Pending clip to swap in at the next loop boundary (§7: dynamic replacement)
+    pending_clip: Option<CompiledClip>,
     /// 現在の再生tick位置
     current_tick: u64,
     /// ループ再生するかどうか
@@ -16,6 +20,7 @@ impl ClipPlayer {
     pub fn new(clip: CompiledClip, looping: bool) -> Self {
         Self {
             clip,
+            pending_clip: None,
             current_tick: 0,
             looping,
         }
@@ -42,9 +47,36 @@ impl ClipPlayer {
         self.current_tick
     }
 
-    /// tickを進める
+    /// tickを進める。ループ頭到達時にpending_clipがあれば差し替える。
+    /// Advance tick. If pending_clip exists and loop boundary is reached, swap it in.
     pub fn advance(&mut self, ticks: u64) {
+        let old_tick = self.current_tick;
         self.current_tick += ticks;
+
+        // ループ頭検出: pending_clipがあり、ループ境界をまたいだら差し替え
+        // Detect loop boundary: swap pending_clip when crossing loop boundary
+        if self.looping && self.pending_clip.is_some() && self.clip.total_ticks > 0 {
+            let old_loop = old_tick / self.clip.total_ticks;
+            let new_loop = self.current_tick / self.clip.total_ticks;
+            if new_loop > old_loop {
+                self.clip = self.pending_clip.take().unwrap();
+                // ループ頭からの相対位置を維持
+                // Maintain relative position from loop start
+                self.current_tick %= self.clip.total_ticks;
+            }
+        }
+    }
+
+    /// 次ループ頭で差し替えるクリップをセットする（§7: 動的上書き）
+    /// Set a clip to replace the current one at the next loop boundary (§7: dynamic replacement)
+    pub fn replace_clip(&mut self, clip: CompiledClip) {
+        self.pending_clip = Some(clip);
+    }
+
+    /// 待機中のクリップがあるかどうか
+    /// Whether a pending clip is waiting for replacement
+    pub fn has_pending(&self) -> bool {
+        self.pending_clip.is_some()
     }
 
     /// ループ完了判定（looping=falseの場合のみtrue）
@@ -119,6 +151,14 @@ impl ScenePlayer {
     pub fn reset_all(&mut self) {
         for (_, player) in &mut self.players {
             player.reset();
+        }
+    }
+
+    /// 名前指定でクリップを動的差し替え（次ループ頭で切り替え）
+    /// Replace a clip by name (swapped at the next loop boundary)
+    pub fn replace_clip(&mut self, name: &str, clip: CompiledClip) {
+        if let Some((_, player)) = self.players.iter_mut().find(|(n, _)| n == name) {
+            player.replace_clip(clip);
         }
     }
 
@@ -331,5 +371,81 @@ mod tests {
         scene.reset_all();
         // all_doneはfalseに戻る（tick=0 < 480）
         assert!(!scene.all_done());
+    }
+
+    // --- 動的クリップ差し替えテスト ---
+
+    /// replace_clip後、次のループ頭で新クリップに切り替わることを検証
+    /// Verify that after replace_clip, the new clip takes effect at the next loop boundary
+    #[test]
+    fn clip_player_replace_at_loop_boundary() {
+        let clip_a = make_clip(vec![(0, note_on(60))], 480);
+        let clip_b = make_clip(vec![(0, note_on(72))], 480);
+        let mut player = ClipPlayer::new(clip_a, true);
+
+        // ループ中盤で差し替えをセット
+        player.advance(240);
+        player.replace_clip(clip_b);
+        assert!(player.has_pending());
+
+        // まだ切り替わっていない（tick=240, clip_aのイベント）
+        let events = player.events_at(240);
+        assert!(events.is_empty()); // tick 240にイベントなし
+
+        // ループ頭を超える
+        player.advance(240); // tick = 480 → ループ頭到達
+
+        // 切り替わった後はclip_bのイベント（note=72）
+        assert!(!player.has_pending());
+        let events = player.events_at(player.current_tick());
+        assert_eq!(events.len(), 1);
+        assert!(matches!(
+            events[0].message,
+            MidiMessage::NoteOn { note: 72, .. }
+        ));
+    }
+
+    /// replace_clipなしでは従来通り動作することを検証
+    /// Verify that without replace_clip, behavior is unchanged
+    #[test]
+    fn clip_player_no_replace_normal_loop() {
+        let clip = make_clip(vec![(0, note_on(60))], 480);
+        let mut player = ClipPlayer::new(clip, true);
+
+        assert!(!player.has_pending());
+        player.advance(480);
+        // ループしてtick 0 に戻る（ただしcurrent_tickは480）
+        let events = player.events_at(480);
+        assert_eq!(events.len(), 1);
+        assert!(matches!(
+            events[0].message,
+            MidiMessage::NoteOn { note: 60, .. }
+        ));
+    }
+
+    /// ScenePlayer経由での動的クリップ差し替え
+    /// Dynamic clip replacement via ScenePlayer
+    #[test]
+    fn scene_player_replace_clip() {
+        let mut scene = ScenePlayer::new();
+        let clip_a = make_clip(vec![(0, note_on(60))], 480);
+        let clip_b = make_clip(vec![(0, note_on(72))], 480);
+
+        scene.add_clip("bass".to_string(), clip_a, true);
+
+        // tick=240で差し替え予約
+        scene.advance_all(240);
+        scene.replace_clip("bass", clip_b);
+
+        // ループ頭を超える
+        scene.advance_all(240);
+
+        // 切り替わっている
+        let events = scene.events_at(0);
+        assert_eq!(events.len(), 1);
+        assert!(matches!(
+            events[0].message,
+            MidiMessage::NoteOn { note: 72, .. }
+        ));
     }
 }
