@@ -17,6 +17,8 @@ fn parse_chord_suffix(input: &str) -> IResult<&str, ChordSuffix> {
         alt((
             |i| tag("mMaj7")(i).map(|(r, _)| (r, ChordSuffix::MinMaj7)),
             |i| tag("mM7")(i).map(|(r, _)| (r, ChordSuffix::MinMaj7)),
+            |i| tag("Maj7#5")(i).map(|(r, _)| (r, ChordSuffix::AugMaj7)),
+            |i| tag("M7#5")(i).map(|(r, _)| (r, ChordSuffix::AugMaj7)),
             |i| tag("Maj7")(i).map(|(r, _)| (r, ChordSuffix::Maj7)),
             |i| tag("M7")(i).map(|(r, _)| (r, ChordSuffix::Maj7)),
             |i| tag("m7b5")(i).map(|(r, _)| (r, ChordSuffix::Min7b5)),
@@ -317,6 +319,20 @@ mod tests {
                 }
             ))
         );
+    }
+
+    #[test]
+    fn test_aug_maj7_alias() {
+        let expected = NoteEvent::ChordName {
+            root: NoteName::Eb,
+            suffix: ChordSuffix::AugMaj7,
+            octave: Some(3),
+            duration: Some(2),
+            dotted: false,
+        };
+        // M7#5 と Maj7#5 は同じ AugMaj7
+        assert_eq!(parse_note_event("ebM7#5:3:2"), Ok(("", expected.clone())));
+        assert_eq!(parse_note_event("ebMaj7#5:3:2"), Ok(("", expected)));
     }
 
     // --- Rest tests ---

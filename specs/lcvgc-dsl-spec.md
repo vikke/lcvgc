@@ -848,6 +848,7 @@ Chord name suffixes:
 | `dim` | — | Diminished |
 | `dim7` | — | Diminished seventh |
 | `aug` | — | Augmented |
+| `M7#5` | `Maj7#5` | Augmented major seventh |
 | `m7b5` | — | Half-diminished |
 | `mM7` | `mMaj7` | Minor-major seventh |
 | `sus4` | — | Suspended fourth |

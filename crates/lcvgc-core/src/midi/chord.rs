@@ -20,6 +20,7 @@ pub fn chord_intervals(suffix: &ChordSuffix) -> Vec<u8> {
         ChordSuffix::Dim => vec![0, 3, 6],
         ChordSuffix::Dim7 => vec![0, 3, 6, 9],
         ChordSuffix::Aug => vec![0, 4, 8],
+        ChordSuffix::AugMaj7 => vec![0, 4, 8, 11],
         ChordSuffix::Min7b5 => vec![0, 3, 6, 10],
         ChordSuffix::MinMaj7 => vec![0, 3, 7, 11],
         ChordSuffix::Sus4 => vec![0, 5, 7],
@@ -127,6 +128,15 @@ mod tests {
         assert_eq!(
             chord_notes(NoteName::C, 4, &ChordSuffix::Aug),
             vec![60, 64, 68]
+        );
+    }
+
+    #[test]
+    fn aug_maj7() {
+        // C AugMaj7 = C, E, G#, B = [60, 64, 68, 71]
+        assert_eq!(
+            chord_notes(NoteName::C, 4, &ChordSuffix::AugMaj7),
+            vec![60, 64, 68, 71]
         );
     }
 

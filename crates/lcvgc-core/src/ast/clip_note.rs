@@ -28,6 +28,9 @@ pub enum ChordSuffix {
     /// オーギュメント
     /// Augmented
     Aug,
+    /// オーギュメントメジャーセブンス
+    /// Augmented major seventh
+    AugMaj7,
     /// マイナーセブンフラットファイブ（ハーフディミニッシュ）
     /// Minor seventh flat five (half-diminished)
     Min7b5,
