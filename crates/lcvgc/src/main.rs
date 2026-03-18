@@ -1,6 +1,6 @@
 mod cli;
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process;
 use std::sync::Arc;
 
@@ -41,7 +41,7 @@ fn resolve_config_path(cli_config: &Option<PathBuf>) -> (PathBuf, bool) {
 /// # Arguments
 /// * `config_path` - 設定ファイルのパス
 /// * `explicit` - --config で明示指定されたかどうか
-fn load_config(config_path: &PathBuf, explicit: bool) -> Config {
+fn load_config(config_path: &Path, explicit: bool) -> Config {
     match Config::load(config_path) {
         Ok(config) => {
             if config_path.exists() {
