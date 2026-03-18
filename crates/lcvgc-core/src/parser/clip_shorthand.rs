@@ -34,6 +34,23 @@ pub struct ResolvedNote {
     pub dotted: bool,
 }
 
+/// 省略記法から解決された音価情報を保持する構造体（オクターブを含まない）。
+/// Rest や ChordBracket など、音価のみキャリーする要素で使用する。
+///
+/// Holds resolved duration information from shorthand notation (without octave).
+/// Used for elements that only carry duration, such as Rest and ChordBracket.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ResolvedDuration {
+    /// 解決後の音価（分母表記）
+    ///
+    /// Resolved duration in denominator notation
+    pub duration: u16,
+    /// 付点の有無
+    ///
+    /// Whether the note is dotted
+    pub dotted: bool,
+}
+
 impl CarryOverState {
     /// 新しい `CarryOverState` をデフォルト値（octave=4, duration=4）で生成する。
     ///
@@ -80,6 +97,36 @@ impl CarryOverState {
         }
         ResolvedNote {
             octave: self.octave,
+            duration: self.duration,
+            dotted,
+        }
+    }
+
+    /// 音価のみを解決し、内部の duration 状態を更新する。octave は変更しない。
+    /// Rest や ChordBracket など、オクターブのキャリーが不要な要素向け。
+    ///
+    /// Resolves duration only, updating internal duration state. Octave is unchanged.
+    /// For elements like Rest and ChordBracket that don't carry octave.
+    ///
+    /// # 引数 / Arguments
+    ///
+    /// * `duration` - 音価。`None` の場合は前回の値を引き継ぐ / Duration value. If `None`, carries over from previous state.
+    /// * `dotted` - 付点の有無 / Whether the note is dotted.
+    ///
+    /// # 戻り値 / Returns
+    ///
+    /// 解決済みの音価情報 [`ResolvedDuration`]
+    ///
+    /// Resolved duration information as [`ResolvedDuration`].
+    pub fn resolve_duration_only(
+        &mut self,
+        duration: Option<u16>,
+        dotted: bool,
+    ) -> ResolvedDuration {
+        if let Some(dur) = duration {
+            self.duration = dur;
+        }
+        ResolvedDuration {
             duration: self.duration,
             dotted,
         }
@@ -212,6 +259,58 @@ mod tests {
                 octave: 3,
                 duration: 4,
                 dotted: true
+            }
+        );
+    }
+
+    #[test]
+    fn resolve_duration_only_updates_duration() {
+        let mut state = CarryOverState::new();
+        state.resolve(Some(5), Some(8), false);
+        let rd = state.resolve_duration_only(Some(16), false);
+        assert_eq!(
+            rd,
+            ResolvedDuration {
+                duration: 16,
+                dotted: false
+            }
+        );
+        // octave は変わらない / octave remains unchanged
+        assert_eq!(state.octave, 5);
+        assert_eq!(state.duration, 16);
+    }
+
+    #[test]
+    fn resolve_duration_only_carries_previous() {
+        let mut state = CarryOverState::new();
+        state.resolve(Some(3), Some(8), false);
+        let rd = state.resolve_duration_only(None, true);
+        assert_eq!(
+            rd,
+            ResolvedDuration {
+                duration: 8,
+                dotted: true
+            }
+        );
+        assert_eq!(state.octave, 3);
+    }
+
+    #[test]
+    fn resolve_then_duration_only_preserves_octave() {
+        let mut state = CarryOverState::new();
+        // resolve でoctave=5, duration=8 に設定
+        state.resolve(Some(5), Some(8), false);
+        // resolve_duration_only で duration のみ変更
+        let rd = state.resolve_duration_only(Some(4), false);
+        assert_eq!(rd.duration, 4);
+        // その後の resolve で octave=5 が保持されている
+        let note = state.resolve(None, None, false);
+        assert_eq!(
+            note,
+            ResolvedNote {
+                octave: 5,
+                duration: 4,
+                dotted: false
             }
         );
     }
