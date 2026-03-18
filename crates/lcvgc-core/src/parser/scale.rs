@@ -1,28 +1,28 @@
-use nom::{branch::alt, bytes::complete::tag_no_case, combinator::value, IResult};
+use nom::{branch::alt, bytes::complete::tag, combinator::value, IResult};
 
 use crate::ast::scale::{ScaleDef, ScaleType};
 use crate::parser::common::{note_name, ws1};
 
-/// スケール種別キーワードをパースする（大文字小文字を区別しない）。
-/// Parse a scale type keyword (case-insensitive).
+/// スケール種別キーワードをパースする（小文字のみ）。
+/// Parse a scale type keyword (lowercase only).
 fn scale_type(input: &str) -> IResult<&str, ScaleType> {
     alt((
-        value(ScaleType::HarmonicMinor, tag_no_case("harmonic_minor")),
-        value(ScaleType::MelodicMinor, tag_no_case("melodic_minor")),
-        value(ScaleType::Mixolydian, tag_no_case("mixolydian")),
-        value(ScaleType::Minor, tag_no_case("minor")),
-        value(ScaleType::Major, tag_no_case("major")),
-        value(ScaleType::Dorian, tag_no_case("dorian")),
-        value(ScaleType::Phrygian, tag_no_case("phrygian")),
-        value(ScaleType::Lydian, tag_no_case("lydian")),
-        value(ScaleType::Locrian, tag_no_case("locrian")),
+        value(ScaleType::HarmonicMinor, tag("harmonic_minor")),
+        value(ScaleType::MelodicMinor, tag("melodic_minor")),
+        value(ScaleType::Mixolydian, tag("mixolydian")),
+        value(ScaleType::Minor, tag("minor")),
+        value(ScaleType::Major, tag("major")),
+        value(ScaleType::Dorian, tag("dorian")),
+        value(ScaleType::Phrygian, tag("phrygian")),
+        value(ScaleType::Lydian, tag("lydian")),
+        value(ScaleType::Locrian, tag("locrian")),
     ))(input)
 }
 
 /// スケール定義をパースする: `scale <root> <type>`
 /// Parse `scale <root> <type>`.
 pub fn parse_scale(input: &str) -> IResult<&str, ScaleDef> {
-    let (input, _) = tag_no_case("scale")(input)?;
+    let (input, _) = tag("scale")(input)?;
     let (input, _) = ws1(input)?;
     let (input, root) = note_name(input)?;
     let (input, _) = ws1(input)?;
