@@ -234,12 +234,46 @@ fn compile_elements(
                 }
             },
             PitchedElement::ChordBracket {
-                duration, dotted, ..
+                notes,
+                duration,
+                dotted,
+                articulation,
+                arpeggio: _, // TODO: アルペジオ対応
             } => {
-                // TODO: 和音ブラケット展開
+                // 和音ブラケット→同時発音のNoteOn/NoteOff生成
+                // Chord bracket → generate simultaneous NoteOn/NoteOff events
                 let dur = duration.unwrap_or(*current_duration);
                 *current_duration = dur;
+
                 let note_ticks = clock.duration_to_ticks(dur, *dotted);
+                let gate_percent = resolve_gate_percent(articulation, gate_normal, gate_staccato);
+                let gate_ticks = if gate_percent == 100 {
+                    note_ticks
+                } else {
+                    note_ticks * gate_percent as u64 / 100
+                };
+
+                for &(name, oct_opt) in notes {
+                    let oct = oct_opt.unwrap_or(*current_octave);
+                    let note = note_number(name, oct);
+                    events.push(MidiEvent {
+                        tick: *current_tick,
+                        message: MidiMessage::NoteOn {
+                            channel,
+                            note,
+                            velocity: 100,
+                        },
+                    });
+                    events.push(MidiEvent {
+                        tick: *current_tick + gate_ticks,
+                        message: MidiMessage::NoteOff {
+                            channel,
+                            note,
+                            velocity: 0,
+                        },
+                    });
+                }
+
                 *current_tick += note_ticks;
             }
             PitchedElement::Repetition(rep) => {
@@ -1071,5 +1105,177 @@ mod tests {
             .filter(|e| e.tick == 480 && matches!(e.message, MidiMessage::NoteOn { .. }))
             .collect();
         assert_eq!(second_round.len(), 4);
+    }
+
+    // --- ChordBracket コンパイルテスト ---
+
+    /// [c:4 eb g bb]:2 → 4音同時発音、gate80%
+    /// [c:4 eb g bb]:2 → 4 simultaneous notes, gate 80%
+    #[test]
+    fn chord_bracket_basic() {
+        let registry = make_registry_with_bass();
+        let clock = Clock::new(120.0);
+        let clip = make_pitched_clip(
+            "test",
+            None,
+            vec![PitchedLine {
+                instrument: "bass".to_string(),
+                elements: vec![PitchedElement::ChordBracket {
+                    notes: vec![
+                        (NoteName::C, Some(4)),
+                        (NoteName::Eb, None),
+                        (NoteName::G, None),
+                        (NoteName::Bb, None),
+                    ],
+                    duration: Some(2),
+                    dotted: false,
+                    articulation: Articulation::Normal,
+                    arpeggio: None,
+                }],
+            }],
+        );
+
+        let compiled = compile_clip(&clip, &clock, &registry).unwrap();
+        let note_ons: Vec<_> = compiled
+            .events
+            .iter()
+            .filter(|e| matches!(e.message, MidiMessage::NoteOn { .. }))
+            .collect();
+        assert_eq!(note_ons.len(), 4);
+
+        let notes: Vec<u8> = note_ons
+            .iter()
+            .map(|e| match e.message {
+                MidiMessage::NoteOn { note, .. } => note,
+                _ => unreachable!(),
+            })
+            .collect();
+        // C4=60, Eb4=63, G4=67, Bb4=70
+        assert_eq!(notes, vec![60, 63, 67, 70]);
+
+        // 全NoteOnは同一tick(0)
+        assert!(note_ons.iter().all(|e| e.tick == 0));
+
+        // gate 80%: 半音符=960ticks, 960*80%=768
+        let note_offs: Vec<_> = compiled
+            .events
+            .iter()
+            .filter(|e| matches!(e.message, MidiMessage::NoteOff { .. }))
+            .collect();
+        assert_eq!(note_offs.len(), 4);
+        assert!(note_offs.iter().all(|e| e.tick == 768));
+    }
+
+    /// スタッカート時のgate40%検証
+    /// Verify gate 40% with staccato articulation on chord bracket
+    #[test]
+    fn chord_bracket_staccato() {
+        let registry = make_registry_with_bass();
+        let clock = Clock::new(120.0);
+        let clip = make_pitched_clip(
+            "test",
+            None,
+            vec![PitchedLine {
+                instrument: "bass".to_string(),
+                elements: vec![PitchedElement::ChordBracket {
+                    notes: vec![
+                        (NoteName::C, Some(4)),
+                        (NoteName::E, None),
+                        (NoteName::G, None),
+                    ],
+                    duration: Some(4),
+                    dotted: false,
+                    articulation: Articulation::Staccato,
+                    arpeggio: None,
+                }],
+            }],
+        );
+
+        let compiled = compile_clip(&clip, &clock, &registry).unwrap();
+        // gate_staccato=40%, 480*40%=192
+        let note_offs: Vec<_> = compiled
+            .events
+            .iter()
+            .filter(|e| matches!(e.message, MidiMessage::NoteOff { .. }))
+            .collect();
+        assert!(note_offs.iter().all(|e| e.tick == 192));
+    }
+
+    /// duration引き継ぎ検証
+    /// Verify duration carry forward from chord bracket
+    #[test]
+    fn chord_bracket_carry_forward() {
+        let registry = make_registry_with_bass();
+        let clock = Clock::new(120.0);
+        // ChordBracket(dur=8) → Single(dur=None) → dur=8を引き継ぐべき
+        let clip = make_pitched_clip(
+            "test",
+            None,
+            vec![PitchedLine {
+                instrument: "bass".to_string(),
+                elements: vec![
+                    PitchedElement::ChordBracket {
+                        notes: vec![(NoteName::C, Some(3)), (NoteName::E, None)],
+                        duration: Some(8),
+                        dotted: false,
+                        articulation: Articulation::Normal,
+                        arpeggio: None,
+                    },
+                    single_note(NoteName::G, None, None, false),
+                ],
+            }],
+        );
+
+        let compiled = compile_clip(&clip, &clock, &registry).unwrap();
+        // ChordBracket: 2音 + Single: 1音 = 3 NoteOn
+        let note_ons: Vec<_> = compiled
+            .events
+            .iter()
+            .filter(|e| matches!(e.message, MidiMessage::NoteOn { .. }))
+            .collect();
+        assert_eq!(note_ons.len(), 3);
+
+        // 後続 G は8分音符=240ticks後に開始
+        let g_note = note_ons.last().unwrap();
+        assert_eq!(g_note.tick, 240);
+    }
+
+    /// 個別オクターブ指定検証
+    /// Verify individual octave specification in chord bracket
+    #[test]
+    fn chord_bracket_individual_octave() {
+        let registry = make_registry_with_bass();
+        let clock = Clock::new(120.0);
+        // [c:3 e:5 g:4] — 各音が個別のオクターブ
+        let clip = make_pitched_clip(
+            "test",
+            None,
+            vec![PitchedLine {
+                instrument: "bass".to_string(),
+                elements: vec![PitchedElement::ChordBracket {
+                    notes: vec![
+                        (NoteName::C, Some(3)),
+                        (NoteName::E, Some(5)),
+                        (NoteName::G, Some(4)),
+                    ],
+                    duration: Some(4),
+                    dotted: false,
+                    articulation: Articulation::Normal,
+                    arpeggio: None,
+                }],
+            }],
+        );
+
+        let compiled = compile_clip(&clip, &clock, &registry).unwrap();
+        let notes: Vec<u8> = compiled
+            .events
+            .iter()
+            .filter_map(|e| match e.message {
+                MidiMessage::NoteOn { note, .. } => Some(note),
+                _ => None,
+            })
+            .collect();
+        // C3=48, E5=76, G4=67
+        assert_eq!(notes, vec![48, 76, 67]);
     }
 }
