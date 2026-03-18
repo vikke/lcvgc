@@ -221,3 +221,113 @@ fn e2e_file_load() {
     assert_eq!(results.len(), 2);
     assert!(matches!(results[0], EvalResult::TempoChanged(130.0)));
 }
+
+/// ピッチドクリップの繰り返し ()*N がコンパイルされ正しいノート数を生成するE2Eテスト
+///
+/// E2E test: pitched clip repetition ()*N compiles to correct note count
+#[test]
+fn e2e_pitched_repetition() {
+    let mut ev = Evaluator::new(120.0);
+    let source = r#"
+device synth {
+  port Virtual MIDI
+}
+
+instrument bass {
+  device synth
+  channel 1
+}
+
+clip rep_test [bars 2] {
+  bass (c:3:8 c eb)*4
+}
+"#;
+    ev.eval_source(source).unwrap();
+
+    let clip = ev.registry().get_clip("rep_test").unwrap();
+    let compiled = compile_clip(clip, ev.clock(), ev.registry()).unwrap();
+
+    // 3 notes * 4 reps = 12 NoteOn events
+    let note_on_count = compiled
+        .events
+        .iter()
+        .filter(|e| matches!(e.message, MidiMessage::NoteOn { .. }))
+        .count();
+    assert_eq!(note_on_count, 12);
+}
+
+/// ドラムクリップの繰り返し ()*N がパース・コンパイルされ正しいヒット数を生成するE2Eテスト
+///
+/// E2E test: drum clip repetition ()*N parses and compiles to correct hit count
+#[test]
+fn e2e_drum_repetition() {
+    let mut ev = Evaluator::new(120.0);
+    let source = r#"
+device drums_dev {
+  port Drums
+}
+
+kit tr808 {
+  device drums_dev
+  bd { channel 10, note c2 }
+  hh { channel 10, note f#2 }
+}
+
+clip drum_rep [bars 1] {
+  use tr808
+  resolution 16
+  hh (x.x.)*4
+}
+"#;
+    ev.eval_source(source).unwrap();
+
+    let clip = ev.registry().get_clip("drum_rep").unwrap();
+    let compiled = compile_clip(clip, ev.clock(), ev.registry()).unwrap();
+
+    // (x.x.)*4 → x.x.x.x.x.x.x.x. = 8 Normal hits
+    let note_on_count = compiled
+        .events
+        .iter()
+        .filter(|e| matches!(e.message, MidiMessage::NoteOn { .. }))
+        .count();
+    assert_eq!(note_on_count, 8);
+}
+
+/// ピッチドクリップの繰り返しでオクターブ・音長が引き継がれるE2Eテスト
+///
+/// E2E test: pitched repetition carries octave and duration across iterations
+#[test]
+fn e2e_pitched_repetition_state_carry() {
+    let mut ev = Evaluator::new(120.0);
+    let source = r#"
+device synth {
+  port Virtual MIDI
+}
+
+instrument bass {
+  device synth
+  channel 1
+}
+
+clip carry_test [bars 2] {
+  bass (c:3:8)*2
+}
+"#;
+    ev.eval_source(source).unwrap();
+
+    let clip = ev.registry().get_clip("carry_test").unwrap();
+    let compiled = compile_clip(clip, ev.clock(), ev.registry()).unwrap();
+
+    // 2 NoteOn events, both C3 = note 48
+    let note_ons: Vec<_> = compiled
+        .events
+        .iter()
+        .filter(|e| matches!(e.message, MidiMessage::NoteOn { .. }))
+        .collect();
+    assert_eq!(note_ons.len(), 2);
+    for ev in &note_ons {
+        assert!(matches!(ev.message, MidiMessage::NoteOn { note: 48, .. }));
+    }
+    // 2nd note at tick 240 (8th note at 120bpm)
+    assert_eq!(note_ons[1].tick, 240);
+}
