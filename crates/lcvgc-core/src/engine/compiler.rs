@@ -17,12 +17,16 @@ pub struct MidiEvent {
 }
 
 /// コンパイル済みクリップ
+/// Compiled clip containing MIDI events and metadata
 #[derive(Debug, Clone)]
 pub struct CompiledClip {
     /// tick順にソート済みイベントリスト
     pub events: Vec<MidiEvent>,
     /// クリップの全体長（tick単位）
     pub total_ticks: u64,
+    /// コンパイル時の警告メッセージ（bars超過など）
+    /// Warning messages generated during compilation (e.g., bars overflow)
+    pub warnings: Vec<String>,
 }
 
 /// クリップ定義をtickベースMIDIイベント列にコンパイルする
@@ -36,10 +40,21 @@ pub fn compile_clip(
         ClipBody::Drum(body) => compile_drum(body, clock, registry)?,
     };
 
+    let mut warnings = Vec::new();
+
     // bars制約の適用
     let total_ticks = if let Some(bars) = clip.options.bars {
         let bar_ticks = clock.ticks_per_bar();
         let max_ticks = bar_ticks * bars as u64;
+        // bars超過検出: 超過イベントがあればワーニング生成
+        // Detect bars overflow: generate warning if events exceed bar limit
+        let overflow_count = events.iter().filter(|e| e.tick >= max_ticks).count();
+        if overflow_count > 0 {
+            warnings.push(format!(
+                "clip '{}': bars={} を超過するイベントが {}個あり、切り捨てられました",
+                clip.name, bars, overflow_count
+            ));
+        }
         // 超過イベントを切り捨て
         events.retain(|e| e.tick < max_ticks);
         max_ticks
@@ -60,6 +75,7 @@ pub fn compile_clip(
     Ok(CompiledClip {
         events,
         total_ticks,
+        warnings,
     })
 }
 
@@ -612,6 +628,9 @@ mod tests {
             .filter(|e| matches!(e.message, MidiMessage::NoteOn { note: 62, .. }))
             .collect();
         assert!(d_events.is_empty());
+        // bars超過時にワーニングが生成される
+        assert_eq!(compiled.warnings.len(), 1);
+        assert!(compiled.warnings[0].contains("超過"));
     }
 
     #[test]
@@ -629,6 +648,8 @@ mod tests {
 
         let compiled = compile_clip(&clip, &clock, &registry).unwrap();
         assert_eq!(compiled.total_ticks, 3840);
+        // bars未超過時はワーニングなし
+        assert!(compiled.warnings.is_empty());
     }
 
     #[test]
