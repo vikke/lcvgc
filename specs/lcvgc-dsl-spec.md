@@ -967,6 +967,23 @@ clip drums_a [bars 1] {
 - Digits at positions without hits are ignored
 - If the probability row is omitted, everything is 100%
 - The probability check is performed on every loop iteration
+- `|` shorthand is supported. `|` fills with `.` (100%) up to the next beat boundary. Same expansion rules as hit rows
+- `()*N` repetition is supported. Same expansion rules as hit rows
+
+```
+clip drums_a [bars 1] {
+  use tr808
+  resolution 16
+
+  // Align probability rows with |
+  bd    x|x|x|x
+        .5|.7|.3|.5|
+
+  // Repeat probability patterns with ()*N
+  hh    (x.o.)*4
+        (..5.)*4
+}
+```
 
 ### 7.14 CC Automation
 
