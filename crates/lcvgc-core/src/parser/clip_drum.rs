@@ -243,4 +243,60 @@ mod tests {
         let err = parse_probability_row("..a..").unwrap_err();
         assert!(err.contains("unknown probability symbol: 'a'"));
     }
+
+    // --- expand_pipe: 確率行テスト / probability row tests ---
+
+    /// 確率行の `|` ショートカットが正しく展開されることを検証する。
+    /// `.5|.7|` (beats_per_step=4) → `.5..` で4文字境界、`.7..` で次の境界。
+    ///
+    /// Verify `|` shorthand expansion for probability rows.
+    /// `.5|.7|` (beats_per_step=4) → `.5..` to 4-char boundary, `.7..` to next boundary.
+    #[test]
+    fn expand_pipe_probability_with_digits() {
+        // `.5` (len=2) + `|` → fill 2 dots → `.5..` (len=4)
+        // `.7` (len=6) + `|` → fill 2 dots → `.5...7..` (len=8)
+        assert_eq!(expand_pipe(".5|.7|", 4), ".5...7..");
+    }
+
+    /// 先頭パイプ付き確率行の展開を検証する。
+    /// `|5|7|` (beats_per_step=4) → 先頭 `|` で4文字分パディング。
+    ///
+    /// Verify expansion of probability row with leading pipe.
+    /// `|5|7|` (beats_per_step=4) → leading `|` pads to 4 chars.
+    #[test]
+    fn expand_pipe_probability_leading_pipe() {
+        // `|` at pos 0 → fill 4 → `....` (len=4)
+        // `5` → `.....5` wait, `....5` (len=5)
+        // `|` at pos 5 → next boundary=8, fill 3 → `....5...` (len=8)
+        // `7` → `....5...7` (len=9)
+        // `|` at pos 9 → next boundary=12, fill 3 → `....5...7...` (len=12)
+        assert_eq!(expand_pipe("|5|7|", 4), "....5...7...");
+    }
+
+    // --- expand_repetition: 確率行テスト / probability row tests ---
+
+    /// 確率行の `()*N` 繰り返しが正しく展開されることを検証する。
+    /// `(..5.)*4` → `..5.` を4回繰り返し → `..5...5...5...5.` (16文字)。
+    ///
+    /// Verify `()*N` repetition expansion for probability rows.
+    /// `(..5.)*4` → repeat `..5.` 4 times → `..5...5...5...5.` (16 chars).
+    #[test]
+    fn expand_repetition_probability() {
+        assert_eq!(expand_repetition("(..5.)*4"), "..5...5...5...5.");
+    }
+
+    /// 確率行の繰り返し展開後にパイプ展開をチェーンする。
+    /// `expand_repetition("(.5)*4")` → `.5.5.5.5`、
+    /// さらに `expand_pipe` を適用しても変化なし（パイプ文字なし）。
+    ///
+    /// Chain repetition expansion then pipe expansion for probability rows.
+    /// `expand_repetition("(.5)*4")` → `.5.5.5.5`,
+    /// then `expand_pipe` yields same result (no pipe chars).
+    #[test]
+    fn expand_repetition_probability_with_pipe() {
+        let expanded = expand_repetition("(.5)*4");
+        assert_eq!(expanded, ".5.5.5.5");
+        let final_result = expand_pipe(&expanded, 4);
+        assert_eq!(final_result, ".5.5.5.5");
+    }
 }

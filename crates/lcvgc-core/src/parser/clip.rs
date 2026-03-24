@@ -294,18 +294,43 @@ fn parse_drum_body(input: &str) -> IResult<&str, DrumClipBody> {
             }
         }
 
+        // 確率行を先に試行（識別子で始まらない行: `.`, `0`-`9`, `(`, `|` で始まる）
+        // Try probability row first (lines not starting with an identifier: `.`, `0`-`9`, `(`, `|`)
+        {
+            let first_ch = current.chars().next().unwrap_or('\0');
+            if (first_ch == '.' || first_ch.is_ascii_digit() || first_ch == '(' || first_ch == '|')
+                && !rows.is_empty()
+            {
+                let line_end = current.find('\n').unwrap_or(current.len());
+                let pattern = current[..line_end].trim();
+                let is_prob = !pattern.is_empty()
+                    && pattern
+                        .chars()
+                        .all(|c| c.is_ascii_digit() || matches!(c, '.' | '|' | '(' | ')' | '*'));
+                if is_prob {
+                    // 直前のドラム行に対する確率行（繰り返し・パイプ展開後にパース）
+                    // It's a probability row for the last drum row (expand repetition/pipe before parsing)
+                    let after_rep = expand_repetition(pattern);
+                    let expanded = expand_pipe(&after_rep, beats_per_step);
+                    let prob = parse_probability_row(&expanded).map_err(|_| {
+                        nom::Err::Failure(nom::error::Error::new(
+                            current,
+                            nom::error::ErrorKind::Char,
+                        ))
+                    })?;
+                    if let Some(last) = rows.last_mut() {
+                        last.probability = Some(prob);
+                    }
+                    current = &current[line_end..];
+                    continue;
+                }
+            }
+        }
+
         // 楽器名をパース
         // Parse instrument name
         let (r, inst_name) = identifier(current)?;
 
-        // これが確率行の開始かどうかを確認（すべて数字とドット、スペース後にアルファベットなし）
-        // 確率行は識別子で始まらない
-        // 実際には、確率行はインデントされ、数字/ドットで直接始まる
-        // inst_nameが楽器名として妥当かどうかを確認する
-        // Check if this is the start of a probability row (all digits and dots, no alpha after spaces)
-        // Probability rows don't start with an identifier
-        // Actually, probability rows are indented and start directly with digits/dots
-        // Let's check: if inst_name looks like it could be an instrument
         let (r, _) = ws(r)?;
 
         // 行末までパターンを読み取る
@@ -318,14 +343,18 @@ fn parse_drum_body(input: &str) -> IResult<&str, DrumClipBody> {
             continue;
         }
 
-        // 確率行かどうかを確認（すべての文字が0-9または.）
-        // Check if this could be a probability row (all chars are 0-9 or .)
-        let is_prob = pattern.chars().all(|c| c.is_ascii_digit() || c == '.');
+        // 確率行かどうかを確認（すべての文字が0-9、`.`、`|`、`(`、`)`、`*`）
+        // Check if this could be a probability row (all chars are 0-9, `.`, `|`, `(`, `)`, `*`)
+        let is_prob = pattern
+            .chars()
+            .all(|c| c.is_ascii_digit() || matches!(c, '.' | '|' | '(' | ')' | '*'));
 
         if is_prob && !rows.is_empty() {
-            // 直前のドラム行に対する確率行
-            // It's a probability row for the last drum row
-            let prob = parse_probability_row(pattern).map_err(|_| {
+            // 直前のドラム行に対する確率行（繰り返し・パイプ展開後にパース）
+            // It's a probability row for the last drum row (expand repetition/pipe before parsing)
+            let after_rep = expand_repetition(pattern);
+            let expanded = expand_pipe(&after_rep, beats_per_step);
+            let prob = parse_probability_row(&expanded).map_err(|_| {
                 nom::Err::Failure(nom::error::Error::new(current, nom::error::ErrorKind::Char))
             })?;
             if let Some(last) = rows.last_mut() {
