@@ -253,8 +253,6 @@ mod tests {
     /// `.5|.7|` (beats_per_step=4) → `.5..` to 4-char boundary, `.7..` to next boundary.
     #[test]
     fn expand_pipe_probability_with_digits() {
-        // `.5` (len=2) + `|` → fill 2 dots → `.5..` (len=4)
-        // `.7` (len=6) + `|` → fill 2 dots → `.5...7..` (len=8)
         assert_eq!(expand_pipe(".5|.7|", 4), ".5...7..");
     }
 
@@ -265,11 +263,6 @@ mod tests {
     /// `|5|7|` (beats_per_step=4) → leading `|` pads to 4 chars.
     #[test]
     fn expand_pipe_probability_leading_pipe() {
-        // `|` at pos 0 → fill 4 → `....` (len=4)
-        // `5` → `.....5` wait, `....5` (len=5)
-        // `|` at pos 5 → next boundary=8, fill 3 → `....5...` (len=8)
-        // `7` → `....5...7` (len=9)
-        // `|` at pos 9 → next boundary=12, fill 3 → `....5...7...` (len=12)
         assert_eq!(expand_pipe("|5|7|", 4), "....5...7...");
     }
 
@@ -286,17 +279,38 @@ mod tests {
     }
 
     /// 確率行の繰り返し展開後にパイプ展開をチェーンする。
-    /// `expand_repetition("(.5)*4")` → `.5.5.5.5`、
-    /// さらに `expand_pipe` を適用しても変化なし（パイプ文字なし）。
     ///
     /// Chain repetition expansion then pipe expansion for probability rows.
-    /// `expand_repetition("(.5)*4")` → `.5.5.5.5`,
-    /// then `expand_pipe` yields same result (no pipe chars).
     #[test]
     fn expand_repetition_probability_with_pipe() {
         let expanded = expand_repetition("(.5)*4");
         assert_eq!(expanded, ".5.5.5.5");
         let final_result = expand_pipe(&expanded, 4);
         assert_eq!(final_result, ".5.5.5.5");
+    }
+
+    // --- スペース除去後のパーステスト ---
+    // --- Tests for parsing after space stripping ---
+
+    #[test]
+    fn hit_symbols_spaces_stripped_before_parse() {
+        // スペース除去後のパターンが正しくパースされることを確認
+        // Verify that pattern with spaces stripped is parsed correctly
+        let with_spaces = "x.   x.  x.   x.";
+        let stripped: String = with_spaces.chars().filter(|c| *c != ' ').collect();
+        let result = parse_hit_symbols(&stripped).unwrap();
+        assert_eq!(result.len(), 8);
+        assert_eq!(result[0], Normal);
+        assert_eq!(result[1], Rest);
+    }
+
+    #[test]
+    fn probability_spaces_stripped_before_parse() {
+        // スペース除去後の確率行が正しくパースされることを確認
+        // Verify that probability row with spaces stripped is parsed correctly
+        let with_spaces = ". .  5 . . . 7 .";
+        let stripped: String = with_spaces.chars().filter(|c| *c != ' ').collect();
+        let result = parse_probability_row(&stripped).unwrap();
+        assert_eq!(result, vec![100, 100, 50, 100, 100, 100, 70, 100]);
     }
 }

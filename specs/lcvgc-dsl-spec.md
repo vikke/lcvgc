@@ -922,6 +922,15 @@ clip drums_a [bars 1] {
 | `o` | Ghost note | 40 |
 | `.` | Rest | - |
 
+Spaces within pattern strings are ignored. You can freely insert spaces for readability.
+
+```
+// All equivalent
+bd    x...x...x...x...
+bd    x.  x.  x.  x.  x.  x.  x.  x.
+bd    x...  x...  x...  x...
+```
+
 #### `|` Shortcut
 
 `|` fills from the current position to the next beat boundary (every 4 characters at resolution 16) with rests `.`.
@@ -969,6 +978,7 @@ clip drums_a [bars 1] {
 - The probability check is performed on every loop iteration
 - `|` shorthand is supported. `|` fills with `.` (100%) up to the next beat boundary. Same expansion rules as hit rows
 - `()*N` repetition is supported. Same expansion rules as hit rows
+- Spaces within the pattern string are ignored. You can freely insert spaces just like in hit rows
 
 ```
 clip drums_a [bars 1] {

@@ -457,3 +457,60 @@ clip beat2 [bars 1] {
         _ => panic!("expected Drum clip body"),
     }
 }
+
+/// ドラムパターン内のスペースが無視されてパースされることを確認するE2Eテスト
+///
+/// E2E test: verify that spaces within drum patterns are ignored during parsing
+#[test]
+fn e2e_drum_pattern_with_spaces() {
+    let source = r#"
+device drums_dev {
+  port Drums
+}
+
+kit tr808 {
+  device drums_dev
+  bd    { channel 10, note c2 }
+  snare { channel 10, note d2 }
+  hh    { channel 10, note f#2 }
+}
+
+clip beat_sp [bars 1] {
+  use tr808
+  resolution 16
+
+  bd    x.  x.  x.  x.  x.  x.  x.  x.
+  snare . . . . x . . . . . . . x . . .
+  hh    x . o . x . o . x . o . x . o .
+        . . 5 . . . 7 . . . 3 . . . 5 .
+}
+"#;
+    let mut ev = Evaluator::new(120.0);
+    let results = ev.eval_source(source).unwrap();
+    assert_eq!(results.len(), 3); // device, kit, clip
+
+    let clip = ev.registry().get_clip("beat_sp").unwrap();
+    if let ClipBody::Drum(body) = &clip.body {
+        assert_eq!(body.rows.len(), 3);
+        // bd: 16ヒット / 16 hits
+        assert_eq!(body.rows[0].hits.len(), 16);
+        assert_eq!(body.rows[0].instrument, "bd");
+        // snare: 16ヒット / 16 hits
+        assert_eq!(body.rows[1].hits.len(), 16);
+        // hh: 16ヒット + 確率行付き / 16 hits with probability
+        assert_eq!(body.rows[2].hits.len(), 16);
+        assert!(body.rows[2].probability.is_some());
+        let prob = body.rows[2].probability.as_ref().unwrap();
+        assert_eq!(prob.len(), 16);
+        assert_eq!(prob[2], 50); // '5' = 50%
+        assert_eq!(prob[6], 70); // '7' = 70%
+        assert_eq!(prob[10], 30); // '3' = 30%
+    } else {
+        panic!("Expected drum clip");
+    }
+
+    // コンパイルも成功することを確認
+    // Verify compilation also succeeds
+    let compiled = compile_clip(clip, ev.clock(), ev.registry());
+    assert!(compiled.is_ok());
+}
