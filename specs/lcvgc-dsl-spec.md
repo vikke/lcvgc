@@ -97,6 +97,7 @@ OPTIONS:
   --midi-device <name>   MIDI output device name. Omit for system default
   --log-level <level>    Log level (error, warn, info, debug). Default: info
   --config <path>        Config file path. Default: ~/.config/lcvgc/config.toml
+  --watch <path>         Watch the given path for file changes and re-evaluate automatically (hot reload)
   -V, --version          Show version
   -h, --help             Show help
 ```

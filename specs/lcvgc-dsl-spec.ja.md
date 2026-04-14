@@ -97,6 +97,7 @@ OPTIONS:
   --midi-device <name>   MIDI出力デバイス名。省略でシステムデフォルト
   --log-level <level>    ログレベル (error, warn, info, debug)。デフォルト: info
   --config <path>        設定ファイルパス。デフォルト: ~/.config/lcvgc/config.toml
+  --watch <path>         指定パスのファイル変更を監視し、変更時に自動で再評価する（ホットリロード）
   -V, --version          バージョン表示
   -h, --help             ヘルプ表示
 ```
