@@ -12,4 +12,5 @@ pub mod scope;
 pub mod session_runner;
 pub mod shuffle;
 pub mod state;
+pub mod tick_loop;
 pub mod watcher;
