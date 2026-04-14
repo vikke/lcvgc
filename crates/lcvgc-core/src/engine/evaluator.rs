@@ -16,7 +16,7 @@ use crate::engine::registry::Registry;
 use crate::engine::resolver;
 use crate::engine::scene_runner::resolve_scene;
 use crate::engine::scope::ScopeChain;
-use crate::engine::state::{PlaybackCommand, StateManager};
+use crate::engine::state::{NextAction, PlaybackCommand, StateManager};
 
 /// eval結果
 #[derive(Debug, Clone, PartialEq)]
@@ -45,6 +45,27 @@ pub enum EvalResult {
         /// スキップされたファイルパス / Path of the skipped file
         path: String,
     },
+}
+
+/// シーンループ完了通知 (`on_scene_loop_complete`) の結果
+/// Outcome returned by `on_scene_loop_complete`
+#[derive(Debug, Clone, PartialEq)]
+pub enum SceneTransitionOutcome {
+    /// 同じシーンを継続再生
+    /// Keep playing the same scene
+    Continue,
+    /// 次のシーンへ遷移（new active_scene が構築済み）
+    /// Transitioned to the next scene (new active_scene has been built)
+    NextScene {
+        /// 次のシーン名 / Name of the next scene
+        scene_name: String,
+    },
+    /// シーン完了（停止、active_scene は解放）
+    /// Scene completed — playback stopped, active_scene cleared
+    SceneComplete,
+    /// セッション完了（停止、active_scene は解放）
+    /// Session completed — playback stopped, active_scene cleared
+    SessionComplete,
 }
 
 /// evalコマンドディスパッチャ
@@ -89,6 +110,45 @@ impl Evaluator {
     /// Takes the ScenePlayer out, leaving None in the Evaluator
     pub fn take_active_scene(&mut self) -> Option<ScenePlayer> {
         self.active_scene.take()
+    }
+
+    /// シーンの1ループ完了を通知し、状態遷移と active_scene の差し替えを行う
+    ///
+    /// tick 境界検出は呼び出し側（driver/daemon）の責務。
+    /// 呼び出し側は `active_scene().scene_tick_length()` で1ループ長を取得し、
+    /// 境界越えを検出するたびに本メソッドを呼ぶ。
+    ///
+    /// Notifies that one scene loop has completed; advances state and swaps
+    /// `active_scene` as required. Tick-boundary detection is the caller's
+    /// responsibility (e.g. compare the driver's tick counter to
+    /// `scene_tick_length()`).
+    ///
+    /// # Errors
+    /// - `EngineError::UnknownScene` - 次シーンが registry に未登録
+    /// - `EngineError::UnknownClip` - 次シーン内の clip が未登録
+    pub fn on_scene_loop_complete(&mut self) -> Result<SceneTransitionOutcome, EngineError> {
+        let action = self.state.scene_loop_complete();
+        match action {
+            NextAction::ContinueScene => Ok(SceneTransitionOutcome::Continue),
+            NextAction::SceneComplete => {
+                self.active_scene = None;
+                Ok(SceneTransitionOutcome::SceneComplete)
+            }
+            NextAction::SessionComplete => {
+                self.active_scene = None;
+                Ok(SceneTransitionOutcome::SessionComplete)
+            }
+            NextAction::NextSessionEntry { scene_name } => {
+                let scene_def = self
+                    .registry
+                    .get_scene(&scene_name)
+                    .ok_or_else(|| EngineError::UnknownScene(scene_name.clone()))?
+                    .clone();
+                let player = self.build_scene_player(&scene_def)?;
+                self.active_scene = Some(player);
+                Ok(SceneTransitionOutcome::NextScene { scene_name })
+            }
+        }
     }
 
     /// scene 定義と registry/clock からコンパイル済み ScenePlayer を構築する
@@ -238,6 +298,21 @@ impl Evaluator {
                         match self.registry.get_session(&name) {
                             Some(session_def) => {
                                 let def = session_def.clone();
+                                // Phase 4: 最初のエントリの scene を build して active_scene にセット
+                                // Phase 4: build the first entry's scene and set it as active
+                                if let Some(first) = def.entries.first() {
+                                    let scene_def = self
+                                        .registry
+                                        .get_scene(&first.scene)
+                                        .ok_or_else(|| {
+                                            EngineError::UnknownScene(first.scene.clone())
+                                        })?
+                                        .clone();
+                                    let player = self.build_scene_player(&scene_def)?;
+                                    self.active_scene = Some(player);
+                                } else {
+                                    self.active_scene = None;
+                                }
                                 self.state.apply_play_session(&def, cmd.repeat);
                             }
                             None => return Err(EngineError::UnknownSession(name)),
@@ -827,6 +902,200 @@ mod tests {
             }))
             .unwrap_err();
         assert!(matches!(err, EngineError::UnknownClip(ref n) if n == "ghost"));
+    }
+
+    /// Phase 4: session 内の最初の scene を build して active_scene にセット
+    /// Play(Session) builds the first entry's ScenePlayer as active_scene (Phase 4)
+    #[test]
+    fn eval_play_session_builds_first_scene() {
+        let mut ev = Evaluator::new(120.0);
+        // clip/scene/session を順番に登録
+        ev.eval_block(Block::Clip(ClipDef {
+            name: "a".into(),
+            options: ClipOptions::default(),
+            body: ClipBody::Pitched(PitchedClipBody {
+                lines: vec![],
+                cc_automations: vec![],
+            }),
+        }))
+        .unwrap();
+        ev.eval_block(Block::Scene(SceneDef {
+            name: "s1".into(),
+            entries: vec![crate::ast::scene::SceneEntry::Clip {
+                candidates: vec![crate::ast::scene::ShuffleCandidate {
+                    clip: "a".into(),
+                    weight: 1,
+                }],
+                probability: None,
+            }],
+        }))
+        .unwrap();
+        ev.eval_block(Block::Session(SessionDef {
+            name: "song".into(),
+            entries: vec![crate::ast::session::SessionEntry {
+                scene: "s1".into(),
+                repeat: crate::ast::session::SessionRepeat::Once,
+            }],
+        }))
+        .unwrap();
+
+        ev.eval_block(Block::Play(PlayCommand {
+            target: PlayTarget::Session("song".into()),
+            repeat: RepeatSpec::Once,
+        }))
+        .unwrap();
+        assert!(ev.active_scene().is_some());
+        assert_eq!(ev.active_scene().unwrap().clip_count(), 1);
+    }
+
+    /// Phase 4: on_scene_loop_complete が NextScene で active_scene を差し替える
+    /// on_scene_loop_complete swaps active_scene on NextScene (Phase 4)
+    #[test]
+    fn on_scene_loop_complete_transitions_to_next_scene() {
+        let mut ev = Evaluator::new(120.0);
+        // 2 clip + 2 scene + 2-entry session
+        for name in ["a", "b"] {
+            ev.eval_block(Block::Clip(ClipDef {
+                name: name.into(),
+                options: ClipOptions::default(),
+                body: ClipBody::Pitched(PitchedClipBody {
+                    lines: vec![],
+                    cc_automations: vec![],
+                }),
+            }))
+            .unwrap();
+        }
+        for (scene, clip) in [("s1", "a"), ("s2", "b")] {
+            ev.eval_block(Block::Scene(SceneDef {
+                name: scene.into(),
+                entries: vec![crate::ast::scene::SceneEntry::Clip {
+                    candidates: vec![crate::ast::scene::ShuffleCandidate {
+                        clip: clip.into(),
+                        weight: 1,
+                    }],
+                    probability: None,
+                }],
+            }))
+            .unwrap();
+        }
+        ev.eval_block(Block::Session(SessionDef {
+            name: "song".into(),
+            entries: vec![
+                crate::ast::session::SessionEntry {
+                    scene: "s1".into(),
+                    repeat: crate::ast::session::SessionRepeat::Once,
+                },
+                crate::ast::session::SessionEntry {
+                    scene: "s2".into(),
+                    repeat: crate::ast::session::SessionRepeat::Once,
+                },
+            ],
+        }))
+        .unwrap();
+        ev.eval_block(Block::Play(PlayCommand {
+            target: PlayTarget::Session("song".into()),
+            repeat: RepeatSpec::Once,
+        }))
+        .unwrap();
+
+        // 1ループ完了: SessionRunner.advance() が1回目に entries[0]=s1 を返すため
+        // NextScene{s1}（既に Play 時に build 済みだが再 build される）
+        // First loop complete: SessionRunner.advance() returns entries[0]=s1 first,
+        // so NextScene{s1} (already built at Play, but rebuilt here)
+        let outcome = ev.on_scene_loop_complete().unwrap();
+        assert_eq!(
+            outcome,
+            SceneTransitionOutcome::NextScene {
+                scene_name: "s1".into()
+            }
+        );
+
+        // 2ループ目 → NextScene{s2}
+        let outcome = ev.on_scene_loop_complete().unwrap();
+        assert_eq!(
+            outcome,
+            SceneTransitionOutcome::NextScene {
+                scene_name: "s2".into()
+            }
+        );
+        assert!(ev.active_scene().is_some());
+
+        // 3ループ目 → SessionComplete、active_scene が解放される
+        let outcome = ev.on_scene_loop_complete().unwrap();
+        assert_eq!(outcome, SceneTransitionOutcome::SessionComplete);
+        assert!(ev.active_scene().is_none());
+    }
+
+    /// Phase 4: PlayScene(Loop) 下の on_scene_loop_complete は Continue を返す
+    /// For PlayScene(Loop), on_scene_loop_complete returns Continue (Phase 4)
+    #[test]
+    fn on_scene_loop_complete_loop_returns_continue() {
+        let mut ev = Evaluator::new(120.0);
+        ev.eval_block(Block::Clip(ClipDef {
+            name: "a".into(),
+            options: ClipOptions::default(),
+            body: ClipBody::Pitched(PitchedClipBody {
+                lines: vec![],
+                cc_automations: vec![],
+            }),
+        }))
+        .unwrap();
+        ev.eval_block(Block::Scene(SceneDef {
+            name: "verse".into(),
+            entries: vec![crate::ast::scene::SceneEntry::Clip {
+                candidates: vec![crate::ast::scene::ShuffleCandidate {
+                    clip: "a".into(),
+                    weight: 1,
+                }],
+                probability: None,
+            }],
+        }))
+        .unwrap();
+        ev.eval_block(Block::Play(PlayCommand {
+            target: PlayTarget::Scene("verse".into()),
+            repeat: RepeatSpec::Loop,
+        }))
+        .unwrap();
+
+        let outcome = ev.on_scene_loop_complete().unwrap();
+        assert_eq!(outcome, SceneTransitionOutcome::Continue);
+        assert!(ev.active_scene().is_some());
+    }
+
+    /// Phase 4: PlayScene(Once) で on_scene_loop_complete は SceneComplete
+    /// For PlayScene(Once), returns SceneComplete and clears active_scene
+    #[test]
+    fn on_scene_loop_complete_once_returns_scene_complete() {
+        let mut ev = Evaluator::new(120.0);
+        ev.eval_block(Block::Clip(ClipDef {
+            name: "a".into(),
+            options: ClipOptions::default(),
+            body: ClipBody::Pitched(PitchedClipBody {
+                lines: vec![],
+                cc_automations: vec![],
+            }),
+        }))
+        .unwrap();
+        ev.eval_block(Block::Scene(SceneDef {
+            name: "verse".into(),
+            entries: vec![crate::ast::scene::SceneEntry::Clip {
+                candidates: vec![crate::ast::scene::ShuffleCandidate {
+                    clip: "a".into(),
+                    weight: 1,
+                }],
+                probability: None,
+            }],
+        }))
+        .unwrap();
+        ev.eval_block(Block::Play(PlayCommand {
+            target: PlayTarget::Scene("verse".into()),
+            repeat: RepeatSpec::Once,
+        }))
+        .unwrap();
+
+        let outcome = ev.on_scene_loop_complete().unwrap();
+        assert_eq!(outcome, SceneTransitionOutcome::SceneComplete);
+        assert!(ev.active_scene().is_none());
     }
 
     /// take_active_scene は ScenePlayer を奪い取り、Evaluator 側は None になる

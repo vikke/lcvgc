@@ -1,5 +1,25 @@
 use crate::engine::compiler::{CompiledClip, MidiEvent};
 
+/// 2つの u64 の最大公約数
+/// Greatest common divisor of two u64 values.
+fn gcd(a: u64, b: u64) -> u64 {
+    if b == 0 {
+        a
+    } else {
+        gcd(b, a % b)
+    }
+}
+
+/// 2つの u64 の最小公倍数（0 の場合は 0 を返す）
+/// Least common multiple of two u64 values (returns 0 if either is 0).
+fn lcm(a: u64, b: u64) -> u64 {
+    if a == 0 || b == 0 {
+        0
+    } else {
+        a / gcd(a, b) * b
+    }
+}
+
 /// 単一クリップの再生状態を管理するプレイヤー
 /// Player managing playback state for a single clip
 #[derive(Debug, Clone)]
@@ -118,6 +138,12 @@ impl ClipPlayer {
         self.current_tick = 0;
     }
 
+    /// このクリップの total_ticks を返す
+    /// Returns this clip's total_ticks.
+    pub fn total_ticks(&self) -> u64 {
+        self.clip.total_ticks
+    }
+
     /// ループ内の実効tick（total_ticksでmod）
     fn effective_tick(&self, tick: u64) -> u64 {
         if self.clip.total_ticks == 0 {
@@ -190,6 +216,29 @@ impl ScenePlayer {
     /// クリップ数
     pub fn clip_count(&self) -> usize {
         self.players.len()
+    }
+
+    /// シーン1ループ分の tick 長（内包クリップの total_ticks の LCM）
+    ///
+    /// ポリリズム時に全クリップが同時に頭に戻るまでの tick 数を返す。
+    /// クリップが空、または total_ticks=0 のクリップがある場合は 0 を返す。
+    ///
+    /// Returns the tick length of one scene loop — the LCM of every contained
+    /// clip's `total_ticks`. Returns 0 when the scene is empty or any contained
+    /// clip has total_ticks=0.
+    pub fn scene_tick_length(&self) -> u64 {
+        if self.players.is_empty() {
+            return 0;
+        }
+        let mut acc: u64 = 1;
+        for (_, p) in &self.players {
+            let t = p.total_ticks();
+            if t == 0 {
+                return 0;
+            }
+            acc = lcm(acc, t);
+        }
+        acc
     }
 
     /// 指定名のクリップをミュートする（未知名は no-op）
@@ -480,6 +529,32 @@ mod tests {
             events[0].message,
             MidiMessage::NoteOn { note: 60, .. }
         ));
+    }
+
+    // --- scene_tick_length テスト (#37 Phase 4) ---
+
+    /// 空 scene では 0 を返す
+    #[test]
+    fn scene_tick_length_empty_is_zero() {
+        let scene = ScenePlayer::new();
+        assert_eq!(scene.scene_tick_length(), 0);
+    }
+
+    /// 単一クリップでは そのクリップの total_ticks を返す
+    #[test]
+    fn scene_tick_length_single_clip() {
+        let mut scene = ScenePlayer::new();
+        scene.add_clip("a".to_string(), make_clip(vec![], 480), true);
+        assert_eq!(scene.scene_tick_length(), 480);
+    }
+
+    /// ポリリズム: 360 と 480 の LCM = 1440
+    #[test]
+    fn scene_tick_length_polyrhythm_lcm() {
+        let mut scene = ScenePlayer::new();
+        scene.add_clip("three".to_string(), make_clip(vec![], 360), true);
+        scene.add_clip("four".to_string(), make_clip(vec![], 480), true);
+        assert_eq!(scene.scene_tick_length(), 1440);
     }
 
     // --- ミュートAPIテスト (#37 Phase 1) ---
