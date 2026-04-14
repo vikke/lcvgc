@@ -6,11 +6,15 @@ use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
 use crate::ast::playback::PlayTarget;
+use crate::ast::scene::SceneDef;
 use crate::ast::Block;
 use crate::engine::clock::Clock;
+use crate::engine::compiler::compile_clip;
 use crate::engine::error::EngineError;
+use crate::engine::player::ScenePlayer;
 use crate::engine::registry::Registry;
 use crate::engine::resolver;
+use crate::engine::scene_runner::resolve_scene;
 use crate::engine::scope::ScopeChain;
 use crate::engine::state::{PlaybackCommand, StateManager};
 
@@ -52,6 +56,9 @@ pub struct Evaluator {
     /// 変数スコープチェーン（§6.1 ブロックスコープ対応）
     /// Variable scope chain (§6.1 block scope support)
     scope: ScopeChain,
+    /// 現在 play 中の ScenePlayer（Phase 3: PlayScene でコンパイル・構築）
+    /// Currently active ScenePlayer (Phase 3: built when PlayScene is evaluated)
+    active_scene: Option<ScenePlayer>,
 }
 
 impl Evaluator {
@@ -62,7 +69,54 @@ impl Evaluator {
             state: StateManager::new(),
             clock: Clock::new(bpm),
             scope: ScopeChain::new(),
+            active_scene: None,
         }
+    }
+
+    /// 現在 play 中の ScenePlayer への不変参照
+    /// Immutable reference to the currently active ScenePlayer (if any)
+    pub fn active_scene(&self) -> Option<&ScenePlayer> {
+        self.active_scene.as_ref()
+    }
+
+    /// 現在 play 中の ScenePlayer への可変参照（ミュート・差し替え用途）
+    /// Mutable reference to the currently active ScenePlayer
+    pub fn active_scene_mut(&mut self) -> Option<&mut ScenePlayer> {
+        self.active_scene.as_mut()
+    }
+
+    /// ScenePlayer を取り出す（Evaluator 側は None に戻る）
+    /// Takes the ScenePlayer out, leaving None in the Evaluator
+    pub fn take_active_scene(&mut self) -> Option<ScenePlayer> {
+        self.active_scene.take()
+    }
+
+    /// scene 定義と registry/clock からコンパイル済み ScenePlayer を構築する
+    ///
+    /// `resolve_scene` で 1 ループ分の clip 列を確定し、各 clip を
+    /// `compile_clip` で MIDI イベント列に変換して ScenePlayer に積む。
+    ///
+    /// Builds a ScenePlayer from a scene definition using the registry and clock.
+    /// `resolve_scene` picks the clips for one loop iteration, then each clip is
+    /// compiled and added to the ScenePlayer.
+    ///
+    /// # Errors
+    /// - `EngineError::UnknownClip` - scene 内で参照された clip が registry に未登録
+    fn build_scene_player(&self, scene_def: &SceneDef) -> Result<ScenePlayer, EngineError> {
+        let mut rng = rand::thread_rng();
+        let instance = resolve_scene(scene_def, &mut rng);
+        let mut player = ScenePlayer::new();
+        for clip_name in &instance.clips {
+            let clip_def = self
+                .registry
+                .get_clip(clip_name)
+                .ok_or_else(|| EngineError::UnknownClip(clip_name.clone()))?;
+            let compiled = compile_clip(clip_def, &self.clock, &self.registry)?;
+            // Phase 3 では scene 内の全 clip を looping=true として扱う
+            // Phase 3 treats all clips in a scene as looping=true
+            player.add_clip(clip_name.clone(), compiled, true);
+        }
+        Ok(player)
     }
 
     /// 単一ブロックを評価
@@ -164,6 +218,15 @@ impl Evaluator {
             Block::Play(cmd) => {
                 match cmd.target {
                     PlayTarget::Scene(name) => {
+                        // Phase 3: scene 定義を取り出して ScenePlayer を構築する
+                        // Phase 3: resolve the scene definition and build a ScenePlayer
+                        let scene_def = self
+                            .registry
+                            .get_scene(&name)
+                            .ok_or_else(|| EngineError::UnknownScene(name.clone()))?
+                            .clone();
+                        let player = self.build_scene_player(&scene_def)?;
+                        self.active_scene = Some(player);
                         self.state.apply_command(PlaybackCommand::PlayScene {
                             name,
                             repeat: cmd.repeat,
@@ -688,6 +751,28 @@ mod tests {
     #[test]
     fn eval_play_scene() {
         let mut ev = Evaluator::new(120.0);
+        // clip と scene を事前登録
+        // Register clip and scene beforehand
+        ev.eval_block(Block::Clip(ClipDef {
+            name: "a".into(),
+            options: ClipOptions::default(),
+            body: ClipBody::Pitched(PitchedClipBody {
+                lines: vec![],
+                cc_automations: vec![],
+            }),
+        }))
+        .unwrap();
+        ev.eval_block(Block::Scene(SceneDef {
+            name: "verse".into(),
+            entries: vec![crate::ast::scene::SceneEntry::Clip {
+                candidates: vec![crate::ast::scene::ShuffleCandidate {
+                    clip: "a".into(),
+                    weight: 1,
+                }],
+                probability: None,
+            }],
+        }))
+        .unwrap();
         let result = ev
             .eval_block(Block::Play(PlayCommand {
                 target: PlayTarget::Scene("verse".into()),
@@ -699,6 +784,85 @@ mod tests {
             ev.state().state(),
             PlaybackState::PlayingScene { .. }
         ));
+        // Phase 3: ScenePlayer が構築されている
+        // Phase 3: ScenePlayer has been built
+        assert!(ev.active_scene().is_some());
+        assert_eq!(ev.active_scene().unwrap().clip_count(), 1);
+    }
+
+    /// 未登録シーン名を play した場合は UnknownScene エラー
+    /// Playing an unregistered scene returns UnknownScene
+    #[test]
+    fn eval_play_scene_unknown_errors() {
+        let mut ev = Evaluator::new(120.0);
+        let err = ev
+            .eval_block(Block::Play(PlayCommand {
+                target: PlayTarget::Scene("missing".into()),
+                repeat: RepeatSpec::Loop,
+            }))
+            .unwrap_err();
+        assert!(matches!(err, EngineError::UnknownScene(ref n) if n == "missing"));
+    }
+
+    /// scene 内の clip が未登録の場合は UnknownClip エラー
+    /// Playing a scene whose clip is unregistered returns UnknownClip
+    #[test]
+    fn eval_play_scene_unknown_clip_errors() {
+        let mut ev = Evaluator::new(120.0);
+        ev.eval_block(Block::Scene(SceneDef {
+            name: "verse".into(),
+            entries: vec![crate::ast::scene::SceneEntry::Clip {
+                candidates: vec![crate::ast::scene::ShuffleCandidate {
+                    clip: "ghost".into(),
+                    weight: 1,
+                }],
+                probability: None,
+            }],
+        }))
+        .unwrap();
+        let err = ev
+            .eval_block(Block::Play(PlayCommand {
+                target: PlayTarget::Scene("verse".into()),
+                repeat: RepeatSpec::Loop,
+            }))
+            .unwrap_err();
+        assert!(matches!(err, EngineError::UnknownClip(ref n) if n == "ghost"));
+    }
+
+    /// take_active_scene は ScenePlayer を奪い取り、Evaluator 側は None になる
+    /// take_active_scene transfers the ScenePlayer out and leaves Evaluator with None
+    #[test]
+    fn take_active_scene_transfers_ownership() {
+        let mut ev = Evaluator::new(120.0);
+        ev.eval_block(Block::Clip(ClipDef {
+            name: "a".into(),
+            options: ClipOptions::default(),
+            body: ClipBody::Pitched(PitchedClipBody {
+                lines: vec![],
+                cc_automations: vec![],
+            }),
+        }))
+        .unwrap();
+        ev.eval_block(Block::Scene(SceneDef {
+            name: "verse".into(),
+            entries: vec![crate::ast::scene::SceneEntry::Clip {
+                candidates: vec![crate::ast::scene::ShuffleCandidate {
+                    clip: "a".into(),
+                    weight: 1,
+                }],
+                probability: None,
+            }],
+        }))
+        .unwrap();
+        ev.eval_block(Block::Play(PlayCommand {
+            target: PlayTarget::Scene("verse".into()),
+            repeat: RepeatSpec::Loop,
+        }))
+        .unwrap();
+
+        let taken = ev.take_active_scene();
+        assert!(taken.is_some());
+        assert!(ev.active_scene().is_none());
     }
 
     #[test]
@@ -739,6 +903,13 @@ mod tests {
     #[test]
     fn eval_stop() {
         let mut ev = Evaluator::new(120.0);
+        // Phase 3: play には登録済みの scene が必要
+        // Phase 3: a registered scene is required to play
+        ev.eval_block(Block::Scene(SceneDef {
+            name: "verse".into(),
+            entries: vec![],
+        }))
+        .unwrap();
         ev.eval_block(Block::Play(PlayCommand {
             target: PlayTarget::Scene("verse".into()),
             repeat: RepeatSpec::Loop,
