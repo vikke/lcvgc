@@ -31,6 +31,9 @@ pub struct SessionRunner {
     /// セッション全体をループするか
     /// Whether to loop the entire session
     session_looping: bool,
+    /// 直前の advance でエントリ境界を越えたか（§12 session 上書き検出用）
+    /// Whether the last advance crossed an entry boundary (for §12 session overwrite detection)
+    last_advance_crossed_entry: bool,
 }
 
 impl SessionRunner {
@@ -47,6 +50,7 @@ impl SessionRunner {
             current_index: 0,
             current_repeat_remaining: repeat_remaining.unwrap_or(Some(0)),
             session_looping: false,
+            last_advance_crossed_entry: false,
         }
     }
 
@@ -61,10 +65,13 @@ impl SessionRunner {
     /// 次のアクションを返す。シーンの1サイクル完了ごとに呼ぶ。
     /// Returns the next action. Called after each scene cycle completes.
     pub fn advance(&mut self) -> SessionAction {
+        self.last_advance_crossed_entry = false;
+
         // エントリが空または末尾を超えた場合
         if self.current_index >= self.entries.len() {
             if self.session_looping && !self.entries.is_empty() {
                 self.reset();
+                self.last_advance_crossed_entry = true;
             } else {
                 return SessionAction::Done;
             }
@@ -77,6 +84,7 @@ impl SessionRunner {
             SessionRepeat::Once => {
                 self.current_index += 1;
                 self.init_current_repeat();
+                self.last_advance_crossed_entry = true;
                 SessionAction::PlayScene(scene_name)
             }
             SessionRepeat::Count(_) => {
@@ -87,6 +95,7 @@ impl SessionRunner {
                     _ => {
                         self.current_index += 1;
                         self.init_current_repeat();
+                        self.last_advance_crossed_entry = true;
                     }
                 }
                 SessionAction::PlayScene(scene_name)
@@ -96,6 +105,18 @@ impl SessionRunner {
                 SessionAction::PlayScene(scene_name)
             }
         }
+    }
+
+    /// 直前の advance() がエントリ境界を越えたか（§12 上書き検出用）
+    /// Whether the last advance() crossed an entry boundary (for §12 overwrite detection)
+    pub fn last_advance_crossed_entry(&self) -> bool {
+        self.last_advance_crossed_entry
+    }
+
+    /// エントリ数
+    /// Number of entries
+    pub fn entries_len(&self) -> usize {
+        self.entries.len()
     }
 
     /// 先頭にリセット
