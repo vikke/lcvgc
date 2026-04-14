@@ -13,6 +13,9 @@ pub struct ClipPlayer {
     current_tick: u64,
     /// ループ再生するかどうか
     looping: bool,
+    /// ミュート状態（§10.3 `stop <clip>` によるclip単位ミュート対応）
+    /// Mute state (for §10.3 clip-level mute via `stop <clip>`)
+    muted: bool,
 }
 
 impl ClipPlayer {
@@ -23,7 +26,26 @@ impl ClipPlayer {
             pending_clip: None,
             current_tick: 0,
             looping,
+            muted: false,
         }
+    }
+
+    /// このクリップをミュートする（`events_at` が空Vecを返すようになる）
+    /// Mute this clip — `events_at` will return an empty Vec while muted.
+    pub fn mute(&mut self) {
+        self.muted = true;
+    }
+
+    /// ミュートを解除する
+    /// Unmute this clip.
+    pub fn unmute(&mut self) {
+        self.muted = false;
+    }
+
+    /// ミュート中か
+    /// Whether this clip is currently muted.
+    pub fn is_muted(&self) -> bool {
+        self.muted
     }
 
     /// 指定tickにあるイベントを返す
@@ -31,6 +53,9 @@ impl ClipPlayer {
     /// ループ時はtotal_ticksでmodした実効tickで検索する。
     /// 非ループ時はtotal_ticksを超えたら空を返す。
     pub fn events_at(&self, tick: u64) -> Vec<&MidiEvent> {
+        if self.muted {
+            return Vec::new();
+        }
         if !self.looping && tick >= self.clip.total_ticks {
             return Vec::new();
         }
@@ -165,6 +190,40 @@ impl ScenePlayer {
     /// クリップ数
     pub fn clip_count(&self) -> usize {
         self.players.len()
+    }
+
+    /// 指定名のクリップをミュートする（未知名は no-op）
+    /// Mute the clip with the given name (no-op if not found).
+    pub fn mute_clip(&mut self, name: &str) {
+        if let Some((_, player)) = self.players.iter_mut().find(|(n, _)| n == name) {
+            player.mute();
+        }
+    }
+
+    /// 指定名のクリップのミュートを解除（未知名は no-op）
+    /// Unmute the clip with the given name (no-op if not found).
+    pub fn unmute_clip(&mut self, name: &str) {
+        if let Some((_, player)) = self.players.iter_mut().find(|(n, _)| n == name) {
+            player.unmute();
+        }
+    }
+
+    /// 指定名のクリップがミュート中か（未知名は false）
+    /// Whether the named clip is muted (false if not found).
+    pub fn is_muted(&self, name: &str) -> bool {
+        self.players
+            .iter()
+            .find(|(n, _)| n == name)
+            .map(|(_, p)| p.is_muted())
+            .unwrap_or(false)
+    }
+
+    /// 全クリップのミュートを解除
+    /// Unmute all clips.
+    pub fn unmute_all(&mut self) {
+        for (_, player) in &mut self.players {
+            player.unmute();
+        }
     }
 }
 
@@ -421,6 +480,112 @@ mod tests {
             events[0].message,
             MidiMessage::NoteOn { note: 60, .. }
         ));
+    }
+
+    // --- ミュートAPIテスト (#37 Phase 1) ---
+
+    /// ClipPlayerの初期状態はミュート解除
+    #[test]
+    fn clip_player_not_muted_by_default() {
+        let clip = make_clip(vec![(0, note_on(60))], 480);
+        let player = ClipPlayer::new(clip, true);
+        assert!(!player.is_muted());
+    }
+
+    /// mute後はevents_atが空を返し、unmute後は再びイベントを返す
+    #[test]
+    fn clip_player_mute_suppresses_events() {
+        let clip = make_clip(vec![(0, note_on(60)), (240, note_on(64))], 480);
+        let mut player = ClipPlayer::new(clip, true);
+
+        assert_eq!(player.events_at(0).len(), 1);
+
+        player.mute();
+        assert!(player.is_muted());
+        assert!(player.events_at(0).is_empty());
+        assert!(player.events_at(240).is_empty());
+
+        player.unmute();
+        assert!(!player.is_muted());
+        assert_eq!(player.events_at(0).len(), 1);
+        assert_eq!(player.events_at(240).len(), 1);
+    }
+
+    /// ミュート中もtickは進む（unmute後に現在位置から再開）
+    #[test]
+    fn clip_player_mute_does_not_stop_tick_advance() {
+        let clip = make_clip(vec![(0, note_on(60))], 480);
+        let mut player = ClipPlayer::new(clip, true);
+        player.mute();
+        player.advance(240);
+        assert_eq!(player.current_tick(), 240);
+    }
+
+    /// ScenePlayer::mute_clip で該当クリップのみミュート、他は影響なし
+    #[test]
+    fn scene_player_mute_clip_targets_single_clip() {
+        let mut scene = ScenePlayer::new();
+        scene.add_clip(
+            "a".to_string(),
+            make_clip(vec![(0, note_on(60))], 480),
+            true,
+        );
+        scene.add_clip(
+            "b".to_string(),
+            make_clip(vec![(0, note_on(72))], 480),
+            true,
+        );
+
+        assert_eq!(scene.events_at(0).len(), 2);
+
+        scene.mute_clip("a");
+        assert!(scene.is_muted("a"));
+        assert!(!scene.is_muted("b"));
+
+        let events = scene.events_at(0);
+        assert_eq!(events.len(), 1);
+        assert!(matches!(
+            events[0].message,
+            MidiMessage::NoteOn { note: 72, .. }
+        ));
+
+        scene.unmute_clip("a");
+        assert!(!scene.is_muted("a"));
+        assert_eq!(scene.events_at(0).len(), 2);
+    }
+
+    /// 存在しないクリップ名への操作は no-op
+    #[test]
+    fn scene_player_mute_unknown_clip_is_noop() {
+        let mut scene = ScenePlayer::new();
+        scene.add_clip("a".to_string(), make_clip(vec![], 480), true);
+        scene.mute_clip("unknown");
+        assert!(!scene.is_muted("unknown"));
+        assert!(!scene.is_muted("a"));
+    }
+
+    /// unmute_all は全クリップのミュートを解除する
+    #[test]
+    fn scene_player_unmute_all_clears_all_mutes() {
+        let mut scene = ScenePlayer::new();
+        scene.add_clip(
+            "a".to_string(),
+            make_clip(vec![(0, note_on(60))], 480),
+            true,
+        );
+        scene.add_clip(
+            "b".to_string(),
+            make_clip(vec![(0, note_on(72))], 480),
+            true,
+        );
+
+        scene.mute_clip("a");
+        scene.mute_clip("b");
+        assert!(scene.is_muted("a") && scene.is_muted("b"));
+
+        scene.unmute_all();
+        assert!(!scene.is_muted("a") && !scene.is_muted("b"));
+        assert_eq!(scene.events_at(0).len(), 2);
     }
 
     /// ScenePlayer経由での動的クリップ差し替え
