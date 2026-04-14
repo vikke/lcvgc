@@ -10,6 +10,8 @@
 //! and controls measure progression according to the repeat mode.
 
 use crate::ast::playback::RepeatSpec;
+use crate::ast::session::SessionDef;
+use crate::engine::session_runner::{SessionAction, SessionRunner};
 
 /// 再生状態
 /// Playback state
@@ -130,6 +132,12 @@ pub struct StateManager {
     /// 現在の再生状態
     /// Current playback state
     state: PlaybackState,
+    /// セッション再生中の進行管理ランナー
+    /// Runner that manages progression during session playback
+    session_runner: Option<SessionRunner>,
+    /// 次のエントリ遷移時に差し替える新しい session 定義（§12 session上書き）
+    /// Session definition pending swap at the next entry transition (§12 session overwrite)
+    pending_session: Option<SessionDef>,
 }
 
 impl StateManager {
@@ -138,6 +146,8 @@ impl StateManager {
     pub fn new() -> Self {
         Self {
             state: PlaybackState::Stopped,
+            session_runner: None,
+            pending_session: None,
         }
     }
 
@@ -149,6 +159,11 @@ impl StateManager {
 
     /// コマンドを適用して状態を遷移させる
     /// Applies a command and transitions the state
+    ///
+    /// 注意: `PlaySession` の場合は SessionRunner が初期化されないため、
+    /// 次エントリ名の解決が必要な用途では [`apply_play_session`] を使うこと。
+    /// Note: For `PlaySession`, the SessionRunner is not initialized, so use
+    /// [`apply_play_session`] when next-entry resolution is required.
     pub fn apply_command(&mut self, cmd: PlaybackCommand) {
         match cmd {
             PlaybackCommand::PlayScene { name, repeat } => {
@@ -156,6 +171,8 @@ impl StateManager {
                     name,
                     repeat: Self::from_repeat_spec(&repeat),
                 };
+                self.session_runner = None;
+                self.pending_session = None;
             }
             PlaybackCommand::PlaySession { name, repeat } => {
                 self.state = PlaybackState::PlayingSession {
@@ -164,10 +181,14 @@ impl StateManager {
                     entry_index: 0,
                     scene_repeat: RepeatMode::Once,
                 };
+                self.session_runner = None;
+                self.pending_session = None;
             }
             PlaybackCommand::Stop { target } => match target {
                 None => {
                     self.state = PlaybackState::Stopped;
+                    self.session_runner = None;
+                    self.pending_session = None;
                 }
                 Some(ref target_name) => {
                     let should_stop = match &self.state {
@@ -177,9 +198,47 @@ impl StateManager {
                     };
                     if should_stop {
                         self.state = PlaybackState::Stopped;
+                        self.session_runner = None;
+                        self.pending_session = None;
                     }
                 }
             },
+        }
+    }
+
+    /// セッション再生を SessionDef 付きで開始する（§9/§10.2）
+    /// Starts session playback with a SessionDef (§9/§10.2)
+    ///
+    /// SessionRunner を内部で構築し、以降の `scene_loop_complete` で
+    /// 次シーン名を正しく返せるようにする。
+    /// Constructs the SessionRunner internally so subsequent
+    /// `scene_loop_complete` calls can return correct next scene names.
+    pub fn apply_play_session(&mut self, session: &SessionDef, repeat: RepeatSpec) {
+        let runner = match repeat {
+            RepeatSpec::Loop => SessionRunner::new_looping(session),
+            _ => SessionRunner::new(session),
+        };
+        self.state = PlaybackState::PlayingSession {
+            name: session.name.clone(),
+            repeat: Self::from_repeat_spec(&repeat),
+            entry_index: 0,
+            scene_repeat: RepeatMode::Once,
+        };
+        self.session_runner = Some(runner);
+        self.pending_session = None;
+    }
+
+    /// session 定義が更新されたことを通知する（§12 session 上書き）
+    /// Notifies that a session definition has been updated (§12 session overwrite)
+    ///
+    /// 現在再生中のセッションと同名なら、次のエントリ遷移時に新定義へ差し替える。
+    /// If the name matches the currently playing session, the new definition
+    /// will be swapped in at the next entry transition.
+    pub fn notify_session_updated(&mut self, session: &SessionDef) {
+        if let PlaybackState::PlayingSession { name, .. } = &self.state {
+            if name == &session.name {
+                self.pending_session = Some(session.clone());
+            }
         }
     }
 
@@ -207,12 +266,29 @@ impl StateManager {
                 }
                 RepeatMode::Loop => NextAction::ContinueScene,
             },
-            PlaybackState::PlayingSession {
+            PlaybackState::PlayingSession { .. } => self.session_loop_complete(),
+        }
+    }
+
+    /// セッション再生中の 1 シーンループ完了処理
+    /// Handles completion of one scene loop during session playback
+    ///
+    /// SessionRunner が存在する場合は runner.advance() で次シーンを解決する。
+    /// pending_session がある場合はエントリ遷移時に runner を差し替える（§12）。
+    /// runner が無い場合は後方互換のため従来の entry_index インクリメントのみ行う。
+    /// If SessionRunner exists, uses runner.advance() to resolve the next scene.
+    /// If pending_session exists, swaps the runner at entry transition (§12).
+    /// If no runner exists, falls back to the legacy entry_index increment for compatibility.
+    fn session_loop_complete(&mut self) -> NextAction {
+        // SessionRunner が未設定（レガシー apply_command 経由）の場合は従来動作
+        // Legacy behavior when no SessionRunner is set (via legacy apply_command path)
+        if self.session_runner.is_none() {
+            if let PlaybackState::PlayingSession {
                 entry_index,
                 scene_repeat,
                 ..
-            } => {
-                // シーンリピートを消費
+            } = &mut self.state
+            {
                 let scene_exhausted = match scene_repeat {
                     RepeatMode::Once => true,
                     RepeatMode::Count { remaining } => {
@@ -221,17 +297,128 @@ impl StateManager {
                     }
                     RepeatMode::Loop => false,
                 };
-
                 if !scene_exhausted {
                     return NextAction::ContinueScene;
                 }
-
-                // 次のエントリへ
                 *entry_index += 1;
                 *scene_repeat = RepeatMode::Once;
-
-                NextAction::NextSessionEntry {
+                return NextAction::NextSessionEntry {
                     scene_name: String::new(),
+                };
+            }
+            return NextAction::SceneComplete;
+        }
+
+        // runner 経由でエントリ遷移を解決
+        // Resolve entry transition via runner
+        let runner = self.session_runner.as_mut().unwrap();
+        let action = runner.advance();
+        let crossed = runner.last_advance_crossed_entry();
+
+        // エントリ境界を越えたら、pending_session があれば差し替える（§12）
+        // When crossing an entry boundary, swap in pending_session if present (§12)
+        if crossed {
+            if let Some(new_def) = self.pending_session.take() {
+                // 現在のセッション全体リピート状態を維持する
+                // Preserve the current session-wide repeat state
+                let was_looping = matches!(
+                    &self.state,
+                    PlaybackState::PlayingSession {
+                        repeat: RepeatMode::Loop,
+                        ..
+                    }
+                );
+                let new_runner = if was_looping {
+                    SessionRunner::new_looping(&new_def)
+                } else {
+                    SessionRunner::new(&new_def)
+                };
+                self.session_runner = Some(new_runner);
+                // 新 runner で即時に advance し直し、新定義の先頭エントリを得る
+                // Re-advance with the new runner to obtain the first entry of the new definition
+                let runner = self.session_runner.as_mut().unwrap();
+                let new_action = runner.advance();
+                return self.finalize_session_action(new_action);
+            }
+        }
+
+        self.finalize_session_action(action)
+    }
+
+    /// SessionAction を NextAction に変換し、state 側の entry_index を更新する
+    /// Converts SessionAction to NextAction and updates the state's entry_index
+    fn finalize_session_action(&mut self, action: SessionAction) -> NextAction {
+        match action {
+            SessionAction::PlayScene(scene_name) => {
+                if let (
+                    PlaybackState::PlayingSession {
+                        entry_index,
+                        repeat: session_repeat,
+                        ..
+                    },
+                    Some(runner),
+                ) = (&mut self.state, &self.session_runner)
+                {
+                    *entry_index = runner.current_index();
+                    // session_looping ではない Count/Once で runner が Done に達したら
+                    // セッション全体リピートを消費する
+                    // If the runner is Done and not session-looping, consume the
+                    // session-wide repeat count (Count/Once).
+                    let _ = session_repeat;
+                }
+                NextAction::NextSessionEntry { scene_name }
+            }
+            SessionAction::Done => {
+                // セッション全体のリピートを消費する
+                // Consume the session-wide repeat count
+                let mut should_stop = true;
+                if let PlaybackState::PlayingSession {
+                    repeat: session_repeat,
+                    ..
+                } = &mut self.state
+                {
+                    match session_repeat {
+                        RepeatMode::Once => {
+                            should_stop = true;
+                        }
+                        RepeatMode::Count { remaining } => {
+                            if *remaining > 1 {
+                                *remaining -= 1;
+                                should_stop = false;
+                            } else {
+                                should_stop = true;
+                            }
+                        }
+                        RepeatMode::Loop => {
+                            // new_looping で作られた runner なら Done にならないはずだが
+                            // 念のため stop しない扱いとし runner をリセット
+                            // A runner built with new_looping should not return Done,
+                            // but as a safeguard, do not stop and reset the runner.
+                            should_stop = false;
+                        }
+                    }
+                }
+                if should_stop {
+                    self.state = PlaybackState::Stopped;
+                    self.session_runner = None;
+                    self.pending_session = None;
+                    NextAction::SessionComplete
+                } else {
+                    // セッション先頭から再開
+                    // Restart from the beginning of the session
+                    if let Some(runner) = self.session_runner.as_mut() {
+                        runner.reset();
+                        let action = runner.advance();
+                        if let SessionAction::PlayScene(scene_name) = action {
+                            if let PlaybackState::PlayingSession { entry_index, .. } =
+                                &mut self.state
+                            {
+                                *entry_index = 0;
+                            }
+                            return NextAction::NextSessionEntry { scene_name };
+                        }
+                    }
+                    NextAction::SessionComplete
                 }
             }
         }
@@ -486,5 +673,270 @@ mod tests {
             target: Some("song".to_string()),
         });
         assert_eq!(*sm.state(), PlaybackState::Stopped);
+    }
+
+    // --- SessionRunner 統合テスト ---
+    // --- SessionRunner integration tests ---
+
+    use crate::ast::session::{SessionEntry, SessionRepeat};
+
+    fn session_def(name: &str, entries: Vec<(&str, SessionRepeat)>) -> SessionDef {
+        SessionDef {
+            name: name.to_string(),
+            entries: entries
+                .into_iter()
+                .map(|(scene, repeat)| SessionEntry {
+                    scene: scene.to_string(),
+                    repeat,
+                })
+                .collect(),
+        }
+    }
+
+    /// apply_play_session 後、scene_loop_complete で実際のシーン名が返る
+    /// After apply_play_session, scene_loop_complete returns the actual scene name
+    #[test]
+    fn session_next_action_contains_scene_name() {
+        let mut sm = StateManager::new();
+        let def = session_def(
+            "song",
+            vec![
+                ("intro", SessionRepeat::Once),
+                ("verse", SessionRepeat::Count(2)),
+                ("outro", SessionRepeat::Once),
+            ],
+        );
+        sm.apply_play_session(&def, RepeatSpec::Once);
+
+        assert_eq!(
+            sm.scene_loop_complete(),
+            NextAction::NextSessionEntry {
+                scene_name: "intro".to_string()
+            }
+        );
+        assert_eq!(
+            sm.scene_loop_complete(),
+            NextAction::NextSessionEntry {
+                scene_name: "verse".to_string()
+            }
+        );
+        assert_eq!(
+            sm.scene_loop_complete(),
+            NextAction::NextSessionEntry {
+                scene_name: "verse".to_string()
+            }
+        );
+        assert_eq!(
+            sm.scene_loop_complete(),
+            NextAction::NextSessionEntry {
+                scene_name: "outro".to_string()
+            }
+        );
+        assert_eq!(sm.scene_loop_complete(), NextAction::SessionComplete);
+        assert_eq!(*sm.state(), PlaybackState::Stopped);
+    }
+
+    /// §10.2 play session [repeat N]: セッション全体をN回繰り返す
+    /// §10.2 play session [repeat N]: repeat the entire session N times
+    #[test]
+    fn session_repeat_count_loops_entire_session() {
+        let mut sm = StateManager::new();
+        let def = session_def("song", vec![("a", SessionRepeat::Once)]);
+        sm.apply_play_session(&def, RepeatSpec::Count(3));
+
+        // 1周目
+        assert_eq!(
+            sm.scene_loop_complete(),
+            NextAction::NextSessionEntry {
+                scene_name: "a".to_string()
+            }
+        );
+        // 2周目（内部で Done → 先頭から再開）
+        assert_eq!(
+            sm.scene_loop_complete(),
+            NextAction::NextSessionEntry {
+                scene_name: "a".to_string()
+            }
+        );
+        // 3周目
+        assert_eq!(
+            sm.scene_loop_complete(),
+            NextAction::NextSessionEntry {
+                scene_name: "a".to_string()
+            }
+        );
+        // 3周完了 → SessionComplete
+        assert_eq!(sm.scene_loop_complete(), NextAction::SessionComplete);
+    }
+
+    /// §10.2 play session [loop]: セッション全体を無限ループ
+    /// §10.2 play session [loop]: loop the entire session infinitely
+    #[test]
+    fn session_loop_never_completes() {
+        let mut sm = StateManager::new();
+        let def = session_def(
+            "song",
+            vec![("a", SessionRepeat::Once), ("b", SessionRepeat::Once)],
+        );
+        sm.apply_play_session(&def, RepeatSpec::Loop);
+
+        for _ in 0..10 {
+            let action = sm.scene_loop_complete();
+            assert!(matches!(action, NextAction::NextSessionEntry { .. }));
+        }
+        assert!(matches!(sm.state(), PlaybackState::PlayingSession { .. }));
+    }
+
+    /// §9: session 内の [loop] エントリはそこで無限ループ
+    /// §9: a [loop] entry in a session loops infinitely at that point
+    #[test]
+    fn session_entry_loop_stays_on_same_scene() {
+        let mut sm = StateManager::new();
+        let def = session_def(
+            "jam",
+            vec![
+                ("intro", SessionRepeat::Once),
+                ("verse", SessionRepeat::Loop),
+                ("outro", SessionRepeat::Once),
+            ],
+        );
+        sm.apply_play_session(&def, RepeatSpec::Once);
+
+        assert_eq!(
+            sm.scene_loop_complete(),
+            NextAction::NextSessionEntry {
+                scene_name: "intro".to_string()
+            }
+        );
+        for _ in 0..20 {
+            assert_eq!(
+                sm.scene_loop_complete(),
+                NextAction::NextSessionEntry {
+                    scene_name: "verse".to_string()
+                }
+            );
+        }
+        assert!(matches!(sm.state(), PlaybackState::PlayingSession { .. }));
+    }
+
+    /// §12: session を eval で上書きすると、次のシーン切り替え時から新構成になる
+    /// §12: overwriting a session via eval applies the new composition at the next scene transition
+    #[test]
+    fn session_overwrite_swaps_at_next_entry() {
+        let mut sm = StateManager::new();
+        let def_old = session_def(
+            "song",
+            vec![
+                ("intro", SessionRepeat::Once),
+                ("old_verse", SessionRepeat::Once),
+                ("old_outro", SessionRepeat::Once),
+            ],
+        );
+        sm.apply_play_session(&def_old, RepeatSpec::Once);
+
+        // intro 再生
+        assert_eq!(
+            sm.scene_loop_complete(),
+            NextAction::NextSessionEntry {
+                scene_name: "intro".to_string()
+            }
+        );
+
+        // intro 再生中に session を上書き
+        // Overwrite the session while intro is playing
+        let def_new = session_def(
+            "song",
+            vec![
+                ("new_a", SessionRepeat::Once),
+                ("new_b", SessionRepeat::Once),
+            ],
+        );
+        sm.notify_session_updated(&def_new);
+
+        // 次のエントリ遷移時に新構成の先頭から再生される
+        // At the next entry transition, playback restarts from the head of the new composition
+        assert_eq!(
+            sm.scene_loop_complete(),
+            NextAction::NextSessionEntry {
+                scene_name: "new_a".to_string()
+            }
+        );
+        assert_eq!(
+            sm.scene_loop_complete(),
+            NextAction::NextSessionEntry {
+                scene_name: "new_b".to_string()
+            }
+        );
+        assert_eq!(sm.scene_loop_complete(), NextAction::SessionComplete);
+    }
+
+    /// §12: 別名 session の eval は現在の session に影響しない
+    /// §12: evaluating a session with a different name does not affect the current session
+    #[test]
+    fn session_overwrite_different_name_ignored() {
+        let mut sm = StateManager::new();
+        let def = session_def(
+            "song",
+            vec![("a", SessionRepeat::Once), ("b", SessionRepeat::Once)],
+        );
+        sm.apply_play_session(&def, RepeatSpec::Once);
+
+        let unrelated = session_def("other", vec![("x", SessionRepeat::Once)]);
+        sm.notify_session_updated(&unrelated);
+
+        assert_eq!(
+            sm.scene_loop_complete(),
+            NextAction::NextSessionEntry {
+                scene_name: "a".to_string()
+            }
+        );
+        assert_eq!(
+            sm.scene_loop_complete(),
+            NextAction::NextSessionEntry {
+                scene_name: "b".to_string()
+            }
+        );
+        assert_eq!(sm.scene_loop_complete(), NextAction::SessionComplete);
+    }
+
+    /// §12: session ループ中の上書きもループ属性を維持
+    /// §12: overwriting during a session loop preserves the loop attribute
+    #[test]
+    fn session_overwrite_preserves_looping() {
+        let mut sm = StateManager::new();
+        let def_old = session_def("song", vec![("a", SessionRepeat::Once)]);
+        sm.apply_play_session(&def_old, RepeatSpec::Loop);
+
+        assert!(matches!(
+            sm.scene_loop_complete(),
+            NextAction::NextSessionEntry { .. }
+        ));
+
+        let def_new = session_def(
+            "song",
+            vec![("x", SessionRepeat::Once), ("y", SessionRepeat::Once)],
+        );
+        sm.notify_session_updated(&def_new);
+
+        // 新構成で再生
+        assert_eq!(
+            sm.scene_loop_complete(),
+            NextAction::NextSessionEntry {
+                scene_name: "x".to_string()
+            }
+        );
+        assert_eq!(
+            sm.scene_loop_complete(),
+            NextAction::NextSessionEntry {
+                scene_name: "y".to_string()
+            }
+        );
+        // ループ属性が維持されているので Done にならず先頭に戻る
+        assert_eq!(
+            sm.scene_loop_complete(),
+            NextAction::NextSessionEntry {
+                scene_name: "x".to_string()
+            }
+        );
     }
 }

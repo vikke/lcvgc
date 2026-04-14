@@ -133,6 +133,10 @@ impl Evaluator {
             }
             Block::Session(ref s) => {
                 let name = s.name.clone();
+                // §12: 再生中の同名セッションなら次エントリ遷移時に差し替える
+                // §12: If a session with the same name is currently playing,
+                // queue it to swap in at the next entry transition.
+                self.state.notify_session_updated(s);
                 self.registry.register_block(block);
                 Ok(EvalResult::Registered {
                     kind: "Session".into(),
@@ -158,17 +162,25 @@ impl Evaluator {
                 Ok(EvalResult::VarDefined { name })
             }
             Block::Play(cmd) => {
-                let playback_cmd = match cmd.target {
-                    PlayTarget::Scene(name) => PlaybackCommand::PlayScene {
-                        name,
-                        repeat: cmd.repeat,
-                    },
-                    PlayTarget::Session(name) => PlaybackCommand::PlaySession {
-                        name,
-                        repeat: cmd.repeat,
-                    },
-                };
-                self.state.apply_command(playback_cmd);
+                match cmd.target {
+                    PlayTarget::Scene(name) => {
+                        self.state.apply_command(PlaybackCommand::PlayScene {
+                            name,
+                            repeat: cmd.repeat,
+                        });
+                    }
+                    PlayTarget::Session(name) => {
+                        // registry から SessionDef を取得して SessionRunner を構築する
+                        // Fetch SessionDef from registry to construct a SessionRunner
+                        match self.registry.get_session(&name) {
+                            Some(session_def) => {
+                                let def = session_def.clone();
+                                self.state.apply_play_session(&def, cmd.repeat);
+                            }
+                            None => return Err(EngineError::UnknownSession(name)),
+                        }
+                    }
+                }
                 Ok(EvalResult::PlayStarted)
             }
             Block::Stop(cmd) => {
@@ -692,6 +704,13 @@ mod tests {
     #[test]
     fn eval_play_session() {
         let mut ev = Evaluator::new(120.0);
+        // session を事前登録しておく
+        // Register the session beforehand
+        ev.eval_block(Block::Session(SessionDef {
+            name: "song".into(),
+            entries: vec![],
+        }))
+        .unwrap();
         let result = ev
             .eval_block(Block::Play(PlayCommand {
                 target: PlayTarget::Session("song".into()),
@@ -703,6 +722,18 @@ mod tests {
             ev.state().state(),
             PlaybackState::PlayingSession { .. }
         ));
+    }
+
+    #[test]
+    fn eval_play_session_unknown_errors() {
+        let mut ev = Evaluator::new(120.0);
+        let err = ev
+            .eval_block(Block::Play(PlayCommand {
+                target: PlayTarget::Session("missing".into()),
+                repeat: RepeatSpec::Once,
+            }))
+            .unwrap_err();
+        assert!(matches!(err, EngineError::UnknownSession(ref n) if n == "missing"));
     }
 
     #[test]
