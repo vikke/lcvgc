@@ -31,7 +31,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash /Users/i.matsunaga/vcswork/lcvgc/.claude/hooks/pre-commit-version-check.sh"
+            "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/pre-commit-version-check.sh\""
           }
         ]
       }
