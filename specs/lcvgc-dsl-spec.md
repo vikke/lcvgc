@@ -1235,6 +1235,103 @@ stop
 stop drums_a
 ```
 
+### 10.4 Playback Control Semantics (stop / pause / mute)
+
+> **Implementation status**:
+> - `stop` / `stop <scene>` / `stop <session>` are implemented
+> - `stop <clip>` (currently mute-equivalent) will be renamed to `mute <clip>` (Issue #43)
+> - `pause` / `resume` are not implemented (Issue #44)
+>
+> The tables below describe the target specification. Code using `stop <clip>` will need to be migrated to `mute <clip>` once #43 lands.
+
+lcvgc provides **three independent kinds of "stop" operations**, each with different effects on tick (time), sound, and phase (current position inside a loop).
+
+#### 10.4.1 Behavior comparison of all operations
+
+| Operation | Target | tick | Sound | Phase | active_scene | How to resume |
+|---|---|---|---|---|---|---|
+| `play <scene/session>` | Whole | Starts from 0 | Starts sounding | Reset | Built | - |
+| `stop` | Whole | Stops | AllNotesOff | Reset (next time from 0) | Released | `play` from the top |
+| `stop <scene/session>` | Whole (only on name match) | Stops | AllNotesOff | Reset | Released | `play` from the top |
+| `pause` | Whole | Stops | AllNotesOff | **Preserved (frozen)** | Retained | `resume` continues |
+| `pause <session>` | Whole (only on name match) | Stops | AllNotesOff | Preserved (frozen) | Retained | `resume` continues |
+| `pause <scene>` | Whole (only on name match) | Stops | AllNotesOff | Preserved (frozen) | Retained | `resume` continues |
+| `pause <clip>` | clip | Only that clip stops | AllNotesOff (that ch.) | Only that clip frozen | Retained | `resume <clip>` continues |
+| `resume` | Whole | Resumes | Starts sounding | - | - | - |
+| `resume <clip>` | clip | Resumes | Starts sounding | - | - | - |
+| `mute <clip>` | clip | **Continues** | AllNotesOff (that ch.) | Preserved | Retained | `unmute <clip>` rejoins instantly |
+| `unmute <clip>` | clip | Continues | Starts sounding | - | - | - |
+
+#### 10.4.2 Differences among clip-targeting operations
+
+| Operation | tick | Sound | Use case |
+|---|---|---|---|
+| `stop <clip>` | — | — | **Does not exist** (`stop` targets scene/session/whole only) |
+| `pause <clip>` | Stops | Silent | You want to resume **from that exact point** later |
+| `mute <clip>` | Continues | Silent | You want to **rejoin in phase** later (equivalent to DAW clip mute) |
+
+#### 10.4.3 tick × sound matrix (clip-targeting)
+
+|  | Has sound | No sound |
+|---|---|---|
+| tick continues | Normal playback | `mute` |
+| tick stops | (no such op) | `pause` |
+
+#### 10.4.4 What is "phase"?
+
+**Phase** refers to the **current position inside a loop** (which beat, which tick). Since every clip in lcvgc has its own `total_ticks` and loops independently, phase determines how that clip's beats align with the others.
+
+##### Example: `drums_a` is a 4-beat loop, currently playing beat 3
+
+```
+drums_a: |1---2---3---4---|
+              ↑ you are here (phase = beat 3)
+```
+
+##### With `mute <clip>` (phase preserved)
+
+```
+drums_a: |1---2---3---4---|1---2---3---4---|
+              ↑ mute    ↑ unmute
+                        resumes here = beat 4
+```
+
+- Beats stay aligned with the other clips; the clip rejoins naturally
+- Equivalent to the clip mute in DAWs (e.g. Ableton)
+- Feels the same as briefly pulling a mixer fader down and back up
+
+##### With `pause <clip>` (phase frozen)
+
+```
+drums_a: |1---2---3-[frozen]...[frozen]3---4---|
+              ↑ pause          ↑ resume
+                               resumes from beat 3
+```
+
+- The other clips keep advancing, so the phase relationship at the moment of `resume` depends on timing
+- Phase against other clips **drifts** from the `pause` point (this is the intended behavior)
+- Useful when you want to manually re-align timing, or freeze a specific clip for a solo-style expression
+
+##### With `stop` / `play` (phase reset)
+
+```
+drums_a: |1---2---3-[stopped]  ...  1---2---3---4---|
+              ↑ stop               ↑ play
+                                   starts from beat 1
+```
+
+- Playback starts over from tick 0
+- Use this when you want a clean slate
+
+#### 10.4.5 When to use which
+
+| What you want | Use |
+|---|---|
+| Silence this drum for a bit without breaking timing | `mute <clip>` |
+| Freeze this drum and manually re-align it later | `pause <clip>` |
+| Fully stop and start over | `stop` |
+| Pause the whole song and resume where it left off | `pause` then `resume` |
+
 ---
 
 ## 11. Error Handling
