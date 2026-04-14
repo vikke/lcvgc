@@ -274,6 +274,63 @@ impl ScenePlayer {
             player.unmute();
         }
     }
+
+    /// 内包する全 clip の全イベントから使用中チャンネルを集める
+    ///
+    /// Stop 時の AllNotesOff 送信先を決定するために使う。ミュート状態は
+    /// 無視して、元の clip 定義が対象とするチャンネルを返す。
+    ///
+    /// Collects every MIDI channel used by any event in any contained clip,
+    /// ignoring mute state. Used to determine AllNotesOff destinations on stop.
+    pub fn channels_in_use(&self) -> Vec<u8> {
+        let mut channels = Vec::new();
+        for (_, p) in &self.players {
+            for ev in &p.clip.events {
+                let ch = channel_of(&ev.message);
+                if !channels.contains(&ch) {
+                    channels.push(ch);
+                }
+            }
+        }
+        channels
+    }
+
+    /// 指定名の clip が使用するチャンネル一覧
+    ///
+    /// 該当 clip が見つからない、または全イベントを持たない場合は空 Vec。
+    ///
+    /// Returns the channels used by the clip with the given name. Empty when
+    /// the clip is not found or has no events.
+    pub fn channels_of_clip(&self, name: &str) -> Vec<u8> {
+        let mut channels = Vec::new();
+        if let Some((_, p)) = self.players.iter().find(|(n, _)| n == name) {
+            for ev in &p.clip.events {
+                let ch = channel_of(&ev.message);
+                if !channels.contains(&ch) {
+                    channels.push(ch);
+                }
+            }
+        }
+        channels
+    }
+
+    /// 指定名の clip が登録されているか
+    /// Whether a clip with the given name exists in this scene.
+    pub fn has_clip(&self, name: &str) -> bool {
+        self.players.iter().any(|(n, _)| n == name)
+    }
+}
+
+/// MidiMessage からチャンネル番号を取り出す
+/// Extracts the channel number from a MidiMessage.
+fn channel_of(msg: &crate::midi::message::MidiMessage) -> u8 {
+    use crate::midi::message::MidiMessage;
+    match msg {
+        MidiMessage::NoteOn { channel, .. }
+        | MidiMessage::NoteOff { channel, .. }
+        | MidiMessage::ControlChange { channel, .. }
+        | MidiMessage::ProgramChange { channel, .. } => *channel,
+    }
 }
 
 impl Default for ScenePlayer {

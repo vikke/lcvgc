@@ -80,6 +80,9 @@ pub struct Evaluator {
     /// 現在 play 中の ScenePlayer（Phase 3: PlayScene でコンパイル・構築）
     /// Currently active ScenePlayer (Phase 3: built when PlayScene is evaluated)
     active_scene: Option<ScenePlayer>,
+    /// Stop 評価時に呼び出し側が送出すべき AllNotesOff の対象チャンネル（Phase 5）
+    /// Channels that the caller should send AllNotesOff on after Stop (Phase 5)
+    pending_all_notes_off: Vec<u8>,
 }
 
 impl Evaluator {
@@ -91,7 +94,19 @@ impl Evaluator {
             clock: Clock::new(bpm),
             scope: ScopeChain::new(),
             active_scene: None,
+            pending_all_notes_off: Vec::new(),
         }
+    }
+
+    /// Stop 評価で溜まった AllNotesOff 対象チャンネルを取り出してクリアする
+    ///
+    /// 呼び出し側（tick driver/daemon）が取得して `MidiMessage::ControlChange
+    /// { cc: 123, value: 0 }` を各 channel に送出する。
+    ///
+    /// Takes the queued AllNotesOff target channels and clears the internal
+    /// buffer. The caller is expected to emit CC#123 value=0 on each channel.
+    pub fn take_pending_all_notes_off(&mut self) -> Vec<u8> {
+        std::mem::take(&mut self.pending_all_notes_off)
     }
 
     /// 現在 play 中の ScenePlayer への不変参照
@@ -322,8 +337,55 @@ impl Evaluator {
                 Ok(EvalResult::PlayStarted)
             }
             Block::Stop(cmd) => {
-                self.state
-                    .apply_command(PlaybackCommand::Stop { target: cmd.target });
+                // Phase 5: target が clip 名なら該当 clip をミュート、それ以外は scene/session
+                // 名との一致か全停止として従来通り扱い、使用中チャンネル分の AllNotesOff を蓄積。
+                // Phase 5: if target names a clip in active_scene, mute it; otherwise fall
+                // back to the legacy scene/session/global-stop path. In all cases, queue
+                // AllNotesOff on the affected channels for the caller to send.
+                match &cmd.target {
+                    None => {
+                        if let Some(scene) = &self.active_scene {
+                            self.pending_all_notes_off.extend(scene.channels_in_use());
+                        }
+                        self.state
+                            .apply_command(PlaybackCommand::Stop { target: None });
+                        self.active_scene = None;
+                    }
+                    Some(name) => {
+                        // 現在の scene/session 名と一致 → 全停止扱い
+                        // Matches the currently playing scene/session → treat as full stop
+                        let is_current = self
+                            .state
+                            .current_scene_name()
+                            .map(|n| n == name)
+                            .unwrap_or(false);
+                        if is_current {
+                            if let Some(scene) = &self.active_scene {
+                                self.pending_all_notes_off.extend(scene.channels_in_use());
+                            }
+                            self.state.apply_command(PlaybackCommand::Stop {
+                                target: Some(name.clone()),
+                            });
+                            self.active_scene = None;
+                        } else if let Some(scene) = self.active_scene.as_mut() {
+                            if scene.has_clip(name) {
+                                let channels = scene.channels_of_clip(name);
+                                scene.mute_clip(name);
+                                self.pending_all_notes_off.extend(channels);
+                            } else {
+                                // 未知名: 従来通り state 側に委ねる（no-op になる）
+                                // Unknown name: delegate to state (becomes a no-op)
+                                self.state.apply_command(PlaybackCommand::Stop {
+                                    target: Some(name.clone()),
+                                });
+                            }
+                        } else {
+                            self.state.apply_command(PlaybackCommand::Stop {
+                                target: Some(name.clone()),
+                            });
+                        }
+                    }
+                }
                 Ok(EvalResult::Stopped)
             }
             Block::Include(ref inc) => Ok(EvalResult::IncludeProcessed {
@@ -1096,6 +1158,142 @@ mod tests {
         let outcome = ev.on_scene_loop_complete().unwrap();
         assert_eq!(outcome, SceneTransitionOutcome::SceneComplete);
         assert!(ev.active_scene().is_none());
+    }
+
+    // --- Phase 5: Stop の clip ミュート + AllNotesOff テスト ---
+
+    /// テストソースを Evaluator に評価させるヘルパ
+    /// Parses and evaluates a DSL source snippet on the given Evaluator.
+    fn eval_src(ev: &mut Evaluator, src: &str) {
+        let (rest, blocks) = crate::parser::parse_source(src).expect("parse");
+        assert!(
+            rest.trim().is_empty(),
+            "parser left trailing input: {rest:?}"
+        );
+        for b in blocks {
+            ev.eval_block(b).expect("eval");
+        }
+    }
+
+    /// channel 指定の instrument + 単音 clip + 1-entry scene を構築する共通ソース
+    /// Common DSL source producing one instrument on `channel`, one clip named
+    /// `clip_name`, and one scene named `scene_name` referencing that clip.
+    fn scene_setup_source(
+        scene_name: &str,
+        clip_name: &str,
+        inst_name: &str,
+        channel: u8,
+    ) -> String {
+        format!(
+            "device dev {{ port test }}\n\
+             instrument {inst} {{\n  device dev\n  channel {ch}\n}}\n\
+             clip {clip} [bars 1] {{\n  {inst} c\n}}\n\
+             scene {scene} {{ {clip} }}\n",
+            inst = inst_name,
+            ch = channel,
+            clip = clip_name,
+            scene = scene_name,
+        )
+    }
+
+    /// clip/scene 1 件を事前登録した Evaluator を返す
+    /// Build an Evaluator with one clip + scene + instrument pre-registered.
+    fn setup_with_single_clip(clip_name: &str, scene_name: &str, channel: u8) -> Evaluator {
+        let mut ev = Evaluator::new(120.0);
+        let src = scene_setup_source(scene_name, clip_name, "inst", channel);
+        eval_src(&mut ev, &src);
+        ev
+    }
+
+    /// Stop(None) で active_scene の使用中チャンネル分の AllNotesOff が pending に積まれる
+    #[test]
+    fn stop_none_queues_all_notes_off_for_active_scene_channels() {
+        let mut ev = setup_with_single_clip("a", "verse", 5);
+        ev.eval_block(Block::Play(PlayCommand {
+            target: PlayTarget::Scene("verse".into()),
+            repeat: RepeatSpec::Loop,
+        }))
+        .unwrap();
+        ev.eval_block(Block::Stop(StopCommand { target: None }))
+            .unwrap();
+
+        let channels = ev.take_pending_all_notes_off();
+        assert_eq!(channels, vec![5]);
+        assert!(ev.active_scene().is_none());
+        assert_eq!(*ev.state().state(), PlaybackState::Stopped);
+    }
+
+    /// Stop(scene 名) は全停止扱い + AllNotesOff
+    #[test]
+    fn stop_with_current_scene_name_fully_stops() {
+        let mut ev = setup_with_single_clip("a", "verse", 7);
+        ev.eval_block(Block::Play(PlayCommand {
+            target: PlayTarget::Scene("verse".into()),
+            repeat: RepeatSpec::Loop,
+        }))
+        .unwrap();
+        ev.eval_block(Block::Stop(StopCommand {
+            target: Some("verse".into()),
+        }))
+        .unwrap();
+        assert_eq!(ev.take_pending_all_notes_off(), vec![7]);
+        assert!(ev.active_scene().is_none());
+    }
+
+    /// Stop(clip 名) は該当 clip をミュートし、そのチャンネルのみ pending に
+    #[test]
+    fn stop_with_clip_name_mutes_and_queues_its_channel() {
+        let mut ev = Evaluator::new(120.0);
+        let src = "device dev { port test }\n\
+                   instrument inst_a {\n  device dev\n  channel 2\n}\n\
+                   instrument inst_b {\n  device dev\n  channel 9\n}\n\
+                   clip a [bars 1] {\n  inst_a c\n}\n\
+                   clip b [bars 1] {\n  inst_b c\n}\n\
+                   scene verse { a b }\n";
+        eval_src(&mut ev, src);
+        ev.eval_block(Block::Play(PlayCommand {
+            target: PlayTarget::Scene("verse".into()),
+            repeat: RepeatSpec::Loop,
+        }))
+        .unwrap();
+
+        ev.eval_block(Block::Stop(StopCommand {
+            target: Some("a".into()),
+        }))
+        .unwrap();
+
+        // active_scene は存続、"a" だけミュートされる
+        // active_scene persists; only "a" is muted
+        let scene = ev.active_scene().unwrap();
+        assert!(scene.is_muted("a"));
+        assert!(!scene.is_muted("b"));
+        assert_eq!(ev.take_pending_all_notes_off(), vec![2]);
+        assert!(matches!(
+            ev.state().state(),
+            PlaybackState::PlayingScene { .. }
+        ));
+    }
+
+    /// Stop(未知名) は active_scene を変更せず、pending も空
+    #[test]
+    fn stop_with_unknown_target_is_noop() {
+        let mut ev = setup_with_single_clip("a", "verse", 3);
+        ev.eval_block(Block::Play(PlayCommand {
+            target: PlayTarget::Scene("verse".into()),
+            repeat: RepeatSpec::Loop,
+        }))
+        .unwrap();
+        ev.eval_block(Block::Stop(StopCommand {
+            target: Some("ghost".into()),
+        }))
+        .unwrap();
+
+        assert!(ev.active_scene().is_some());
+        assert!(ev.take_pending_all_notes_off().is_empty());
+        assert!(matches!(
+            ev.state().state(),
+            PlaybackState::PlayingScene { .. }
+        ));
     }
 
     /// take_active_scene は ScenePlayer を奪い取り、Evaluator 側は None になる
