@@ -65,6 +65,46 @@ pub fn parse_stop(input: &str) -> IResult<&str, StopCommand> {
     ))
 }
 
+/// ポーズコマンドをパースする: `pause` または `pause NAME`（§10.4）
+///
+/// `NAME` は scene/session/clip のいずれかを指す識別子。
+/// 名前付き場合の対象解決（scene/session/clip 判別、名前不一致時の no-op 扱い）は
+/// Evaluator 側で行う。
+///
+/// Parse: `pause` or `pause NAME` (§10.4).
+/// `NAME` is an identifier referring to a scene, session, or clip. Target
+/// resolution and no-op handling on name mismatch are performed by the
+/// evaluator.
+pub fn parse_pause(input: &str) -> IResult<&str, PauseCommand> {
+    let (input, _) = tag("pause")(input)?;
+    let (input, target) = opt(preceded(space1, identifier))(input)?;
+    Ok((
+        input,
+        PauseCommand {
+            target: target.map(|s| s.to_string()),
+        },
+    ))
+}
+
+/// 再開コマンドをパースする: `resume` または `resume NAME`（§10.4）
+///
+/// `NAME` は Paused 中の scene/session 名、または clip 名。
+/// 名前不一致時の no-op 扱いは Evaluator 側で行う。
+///
+/// Parse: `resume` or `resume NAME` (§10.4).
+/// `NAME` is a paused scene/session name or a clip name. No-op handling on
+/// name mismatch is performed by the evaluator.
+pub fn parse_resume(input: &str) -> IResult<&str, ResumeCommand> {
+    let (input, _) = tag("resume")(input)?;
+    let (input, target) = opt(preceded(space1, identifier))(input)?;
+    Ok((
+        input,
+        ResumeCommand {
+            target: target.map(|s| s.to_string()),
+        },
+    ))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -135,5 +175,63 @@ mod tests {
         let (rest, cmd) = parse_stop("stop drums_a").unwrap();
         assert_eq!(rest, "");
         assert_eq!(cmd.target, Some("drums_a".into()));
+    }
+
+    // --- pause tests (§10.4) ---
+
+    /// 引数なしの pause は全体 pause
+    /// Bare `pause` targets the whole playback
+    #[test]
+    fn pause_all() {
+        let (rest, cmd) = parse_pause("pause").unwrap();
+        assert_eq!(rest, "");
+        assert_eq!(cmd.target, None);
+    }
+
+    /// 名前付き pause
+    /// Pause with a target name
+    #[test]
+    fn pause_named() {
+        let (rest, cmd) = parse_pause("pause drums_a").unwrap();
+        assert_eq!(rest, "");
+        assert_eq!(cmd.target, Some("drums_a".into()));
+    }
+
+    /// scene 名を target として pause
+    /// Pause with a scene name as target
+    #[test]
+    fn pause_scene_name() {
+        let (rest, cmd) = parse_pause("pause verse").unwrap();
+        assert_eq!(rest, "");
+        assert_eq!(cmd.target, Some("verse".into()));
+    }
+
+    // --- resume tests (§10.4) ---
+
+    /// 引数なしの resume は全体 resume
+    /// Bare `resume` targets the whole playback
+    #[test]
+    fn resume_all() {
+        let (rest, cmd) = parse_resume("resume").unwrap();
+        assert_eq!(rest, "");
+        assert_eq!(cmd.target, None);
+    }
+
+    /// 名前付き resume
+    /// Resume with a target name
+    #[test]
+    fn resume_named() {
+        let (rest, cmd) = parse_resume("resume drums_a").unwrap();
+        assert_eq!(rest, "");
+        assert_eq!(cmd.target, Some("drums_a".into()));
+    }
+
+    /// session 名を target として resume
+    /// Resume with a session name as target
+    #[test]
+    fn resume_session_name() {
+        let (rest, cmd) = parse_resume("resume main").unwrap();
+        assert_eq!(rest, "");
+        assert_eq!(cmd.target, Some("main".into()));
     }
 }

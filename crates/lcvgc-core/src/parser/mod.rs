@@ -109,6 +109,12 @@ pub fn parse_block(input: &str) -> IResult<&str, Block> {
     } else if trimmed.starts_with("stop") {
         let (r, v) = playback::parse_stop(input)?;
         Ok((r, Block::Stop(v)))
+    } else if trimmed.starts_with("pause") {
+        let (r, v) = playback::parse_pause(input)?;
+        Ok((r, Block::Pause(v)))
+    } else if trimmed.starts_with("resume") {
+        let (r, v) = playback::parse_resume(input)?;
+        Ok((r, Block::Resume(v)))
     } else {
         Err(nom::Err::Error(nom::error::Error::new(
             input,
@@ -199,5 +205,55 @@ scale c minor
         let (rest, blocks) = parse_source(input).unwrap();
         assert_eq!(rest, "");
         assert_eq!(blocks.len(), 2);
+    }
+
+    /// §10.4: pause / resume ブロックが parse_block でパースできる
+    /// §10.4: parse_block dispatches pause / resume correctly
+    #[test]
+    fn test_parse_pause_resume_block() {
+        let (_, b) = parse_block("pause").unwrap();
+        assert!(matches!(b, Block::Pause(_)));
+
+        let (_, b) = parse_block("pause verse").unwrap();
+        if let Block::Pause(cmd) = b {
+            assert_eq!(cmd.target, Some("verse".to_string()));
+        } else {
+            panic!("expected Block::Pause");
+        }
+
+        let (_, b) = parse_block("resume").unwrap();
+        assert!(matches!(b, Block::Resume(_)));
+
+        let (_, b) = parse_block("resume drums_a").unwrap();
+        if let Block::Resume(cmd) = b {
+            assert_eq!(cmd.target, Some("drums_a".to_string()));
+        } else {
+            panic!("expected Block::Resume");
+        }
+    }
+
+    /// §10.4: pause/resume を含む複数ブロックの統合パース
+    /// §10.4: integration parse with pause/resume among other blocks
+    #[test]
+    fn test_parse_source_with_pause_resume() {
+        let input = r#"
+tempo 120
+play verse
+pause
+resume
+pause drums_a
+resume drums_a
+stop
+"#;
+        let (rest, blocks) = parse_source(input).unwrap();
+        assert_eq!(rest, "");
+        assert_eq!(blocks.len(), 7);
+        assert!(matches!(blocks[0], Block::Tempo(_)));
+        assert!(matches!(blocks[1], Block::Play(_)));
+        assert!(matches!(blocks[2], Block::Pause(_)));
+        assert!(matches!(blocks[3], Block::Resume(_)));
+        assert!(matches!(blocks[4], Block::Pause(_)));
+        assert!(matches!(blocks[5], Block::Resume(_)));
+        assert!(matches!(blocks[6], Block::Stop(_)));
     }
 }

@@ -98,7 +98,11 @@ impl Registry {
                 self.scale = Some(s);
                 true
             }
-            Block::Play(_) | Block::Stop(_) | Block::Include(_) => false,
+            Block::Play(_)
+            | Block::Stop(_)
+            | Block::Pause(_)
+            | Block::Resume(_)
+            | Block::Include(_) => false,
         }
     }
 

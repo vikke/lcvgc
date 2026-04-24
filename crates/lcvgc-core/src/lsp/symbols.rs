@@ -65,6 +65,12 @@ pub enum SymbolKind {
     /// 停止コマンド
     /// Stop command
     Stop,
+    /// ポーズコマンド（§10.4）
+    /// Pause command (§10.4)
+    Pause,
+    /// 再開コマンド（§10.4）
+    /// Resume command (§10.4)
+    Resume,
 }
 
 /// ドキュメントシンボルプロバイダ
@@ -103,6 +109,14 @@ impl DocumentSymbolProvider {
                     Block::Include(i) => (i.path.clone(), SymbolKind::Include),
                     Block::Play(p) => (format!("{:?}", p.target), SymbolKind::Play),
                     Block::Stop(_) => ("stop".into(), SymbolKind::Stop),
+                    Block::Pause(p) => (
+                        p.target.clone().unwrap_or_else(|| "pause".into()),
+                        SymbolKind::Pause,
+                    ),
+                    Block::Resume(r) => (
+                        r.target.clone().unwrap_or_else(|| "resume".into()),
+                        SymbolKind::Resume,
+                    ),
                 };
                 DocumentSymbol {
                     name,

@@ -54,4 +54,12 @@ mod tests {
         assert!(parse_var("var include = something").is_err());
         assert!(parse_var("var device = something").is_err());
     }
+
+    /// §10.4: pause / resume は予約語なので変数名に使えない
+    /// §10.4: `pause` and `resume` are reserved keywords and cannot be used as variable names
+    #[test]
+    fn var_pause_resume_reserved() {
+        assert!(parse_var("var pause = something").is_err());
+        assert!(parse_var("var resume = something").is_err());
+    }
 }

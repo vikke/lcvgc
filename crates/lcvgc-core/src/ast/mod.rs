@@ -22,7 +22,7 @@ use device::DeviceDef;
 use include::IncludeDef;
 use instrument::InstrumentDef;
 use kit::KitDef;
-use playback::{PlayCommand, StopCommand};
+use playback::{PauseCommand, PlayCommand, ResumeCommand, StopCommand};
 use scale::ScaleDef;
 use scene::SceneDef;
 use session::SessionDef;
@@ -69,4 +69,10 @@ pub enum Block {
     /// 停止コマンドブロック
     /// Stop command block
     Stop(StopCommand),
+    /// ポーズコマンドブロック（§10.4）
+    /// Pause command block (§10.4)
+    Pause(PauseCommand),
+    /// 再開コマンドブロック（§10.4）
+    /// Resume command block (§10.4)
+    Resume(ResumeCommand),
 }
