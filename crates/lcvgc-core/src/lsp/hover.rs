@@ -90,6 +90,14 @@ impl HoverProvider {
             Block::Var(v) => Some(format!("**var** `{}` = `{}`", v.name, v.value)),
             Block::Include(inc) => Some(format!("**include** `{}`", inc.path)),
             Block::Play(_) | Block::Stop(_) => None,
+            Block::Pause(p) => Some(match &p.target {
+                None => "**pause** (全体 / whole)".to_string(),
+                Some(name) => format!("**pause** `{}`", name),
+            }),
+            Block::Resume(r) => Some(match &r.target {
+                None => "**resume** (全体 / whole)".to_string(),
+                Some(name) => format!("**resume** `{}`", name),
+            }),
         }
     }
 }

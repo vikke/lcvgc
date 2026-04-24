@@ -22,6 +22,8 @@ pub(crate) const RESERVED_KEYWORDS: &[&str] = &[
     "tempo",
     "play",
     "stop",
+    "pause",
+    "resume",
     "var",
     "port",
     "channel",
@@ -411,6 +413,8 @@ mod tests {
     fn test_is_reserved() {
         assert!(is_reserved("device"));
         assert!(is_reserved("clip"));
+        assert!(is_reserved("pause"));
+        assert!(is_reserved("resume"));
         assert!(!is_reserved("bass"));
         assert!(!is_reserved("tr808"));
     }

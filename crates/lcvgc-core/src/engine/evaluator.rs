@@ -33,6 +33,30 @@ pub enum EvalResult {
     PlayStarted,
     /// 停止
     Stopped,
+    /// ポーズ成功（§10.4）
+    /// Pause succeeded (§10.4)
+    Paused {
+        /// ポーズ対象名（None = 全体） / Pause target (None = whole)
+        target: Option<String>,
+    },
+    /// ポーズが no-op になった（§10.4 名前不一致等）
+    /// Pause was a no-op (§10.4 name mismatch, nothing to pause, etc.)
+    PausedNoop {
+        /// 理由メッセージ / Reason message
+        reason: String,
+    },
+    /// 再開成功（§10.4）
+    /// Resume succeeded (§10.4)
+    Resumed {
+        /// 再開対象名（None = 全体） / Resume target (None = whole)
+        target: Option<String>,
+    },
+    /// 再開が no-op になった（§10.4 Paused でない、名前不一致等）
+    /// Resume was a no-op (§10.4 not paused, name mismatch, etc.)
+    ResumedNoop {
+        /// 理由メッセージ / Reason message
+        reason: String,
+    },
     /// インクルード処理済み / Include processed
     IncludeProcessed {
         /// インクルード先ファイルパス / Path of the included file
@@ -392,7 +416,59 @@ impl Evaluator {
                 path: inc.path.clone(),
                 results_count: 0,
             }),
+            // Phase 3 で実装予定のスタブ（§10.4 pause/resume）
+            // Stub for pause/resume — full implementation comes in Phase 3 (§10.4)
+            Block::Pause(cmd) => self.eval_pause(cmd),
+            Block::Resume(cmd) => self.eval_resume(cmd),
         }
+    }
+
+    /// `pause` コマンドを評価する（§10.4）
+    ///
+    /// Phase 2 時点ではスタブ実装：すべて no-op を返す。
+    /// 本実装は Phase 3 で StateManager::Paused バリアント追加と同時に行う。
+    ///
+    /// # 引数 / Arguments
+    /// * `cmd` - PauseCommand（target = None で全体、Some で名前指定）
+    ///
+    /// # 戻り値 / Returns
+    /// `EvalResult::PausedNoop` または `EvalResult::Paused`。
+    fn eval_pause(
+        &mut self,
+        cmd: crate::ast::playback::PauseCommand,
+    ) -> Result<EvalResult, EngineError> {
+        // TODO(Phase 3): StateManager 連携・AllNotesOff 蓄積
+        // TODO(Phase 3): Integrate with StateManager and queue AllNotesOff
+        Ok(EvalResult::PausedNoop {
+            reason: format!(
+                "pause not yet implemented in Phase 2 (target={:?})",
+                cmd.target
+            ),
+        })
+    }
+
+    /// `resume` コマンドを評価する（§10.4）
+    ///
+    /// Phase 2 時点ではスタブ実装：すべて no-op を返す。
+    /// 本実装は Phase 3 で行う。
+    ///
+    /// # 引数 / Arguments
+    /// * `cmd` - ResumeCommand（target = None で全体、Some で名前指定）
+    ///
+    /// # 戻り値 / Returns
+    /// `EvalResult::ResumedNoop` または `EvalResult::Resumed`。
+    fn eval_resume(
+        &mut self,
+        cmd: crate::ast::playback::ResumeCommand,
+    ) -> Result<EvalResult, EngineError> {
+        // TODO(Phase 3): StateManager 連携・AllNotesOff 蓄積
+        // TODO(Phase 3): Integrate with StateManager and queue AllNotesOff
+        Ok(EvalResult::ResumedNoop {
+            reason: format!(
+                "resume not yet implemented in Phase 2 (target={:?})",
+                cmd.target
+            ),
+        })
     }
 
     /// Registry参照
