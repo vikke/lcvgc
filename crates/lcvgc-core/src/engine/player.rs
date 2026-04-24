@@ -36,6 +36,15 @@ pub struct ClipPlayer {
     /// ミュート状態（§10.3 `stop <clip>` によるclip単位ミュート対応）
     /// Mute state (for §10.3 clip-level mute via `stop <clip>`)
     muted: bool,
+    /// ポーズ状態（§10.4 `pause <clip>` による clip 単位の tick 凍結対応）
+    /// Pause state (for §10.4 clip-level tick freeze via `pause <clip>`)
+    ///
+    /// muted と独立したフラグ。pause 中は advance() で tick が進まず、
+    /// events_at() は空 Vec を返す。muted と異なり位相が凍結される。
+    /// Independent flag from `muted`. While paused, `advance()` keeps
+    /// `current_tick` unchanged and `events_at()` returns an empty Vec.
+    /// Unlike mute, the phase (position within the loop) is frozen.
+    paused: bool,
 }
 
 impl ClipPlayer {
@@ -47,6 +56,7 @@ impl ClipPlayer {
             current_tick: 0,
             looping,
             muted: false,
+            paused: false,
         }
     }
 
@@ -68,12 +78,37 @@ impl ClipPlayer {
         self.muted
     }
 
+    /// このクリップをポーズする（§10.4 `pause <clip>`）
+    ///
+    /// ポーズ中は `advance()` で tick が進まず位相が凍結される。
+    /// `events_at()` は空 Vec を返す。muted と独立したフラグ。
+    ///
+    /// Pauses this clip (§10.4 `pause <clip>`). While paused, `advance()`
+    /// does not advance `current_tick` and `events_at()` returns an empty
+    /// Vec. Independent from the mute flag.
+    pub fn pause(&mut self) {
+        self.paused = true;
+    }
+
+    /// ポーズを解除する
+    /// Resumes this clip.
+    pub fn resume(&mut self) {
+        self.paused = false;
+    }
+
+    /// ポーズ中か
+    /// Whether this clip is currently paused.
+    pub fn is_paused(&self) -> bool {
+        self.paused
+    }
+
     /// 指定tickにあるイベントを返す
     ///
     /// ループ時はtotal_ticksでmodした実効tickで検索する。
     /// 非ループ時はtotal_ticksを超えたら空を返す。
+    /// muted または paused の場合は空 Vec を返す。
     pub fn events_at(&self, tick: u64) -> Vec<&MidiEvent> {
-        if self.muted {
+        if self.muted || self.paused {
             return Vec::new();
         }
         if !self.looping && tick >= self.clip.total_ticks {
@@ -93,8 +128,14 @@ impl ClipPlayer {
     }
 
     /// tickを進める。ループ頭到達時にpending_clipがあれば差し替える。
+    /// paused 状態では tick を進めない（位相凍結、§10.4）。
+    ///
     /// Advance tick. If pending_clip exists and loop boundary is reached, swap it in.
+    /// While paused, the tick is frozen (phase preservation, §10.4).
     pub fn advance(&mut self, ticks: u64) {
+        if self.paused {
+            return;
+        }
         let old_tick = self.current_tick;
         self.current_tick += ticks;
 
@@ -272,6 +313,48 @@ impl ScenePlayer {
     pub fn unmute_all(&mut self) {
         for (_, player) in &mut self.players {
             player.unmute();
+        }
+    }
+
+    /// 指定名のクリップを pause する（未知名は no-op、§10.4）
+    /// Pause the clip with the given name (no-op if not found).
+    pub fn pause_clip(&mut self, name: &str) {
+        if let Some((_, player)) = self.players.iter_mut().find(|(n, _)| n == name) {
+            player.pause();
+        }
+    }
+
+    /// 指定名のクリップの pause を解除（未知名は no-op、§10.4）
+    /// Resume the clip with the given name (no-op if not found).
+    pub fn resume_clip(&mut self, name: &str) {
+        if let Some((_, player)) = self.players.iter_mut().find(|(n, _)| n == name) {
+            player.resume();
+        }
+    }
+
+    /// 指定名のクリップが pause 中か（未知名は false、§10.4）
+    /// Whether the named clip is paused (false if not found).
+    pub fn is_clip_paused(&self, name: &str) -> bool {
+        self.players
+            .iter()
+            .find(|(n, _)| n == name)
+            .map(|(_, p)| p.is_paused())
+            .unwrap_or(false)
+    }
+
+    /// 全クリップを pause する（§10.4 全体 pause 用）
+    /// Pause every clip (used for §10.4 global pause).
+    pub fn pause_all_clips(&mut self) {
+        for (_, player) in &mut self.players {
+            player.pause();
+        }
+    }
+
+    /// 全クリップの pause を解除する（§10.4 全体 resume 用）
+    /// Resume every clip (used for §10.4 global resume).
+    pub fn resume_all_clips(&mut self) {
+        for (_, player) in &mut self.players {
+            player.resume();
         }
     }
 
@@ -744,5 +827,183 @@ mod tests {
             events[0].message,
             MidiMessage::NoteOn { note: 72, .. }
         ));
+    }
+
+    // --- ポーズAPIテスト (#44 Phase 1) ---
+
+    /// ClipPlayer の初期状態はポーズ解除
+    /// ClipPlayer is not paused by default.
+    #[test]
+    fn clip_player_not_paused_by_default() {
+        let clip = make_clip(vec![(0, note_on(60))], 480);
+        let player = ClipPlayer::new(clip, true);
+        assert!(!player.is_paused());
+    }
+
+    /// pause 後は events_at が空を返し、resume 後は再びイベントを返す
+    /// After pause, events_at returns empty; after resume, events come back.
+    #[test]
+    fn clip_player_pause_suppresses_events() {
+        let clip = make_clip(vec![(0, note_on(60)), (240, note_on(64))], 480);
+        let mut player = ClipPlayer::new(clip, true);
+
+        assert_eq!(player.events_at(0).len(), 1);
+
+        player.pause();
+        assert!(player.is_paused());
+        assert!(player.events_at(0).is_empty());
+        assert!(player.events_at(240).is_empty());
+
+        player.resume();
+        assert!(!player.is_paused());
+        assert_eq!(player.events_at(0).len(), 1);
+        assert_eq!(player.events_at(240).len(), 1);
+    }
+
+    /// pause 中は tick が進まない（位相凍結）
+    /// Tick does not advance while paused (phase frozen).
+    #[test]
+    fn clip_player_pause_freezes_tick() {
+        let clip = make_clip(vec![(0, note_on(60))], 480);
+        let mut player = ClipPlayer::new(clip, true);
+
+        player.advance(120);
+        assert_eq!(player.current_tick(), 120);
+
+        player.pause();
+        player.advance(240);
+        // pause 中は tick が進まない
+        // Tick is frozen while paused
+        assert_eq!(player.current_tick(), 120);
+
+        player.resume();
+        player.advance(60);
+        assert_eq!(player.current_tick(), 180);
+    }
+
+    /// paused と muted は独立したフラグ
+    /// paused and muted are independent flags.
+    #[test]
+    fn clip_player_paused_and_muted_are_independent() {
+        let clip = make_clip(vec![(0, note_on(60))], 480);
+        let mut player = ClipPlayer::new(clip, true);
+
+        player.mute();
+        assert!(player.is_muted());
+        assert!(!player.is_paused());
+
+        player.pause();
+        assert!(player.is_muted());
+        assert!(player.is_paused());
+
+        player.unmute();
+        assert!(!player.is_muted());
+        assert!(player.is_paused());
+        // muted は解除されたが paused なので events は空
+        // muted is cleared but paused keeps events empty
+        assert!(player.events_at(0).is_empty());
+
+        player.resume();
+        assert!(!player.is_paused());
+        assert_eq!(player.events_at(0).len(), 1);
+    }
+
+    /// ScenePlayer::pause_clip で該当クリップのみ pause、他は影響なし
+    /// ScenePlayer::pause_clip pauses only the targeted clip.
+    #[test]
+    fn scene_player_pause_clip_targets_single_clip() {
+        let mut scene = ScenePlayer::new();
+        scene.add_clip(
+            "a".to_string(),
+            make_clip(vec![(0, note_on(60))], 480),
+            true,
+        );
+        scene.add_clip(
+            "b".to_string(),
+            make_clip(vec![(0, note_on(72))], 480),
+            true,
+        );
+
+        assert_eq!(scene.events_at(0).len(), 2);
+
+        scene.pause_clip("a");
+        assert!(scene.is_clip_paused("a"));
+        assert!(!scene.is_clip_paused("b"));
+
+        let events = scene.events_at(0);
+        assert_eq!(events.len(), 1);
+        assert!(matches!(
+            events[0].message,
+            MidiMessage::NoteOn { note: 72, .. }
+        ));
+
+        scene.resume_clip("a");
+        assert!(!scene.is_clip_paused("a"));
+        assert_eq!(scene.events_at(0).len(), 2);
+    }
+
+    /// 存在しないクリップ名への pause/resume は no-op
+    /// pause/resume on an unknown clip name is a no-op.
+    #[test]
+    fn scene_player_pause_unknown_clip_is_noop() {
+        let mut scene = ScenePlayer::new();
+        scene.add_clip("a".to_string(), make_clip(vec![], 480), true);
+        scene.pause_clip("unknown");
+        assert!(!scene.is_clip_paused("unknown"));
+        assert!(!scene.is_clip_paused("a"));
+    }
+
+    /// resume_all_clips は全クリップのポーズを解除する
+    /// resume_all_clips clears paused state for every clip.
+    #[test]
+    fn scene_player_resume_all_clips_clears_all_pauses() {
+        let mut scene = ScenePlayer::new();
+        scene.add_clip(
+            "a".to_string(),
+            make_clip(vec![(0, note_on(60))], 480),
+            true,
+        );
+        scene.add_clip(
+            "b".to_string(),
+            make_clip(vec![(0, note_on(72))], 480),
+            true,
+        );
+
+        scene.pause_clip("a");
+        scene.pause_clip("b");
+        assert!(scene.is_clip_paused("a") && scene.is_clip_paused("b"));
+
+        scene.resume_all_clips();
+        assert!(!scene.is_clip_paused("a") && !scene.is_clip_paused("b"));
+        assert_eq!(scene.events_at(0).len(), 2);
+    }
+
+    /// pause_all_clips は全クリップを pause する
+    /// pause_all_clips pauses every clip in the scene.
+    #[test]
+    fn scene_player_pause_all_clips_pauses_all() {
+        let mut scene = ScenePlayer::new();
+        scene.add_clip(
+            "a".to_string(),
+            make_clip(vec![(0, note_on(60))], 480),
+            true,
+        );
+        scene.add_clip(
+            "b".to_string(),
+            make_clip(vec![(0, note_on(72))], 480),
+            true,
+        );
+
+        scene.pause_all_clips();
+        assert!(scene.is_clip_paused("a") && scene.is_clip_paused("b"));
+        assert!(scene.events_at(0).is_empty());
+
+        // advance_all を呼んでも位相は進まない
+        // advance_all does not advance phase while paused
+        scene.advance_all(240);
+        scene.resume_all_clips();
+        // resume 後は tick 0 のままイベントが取れる
+        // After resume, events at tick 0 still apply
+        assert_eq!(scene.events_at(0).len(), 2);
     }
 }
