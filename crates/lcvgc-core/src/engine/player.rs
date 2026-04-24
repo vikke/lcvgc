@@ -358,43 +358,48 @@ impl ScenePlayer {
         }
     }
 
-    /// 内包する全 clip の全イベントから使用中チャンネルを集める
+    /// 内包する全 clip の全イベントから使用中の (device, channel) を集める
     ///
     /// Stop 時の AllNotesOff 送信先を決定するために使う。ミュート状態は
-    /// 無視して、元の clip 定義が対象とするチャンネルを返す。
+    /// 無視して、元の clip 定義が対象とする (device, channel) を返す。
+    /// Issue #49: device ごとに AllNotesOff を振り分けるため、device 名を
+    /// 同時に返す API に変更。
     ///
-    /// Collects every MIDI channel used by any event in any contained clip,
-    /// ignoring mute state. Used to determine AllNotesOff destinations on stop.
-    pub fn channels_in_use(&self) -> Vec<u8> {
-        let mut channels = Vec::new();
+    /// Collects every (device, MIDI channel) pair used by any event in any
+    /// contained clip, ignoring mute state. Used to determine per-device
+    /// AllNotesOff destinations on stop (Issue #49).
+    pub fn channels_in_use(&self) -> Vec<(String, u8)> {
+        let mut pairs: Vec<(String, u8)> = Vec::new();
         for (_, p) in &self.players {
             for ev in &p.clip.events {
-                let ch = channel_of(&ev.message);
-                if !channels.contains(&ch) {
-                    channels.push(ch);
+                let pair = (ev.device.clone(), channel_of(&ev.message));
+                if !pairs.contains(&pair) {
+                    pairs.push(pair);
                 }
             }
         }
-        channels
+        pairs
     }
 
-    /// 指定名の clip が使用するチャンネル一覧
+    /// 指定名の clip が使用する (device, channel) 一覧
     ///
     /// 該当 clip が見つからない、または全イベントを持たない場合は空 Vec。
+    /// Issue #49: mute <clip> で該当 device のみに AllNotesOff を飛ばす
+    /// ために device 名もセットで返す。
     ///
-    /// Returns the channels used by the clip with the given name. Empty when
-    /// the clip is not found or has no events.
-    pub fn channels_of_clip(&self, name: &str) -> Vec<u8> {
-        let mut channels = Vec::new();
+    /// Returns the (device, channel) pairs used by the clip with the given
+    /// name. Empty when the clip is not found or has no events.
+    pub fn channels_of_clip(&self, name: &str) -> Vec<(String, u8)> {
+        let mut pairs: Vec<(String, u8)> = Vec::new();
         if let Some((_, p)) = self.players.iter().find(|(n, _)| n == name) {
             for ev in &p.clip.events {
-                let ch = channel_of(&ev.message);
-                if !channels.contains(&ch) {
-                    channels.push(ch);
+                let pair = (ev.device.clone(), channel_of(&ev.message));
+                if !pairs.contains(&pair) {
+                    pairs.push(pair);
                 }
             }
         }
-        channels
+        pairs
     }
 
     /// 指定名の clip が登録されているか
@@ -432,7 +437,7 @@ mod tests {
         CompiledClip {
             events: events
                 .into_iter()
-                .map(|(tick, message)| MidiEvent { tick, message })
+                .map(|(tick, message)| MidiEvent::new(tick, message, ""))
                 .collect(),
             total_ticks,
             warnings: vec![],

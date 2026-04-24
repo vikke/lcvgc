@@ -7,6 +7,7 @@
 * [起動オプション](#起動オプション)
 * [1. デバイス定義 (device)](#1-デバイス定義-device)
     * [1.1 利用可能なMIDIポートの確認 (list_ports)](#11-利用可能なmidiポートの確認-list_ports)
+    * [1.2 複数 device への振り分けルーティング](#12-複数-device-への振り分けルーティング)
 * [2. 楽器定義 (instrument)](#2-楽器定義-instrument)
     * [Gate比率のデフォルト値](#gate比率のデフォルト値)
 * [3. キット定義 (kit)](#3-キット定義-kit)
@@ -169,6 +170,29 @@ device volca_keys {
 | `direction` | string | `"out"` = MIDI出力ポート、`"in"` = MIDI入力ポート |
 
 Neovimプラグインは `device` ブロック内の `port` 補完時にエンジンへ `list_ports` を送信し、取得したポート名を補完候補として提示する。エンジンとエディタが別ホスト（例: エディタはWSL2、エンジンはWindows Native）で動作する構成でも、エンジン側の実際のMIDIポートが取得できる。`device` の `port` には `direction: "out"` のポート名を指定する。
+
+### 1.2 複数 device への振り分けルーティング
+
+`instrument.device` および `kit.device` で指定された device 論理名は、MIDI 送出時の「送出先 sink」のキーとして使われる。起動時エンジンは DSL 中の全 `device` ブロックを読み取り、`device name -> MIDI 出力ポート接続` のマップ（`PortManager` + `MidirSink`）を構築する。
+
+再生時は clip から生成された各 MIDI イベントに、その clip が参照する `instrument.device`（または `kit.device`）が**コンパイル時に**埋め込まれ、`PlaybackDriver` はこの値をキーに対応する sink へ振り分ける。
+
+#### ルーティング規約
+
+- **1 clip = 1 device**: 1 つの clip の全イベントは、その clip が参照する instrument（または kit）の device に集約される。clip 内に複数 instrument を並べた場合でも、各 instrument の `device` によって行ごとに振り分け先が決まる。
+- **`AllNotesOff` も device 別**: `stop`/`mute`/`pause` 等で発行される `CC#123 value=0` は、`(device 論理名, channel 番号)` のペアで蓄積され、該当 device の sink にのみ送出される。他 device には届かない。
+- **未登録 device へのイベント**: 起動時に接続に失敗した device、あるいは sink マップに存在しない device 名を持つイベントは warn ログに記録され、ドロップされる（エンジンは停止しない）。
+- **接続失敗の部分成功**: ある device の MIDI ポート接続が失敗しても、他 device への再生は継続する。
+- **後方互換の `default` sink**: CLI オプション `--midi-device <ポート名>` で指定された接続は、論理名 `"default"` として sink マップに追加される。コンパイル時に device 未指定だった古い clip 経路 (MidiEvent.device が空文字列) は `"default"` にフォールバックする。
+
+#### 起動時の sink マップ構築
+
+1. 設定ロード後、Evaluator の Registry から `DeviceDef` 一覧を取得する
+2. 各 `DeviceDef.name` を論理名として `PortManager::connect(name, port)` を実行
+3. 成功した device は `MidirSink::new(pm, name)` として sink マップに登録
+4. 失敗した device は warn ログを出して skip（他 device は継続）
+5. `--midi-device` 指定があれば `"default"` として追加接続を試みる
+6. sink マップが空でなければ `run_driver(evaluator, sinks, clock)` を tokio::spawn で起動
 
 ---
 
@@ -1295,9 +1319,13 @@ unmute drums_a
 > - `stop <clip>` は **削除済み**（Issue #43）。以前の挙動は `mute <clip>` に移行
 > - `pause` / `resume` は **実装済み**（§10.4.1 の表の pause/resume 行すべて、Issue #44）
 > - `mute <clip>` / `unmute <clip>` は **実装済み**（Issue #43）
-> - MIDI 実機出力は `--midi-device <port>` を指定した場合にのみ有効（Issue #48）。
->   **現時点で device は 1 台のみ対応**。複数 device ルーティング、MIDI トランスポート
->   メッセージ（Start/Stop/Continue）、Timing Clock / SPP 送出は今後の Issue で対応予定。
+> - MIDI 実機出力は Issue #48 で `--midi-device <port>` 指定時に有効化。
+> - Issue #49 で **複数 device への MIDI 振り分けルーティングを実装**。DSL の
+>   `device` ブロックが複数あれば、各 device への個別接続が起動時に作られ、
+>   `instrument.device` / `kit.device` に基づいて MIDI イベントが振り分けられる。
+>   詳細は §1.2「複数 device への振り分けルーティング」を参照。
+> - MIDI トランスポートメッセージ（Start/Stop/Continue）、Timing Clock / SPP
+>   送出は今後の Issue で対応予定。
 
 lcvgc には「再生を止める」ための**独立した 3 種類の操作**がある。それぞれ tick（時間）・音・位相（ループ内の現在位置）への作用が異なる。
 

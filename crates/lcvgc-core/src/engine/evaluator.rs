@@ -128,9 +128,16 @@ pub struct Evaluator {
     /// 現在 play 中の ScenePlayer（Phase 3: PlayScene でコンパイル・構築）
     /// Currently active ScenePlayer (Phase 3: built when PlayScene is evaluated)
     active_scene: Option<ScenePlayer>,
-    /// Stop 評価時に呼び出し側が送出すべき AllNotesOff の対象チャンネル（Phase 5）
-    /// Channels that the caller should send AllNotesOff on after Stop (Phase 5)
-    pending_all_notes_off: Vec<u8>,
+    /// Stop/mute 評価時に呼び出し側が送出すべき AllNotesOff の対象
+    /// `(device, channel)` 一覧（Phase 5 + Issue #49）
+    ///
+    /// Issue #49: 複数 device ルーティング対応のため channel のみから
+    /// (device 論理名, channel) のペアに拡張。
+    ///
+    /// Queue of `(device, channel)` pairs that the caller should emit
+    /// AllNotesOff (CC#123 value=0) on after Stop/mute. Extended from a bare
+    /// channel list to support multi-device routing (Issue #49).
+    pending_all_notes_off: Vec<(String, u8)>,
 }
 
 impl Evaluator {
@@ -146,14 +153,17 @@ impl Evaluator {
         }
     }
 
-    /// Stop 評価で溜まった AllNotesOff 対象チャンネルを取り出してクリアする
+    /// Stop/mute 評価で溜まった AllNotesOff 対象の `(device, channel)`
+    /// 一覧を取り出してクリアする
     ///
-    /// 呼び出し側（tick driver/daemon）が取得して `MidiMessage::ControlChange
-    /// { cc: 123, value: 0 }` を各 channel に送出する。
+    /// 呼び出し側（tick driver / daemon）は device 名をキーに対応する
+    /// `MidiSink` を選び、`MidiMessage::ControlChange { cc: 123, value: 0 }`
+    /// を各 channel に送出する。
     ///
-    /// Takes the queued AllNotesOff target channels and clears the internal
-    /// buffer. The caller is expected to emit CC#123 value=0 on each channel.
-    pub fn take_pending_all_notes_off(&mut self) -> Vec<u8> {
+    /// Takes the queued AllNotesOff `(device, channel)` pairs and clears the
+    /// internal buffer. The caller selects the matching `MidiSink` by device
+    /// name and emits CC#123 value=0 on each channel (Issue #49).
+    pub fn take_pending_all_notes_off(&mut self) -> Vec<(String, u8)> {
         std::mem::take(&mut self.pending_all_notes_off)
     }
 
@@ -1507,7 +1517,7 @@ mod tests {
             .unwrap();
 
         let channels = ev.take_pending_all_notes_off();
-        assert_eq!(channels, vec![5]);
+        assert_eq!(channels, vec![("dev".to_string(), 5)]);
         assert!(ev.active_scene().is_none());
         assert_eq!(*ev.state().state(), PlaybackState::Stopped);
     }
@@ -1525,7 +1535,10 @@ mod tests {
             target: Some("verse".into()),
         }))
         .unwrap();
-        assert_eq!(ev.take_pending_all_notes_off(), vec![7]);
+        assert_eq!(
+            ev.take_pending_all_notes_off(),
+            vec![("dev".to_string(), 7)]
+        );
         assert!(ev.active_scene().is_none());
     }
 
@@ -1558,7 +1571,10 @@ mod tests {
         let scene = ev.active_scene().unwrap();
         assert!(scene.is_muted("a"));
         assert!(!scene.is_muted("b"));
-        assert_eq!(ev.take_pending_all_notes_off(), vec![2]);
+        assert_eq!(
+            ev.take_pending_all_notes_off(),
+            vec![("dev".to_string(), 2)]
+        );
         assert!(matches!(
             ev.state().state(),
             PlaybackState::PlayingScene { .. }
@@ -1587,6 +1603,74 @@ mod tests {
         let scene = ev.active_scene().unwrap();
         assert!(!scene.is_muted("a"));
         assert!(ev.take_pending_all_notes_off().is_empty());
+    }
+
+    /// Issue #49: 複数 device を含む scene で `mute <clip>` すると、
+    /// その clip の device と channel の組だけが `pending_all_notes_off` に
+    /// 積まれ、他 device は影響を受けない。
+    ///
+    /// Issue #49: When a scene has clips bound to different devices,
+    /// `mute <clip>` queues AllNotesOff only for the (device, channel)
+    /// pair of the targeted clip; other devices are not touched.
+    #[test]
+    fn mute_with_multi_device_queues_only_target_device_channel() {
+        use crate::ast::playback::MuteCommand;
+        let mut ev = Evaluator::new(120.0);
+        let src = "device synth_a { port port_a }\n\
+                   device synth_b { port port_b }\n\
+                   instrument lead {\n  device synth_a\n  channel 1\n}\n\
+                   instrument pad {\n  device synth_b\n  channel 2\n}\n\
+                   clip a [bars 1] {\n  lead c\n}\n\
+                   clip b [bars 1] {\n  pad c\n}\n\
+                   scene verse { a b }\n";
+        eval_src(&mut ev, src);
+        ev.eval_block(Block::Play(PlayCommand {
+            target: PlayTarget::Scene("verse".into()),
+            repeat: RepeatSpec::Loop,
+        }))
+        .unwrap();
+
+        // clip "a" (device=synth_a, channel=1) だけを mute
+        ev.eval_block(Block::Mute(MuteCommand { target: "a".into() }))
+            .unwrap();
+
+        assert_eq!(
+            ev.take_pending_all_notes_off(),
+            vec![("synth_a".to_string(), 1)],
+            "mute は該当 device/channel のみ AllNotesOff する"
+        );
+    }
+
+    /// Issue #49: 複数 device を含む scene で `stop`（None）すると、
+    /// active_scene の全 (device, channel) が pending に積まれる。
+    ///
+    /// Issue #49: `stop` (None) on a multi-device scene queues AllNotesOff
+    /// for every (device, channel) pair in the active scene.
+    #[test]
+    fn stop_with_multi_device_queues_all_device_channel_pairs() {
+        let mut ev = Evaluator::new(120.0);
+        let src = "device synth_a { port port_a }\n\
+                   device synth_b { port port_b }\n\
+                   instrument lead {\n  device synth_a\n  channel 1\n}\n\
+                   instrument pad {\n  device synth_b\n  channel 2\n}\n\
+                   clip a [bars 1] {\n  lead c\n}\n\
+                   clip b [bars 1] {\n  pad c\n}\n\
+                   scene verse { a b }\n";
+        eval_src(&mut ev, src);
+        ev.eval_block(Block::Play(PlayCommand {
+            target: PlayTarget::Scene("verse".into()),
+            repeat: RepeatSpec::Loop,
+        }))
+        .unwrap();
+        ev.eval_block(Block::Stop(StopCommand { target: None }))
+            .unwrap();
+
+        let mut pairs = ev.take_pending_all_notes_off();
+        pairs.sort();
+        assert_eq!(
+            pairs,
+            vec![("synth_a".to_string(), 1), ("synth_b".to_string(), 2)],
+        );
     }
 
     /// §10.4: active_scene が無いときの `mute` は MutedNoop
@@ -2354,7 +2438,10 @@ instrument bass {
         assert_eq!(result, EvalResult::Paused { target: None });
 
         assert!(ev.state().is_paused());
-        assert_eq!(ev.take_pending_all_notes_off(), vec![5]);
+        assert_eq!(
+            ev.take_pending_all_notes_off(),
+            vec![("dev".to_string(), 5)]
+        );
         let scene = ev.active_scene().unwrap();
         assert!(scene.is_clip_paused("a"));
     }
@@ -2383,7 +2470,10 @@ instrument bass {
         );
 
         assert!(ev.state().is_paused());
-        assert_eq!(ev.take_pending_all_notes_off(), vec![7]);
+        assert_eq!(
+            ev.take_pending_all_notes_off(),
+            vec![("dev".to_string(), 7)]
+        );
     }
 
     /// Pause(clip 名) は該当 clip のみ pause、そのチャンネルだけ AllNotesOff
@@ -2422,7 +2512,10 @@ instrument bass {
         let scene = ev.active_scene().unwrap();
         assert!(scene.is_clip_paused("a"));
         assert!(!scene.is_clip_paused("b"));
-        assert_eq!(ev.take_pending_all_notes_off(), vec![2]);
+        assert_eq!(
+            ev.take_pending_all_notes_off(),
+            vec![("dev".to_string(), 2)]
+        );
     }
 
     /// Pause(未知名) は no-op で active_scene も state も不変、pending 空（§10.4 D3）
