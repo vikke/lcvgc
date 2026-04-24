@@ -65,6 +65,8 @@
     * [10.1 Scene Playback](#101-scene-playback)
     * [10.2 Session Playback](#102-session-playback)
     * [10.3 Stop](#103-stop)
+    * [10.3.1 Pause and Resume (pause / resume)](#1031-pause-and-resume-pause--resume)
+    * [10.4 Playback Control Semantics (stop / pause / mute)](#104-playback-control-semantics-stop--pause--mute)
 * [11. Error Handling](#11-error-handling)
     * [11.1 eval Failure](#111-eval-failure)
     * [11.2 Undefined References](#112-undefined-references)
@@ -416,7 +418,7 @@ instrument bass {
 
 The following keywords cannot be used as variable names:
 
-`device`, `instrument`, `kit`, `clip`, `scene`, `session`, `include`, `tempo`, `play`, `stop`, `var`, `port`, `channel`, `note`, `gate_normal`, `gate_staccato`, `cc`, `use`, `resolution`, `arp`, `bars`, `time`, `scale`, `repeat`, `loop`
+`device`, `instrument`, `kit`, `clip`, `scene`, `session`, `include`, `tempo`, `play`, `stop`, `pause`, `resume`, `var`, `port`, `channel`, `note`, `gate_normal`, `gate_staccato`, `cc`, `use`, `resolution`, `arp`, `bars`, `time`, `scale`, `repeat`, `loop`
 
 ---
 
@@ -1235,12 +1237,41 @@ stop
 stop drums_a
 ```
 
+### 10.3.1 Pause and Resume (pause / resume)
+
+Use these when you want to freeze the tick (time) and later resume "from that exact point". The difference from `stop` is that the phase (position inside the loop) is preserved. See §10.4 for a detailed comparison.
+
+```
+// Pause globally (freeze tick, send AllNotesOff)
+pause
+
+// Resume from where it was frozen
+resume
+
+// Named target: only pauses globally when the name matches the current scene/session
+pause verse            // Pauses globally if verse is playing; no-op otherwise
+pause main             // Pauses globally if session "main" is playing
+
+// A clip name freezes just that clip (other clips keep advancing)
+pause drums_a          // Freezes only drums_a; other clips continue
+resume drums_a         // Resumes drums_a from its frozen position
+
+// Named resume only restores globally when the paused prev name matches
+resume verse           // Global resume only if the paused prev was verse
+```
+
+- `pause` / `resume` — no-argument form acts on the whole playback
+- `pause <scene/session>` / `resume <scene/session>` — acts on the whole playback only on name match. Mismatches are **no-ops** (per §11: never stop the sound)
+- `pause <clip>` / `resume <clip>` — acts on a single clip. Unknown clip names in `active_scene` are **no-ops**
+- On name mismatch, eval returns `PausedNoop { reason }` / `ResumedNoop { reason }`. The LSP raises a diagnostic Warning up front.
+
 ### 10.4 Playback Control Semantics (stop / pause / mute)
 
 > **Implementation status**:
 > - `stop` / `stop <scene>` / `stop <session>` are implemented
 > - `stop <clip>` (currently mute-equivalent) will be renamed to `mute <clip>` (Issue #43)
-> - `pause` / `resume` are not implemented (Issue #44)
+> - `pause` / `resume` are **implemented** (every pause/resume row in §10.4.1, Issue #44)
+> - `mute <clip>` / `unmute <clip>` are not implemented (#43 will rename `stop <clip>`)
 >
 > The tables below describe the target specification. Code using `stop <clip>` will need to be migrated to `mute <clip>` once #43 lands.
 
@@ -1254,13 +1285,30 @@ lcvgc provides **three independent kinds of "stop" operations**, each with diffe
 | `stop` | Whole | Stops | AllNotesOff | Reset (next time from 0) | Released | `play` from the top |
 | `stop <scene/session>` | Whole (only on name match) | Stops | AllNotesOff | Reset | Released | `play` from the top |
 | `pause` | Whole | Stops | AllNotesOff | **Preserved (frozen)** | Retained | `resume` continues |
-| `pause <session>` | Whole (only on name match) | Stops | AllNotesOff | Preserved (frozen) | Retained | `resume` continues |
-| `pause <scene>` | Whole (only on name match) | Stops | AllNotesOff | Preserved (frozen) | Retained | `resume` continues |
+| `pause <session>` | Whole (only on name match) | Stops | AllNotesOff | Preserved (frozen) | Retained | `resume [<session>]` continues |
+| `pause <scene>` | Whole (only on name match) | Stops | AllNotesOff | Preserved (frozen) | Retained | `resume [<scene>]` continues |
 | `pause <clip>` | clip | Only that clip stops | AllNotesOff (that ch.) | Only that clip frozen | Retained | `resume <clip>` continues |
 | `resume` | Whole | Resumes | Starts sounding | - | - | - |
+| `resume <session>` | Whole (only on name match) | Resumes | Starts sounding | - | - | - |
+| `resume <scene>` | Whole (only on name match) | Resumes | Starts sounding | - | - | - |
 | `resume <clip>` | clip | Resumes | Starts sounding | - | - | - |
 | `mute <clip>` | clip | **Continues** | AllNotesOff (that ch.) | Preserved | Retained | `unmute <clip>` rejoins instantly |
 | `unmute <clip>` | clip | Continues | Starts sounding | - | - | - |
+
+**Name-mismatch behavior** (per §11: never stop the sound):
+
+| Situation | Behavior |
+|---|---|
+| `pause <name>` where name is neither the current scene/session nor a clip in active_scene | No-op (state unchanged). Eval returns `PausedNoop { reason }`. LSP raises a Warning up front. |
+| `resume <name>` where name is neither the paused prev scene/session name nor a clip in active_scene | No-op. Eval returns `ResumedNoop { reason }`. LSP raises a Warning up front. |
+| `resume` while not paused | No-op (`ResumedNoop { reason: "not paused" }`) |
+| `pause` while stopped | No-op (`PausedNoop { reason: "nothing is playing" }`) |
+| Re-running `pause` while already paused | No-op (no nested Paused) |
+| `stop` while paused | Clears Paused and transitions to Stopped |
+| `stop <name>` while paused | Transitions to Stopped if the prev scene/session name matches; no-op otherwise |
+| `play <scene/session>` while paused | Clears Paused and starts fresh playback from tick 0 |
+
+**Relationship between per-clip `pause <clip>` and whole `resume`**: A whole `resume` resumes every clip in `active_scene`, so any individually-paused clip is resumed at the same time (pause/resume is the symmetric operation). If you want to keep a specific clip frozen, run `pause <clip>` again after the `resume`.
 
 #### 10.4.2 Differences among clip-targeting operations
 
@@ -1374,7 +1422,7 @@ The engine continues playback as-is. Restarting Neovim and reconnecting allows c
 
 ## 12. Grammar Rules Summary
 
-- Each block (device, instrument, kit, clip, scene, session, tempo, play, stop, include, var) can be independently parsed and eval'd
+- Each block (device, instrument, kit, clip, scene, session, tempo, play, stop, pause, resume, include, var) can be independently parsed and eval'd
 - Eval'ing a block with the same name overwrites it
 - Overwriting a clip causes scenes using that clip to switch to the new content at the start of the next loop
 - Overwriting a session takes effect from the next scene transition
@@ -1401,4 +1449,6 @@ The engine continues playback as-is. Restarting Neovim and reconnecting allows c
 - Time signature is specified per clip (default is 4/4 if omitted)
 - Scale is a global setting + can be overridden per clip (hint information for LSP completion, does not affect playback)
 - Tempo is a global setting + can have change specifications within scenes
+- `pause` / `resume` act on the whole playback with no arguments, on the whole playback (only on match) with a scene/session name, and on a single clip with a clip name. `pause <clip>` freezes the tick while preserving phase — an operation independent of `stop` / `mute` (§10.4)
+- On `pause` / `resume` name mismatch, the result is a no-op plus `PausedNoop` / `ResumedNoop`. The LSP raises a Warning up front
 - All errors do not stop playback. Notification only

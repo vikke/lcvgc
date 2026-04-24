@@ -64,6 +64,8 @@ impl CompletionProvider {
             "include",
             "play",
             "stop",
+            "pause",
+            "resume",
         ]
         .iter()
         .map(|kw| CompletionItem {
@@ -400,13 +402,22 @@ mod tests {
 
     #[test]
     fn test_keyword_completions_count() {
-        assert_eq!(CompletionProvider::keyword_completions().len(), 12);
+        assert_eq!(CompletionProvider::keyword_completions().len(), 14);
     }
 
     #[test]
     fn test_keyword_completions_contains_device() {
         let items = CompletionProvider::keyword_completions();
         assert!(items.iter().any(|i| i.label == "device"));
+    }
+
+    /// §10.4: pause / resume がキーワード補完に含まれる
+    /// §10.4: pause and resume are included in keyword completions
+    #[test]
+    fn test_keyword_completions_contains_pause_resume() {
+        let items = CompletionProvider::keyword_completions();
+        assert!(items.iter().any(|i| i.label == "pause"));
+        assert!(items.iter().any(|i| i.label == "resume"));
     }
 
     #[test]

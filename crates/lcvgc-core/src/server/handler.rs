@@ -162,6 +162,12 @@ pub async fn handle_request(evaluator: &Arc<Mutex<Evaluator>>, request: Request)
             diags.extend(DiagnosticProvider::include_position_diagnostics(
                 analyzer.blocks(),
             ));
+            // §10.4: pause / resume の target 名が未定義なら Warning
+            // §10.4: Warn on pause / resume with unknown target names
+            diags.extend(DiagnosticProvider::pause_resume_target_diagnostics(
+                analyzer.blocks(),
+                analyzer.registry(),
+            ));
             // include_diagnostics()は呼ばない（Lua側で実施）
             // Do not call include_diagnostics() (handled on Lua side)
             let items: Vec<LspDiagnosticItem> = diags
