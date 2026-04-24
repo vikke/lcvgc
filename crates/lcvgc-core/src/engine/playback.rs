@@ -132,15 +132,18 @@ impl PlaybackDriver {
     pub async fn step_once(&mut self) -> Result<(), EngineError> {
         let mut ev = self.evaluator.lock().await;
 
-        // Evaluator ロック中に AllNotesOff キューだけ吸い上げる（借用を短く保つ）
+        // Evaluator ロック中に AllNotesOff / Transport キューを吸い上げる（借用を短く保つ）
+        // Issue #50: System Real-Time Start/Stop は Play/Stop 評価で積まれる。
         let pending_all_notes_off = ev.take_pending_all_notes_off();
+        let pending_transport = ev.take_pending_transport();
 
         let Some(scene) = ev.active_scene_mut() else {
             // 再生停止中: tick をリセットして次の play に備える
-            // 残っている AllNotesOff だけは送出して stop 側面をカバーする
+            // 残っている AllNotesOff / Transport は送出して stop 側面をカバーする
             self.current_tick = 0;
             self.was_active = false;
             drop(ev);
+            self.dispatch_transport(&pending_transport)?;
             self.dispatch_all_notes_off(&pending_all_notes_off)?;
             return Ok(());
         };
@@ -160,6 +163,12 @@ impl PlaybackDriver {
         scene.advance_all(1);
         let scene_len = scene.scene_tick_length();
         drop(ev);
+
+        // Issue #50: まず Transport (Start/Stop) を送出する。Start は tick イベントより
+        // 前に外部機材に届ける必要があり、Stop も AllNotesOff と並んで早めに送るのが自然。
+        // Issue #50: emit Transport (Start/Stop) first so external gear sees Start
+        // before any note tick. Stop dovetails with AllNotesOff as a stop-side cleanup.
+        self.dispatch_transport(&pending_transport)?;
 
         // 先に AllNotesOff を送出（scene 境界や mute で積まれた分）
         self.dispatch_all_notes_off(&pending_all_notes_off)?;
@@ -212,6 +221,24 @@ impl PlaybackDriver {
                 None => warn!(
                     "AllNotesOff の送出先 sink が未登録: device={} channel={}",
                     device, ch
+                ),
+            }
+        }
+        Ok(())
+    }
+
+    /// Issue #50: Evaluator が蓄積した `(device, MidiMessage)`（Start / Stop /
+    /// Continue）を該当 sink に送出する。未登録 device は warn + drop。
+    ///
+    /// Issue #50: dispatch `(device, MidiMessage)` System Real-Time pairs queued
+    /// by the Evaluator. Unknown devices are logged and dropped.
+    fn dispatch_transport(&mut self, pairs: &[(String, MidiMessage)]) -> Result<(), EngineError> {
+        for (device, msg) in pairs {
+            match self.resolve_sink(device) {
+                Some(sink) => sink.send(msg)?,
+                None => warn!(
+                    "Transport メッセージ送出先 sink が未登録: device={} msg={:?}",
+                    device, msg
                 ),
             }
         }
@@ -564,6 +591,135 @@ mod tests {
         driver.step_once().await.unwrap();
 
         // "other" sink には何も届かない
+        assert!(other.snapshot().is_empty());
+    }
+
+    // =========================================================================
+    // Issue #50: MIDI System Real-Time (Start / Stop) 送出ルーティング
+    // Issue #50: MIDI System Real-Time transport dispatch tests
+    // =========================================================================
+
+    /// Issue #50: play 後の step_once で transport=true device に Start が届く
+    #[tokio::test]
+    async fn play_dispatches_midi_start_to_transport_device() {
+        let evaluator = Arc::new(Mutex::new(Evaluator::new(120.0)));
+        eval(&evaluator, setup_src()).await;
+        eval(&evaluator, "play s1\n").await;
+
+        let (sinks, handle) = single_dev_sinks();
+        let mut driver = PlaybackDriver::with_sinks(evaluator.clone(), sinks);
+
+        driver.step_once().await.unwrap();
+        let sent = handle.snapshot();
+        assert!(
+            sent.iter().any(|m| matches!(m, MidiMessage::Start)),
+            "Start が送出されていない: {:?}",
+            sent
+        );
+        // Start は NoteOn より前に送られる
+        let start_idx = sent.iter().position(|m| matches!(m, MidiMessage::Start));
+        let note_idx = sent
+            .iter()
+            .position(|m| matches!(m, MidiMessage::NoteOn { .. }));
+        if let (Some(s), Some(n)) = (start_idx, note_idx) {
+            assert!(s < n, "Start は NoteOn より前に送出されるべき");
+        }
+    }
+
+    /// Issue #50: stop 後の step_once で transport=true device に Stop が届く
+    #[tokio::test]
+    async fn stop_dispatches_midi_stop_to_transport_device() {
+        let evaluator = Arc::new(Mutex::new(Evaluator::new(120.0)));
+        eval(&evaluator, setup_src()).await;
+        eval(&evaluator, "play s1\n").await;
+        let (sinks, handle) = single_dev_sinks();
+        let mut driver = PlaybackDriver::with_sinks(evaluator.clone(), sinks);
+        driver.step_once().await.unwrap();
+        handle.clear();
+
+        eval(&evaluator, "stop\n").await;
+        driver.step_once().await.unwrap();
+
+        let sent = handle.snapshot();
+        assert!(
+            sent.iter().any(|m| matches!(m, MidiMessage::Stop)),
+            "Stop が送出されていない: {:?}",
+            sent
+        );
+    }
+
+    /// Issue #50: transport=false の device には Start/Stop が届かない
+    #[tokio::test]
+    async fn transport_false_device_does_not_receive_transport() {
+        let evaluator = Arc::new(Mutex::new(Evaluator::new(120.0)));
+        let src = "\
+            device a { port pa\n  transport true\n}\n\
+            device b { port pb\n  transport false\n}\n\
+            instrument inst_a { device a\n  channel 1\n}\n\
+            clip c [bars 1] { inst_a c }\n\
+            scene s { c }\n";
+        eval(&evaluator, src).await;
+        eval(&evaluator, "play s\n").await;
+
+        let handle_a = SharedMockSink::new();
+        let handle_b = SharedMockSink::new();
+        let mut sinks: HashMap<String, BoxedSink> = HashMap::new();
+        sinks.insert("a".to_string(), Box::new(handle_a.clone()));
+        sinks.insert("b".to_string(), Box::new(handle_b.clone()));
+        let mut driver = PlaybackDriver::with_sinks(evaluator.clone(), sinks);
+
+        driver.step_once().await.unwrap();
+
+        assert!(
+            handle_a
+                .snapshot()
+                .iter()
+                .any(|m| matches!(m, MidiMessage::Start)),
+            "transport=true の device a に Start が届くべき"
+        );
+        assert!(
+            !handle_b
+                .snapshot()
+                .iter()
+                .any(|m| matches!(m, MidiMessage::Start)),
+            "transport=false の device b には Start が届くべきでない"
+        );
+
+        // stop も同様
+        handle_a.clear();
+        handle_b.clear();
+        eval(&evaluator, "stop\n").await;
+        driver.step_once().await.unwrap();
+
+        assert!(handle_a
+            .snapshot()
+            .iter()
+            .any(|m| matches!(m, MidiMessage::Stop)));
+        assert!(!handle_b
+            .snapshot()
+            .iter()
+            .any(|m| matches!(m, MidiMessage::Stop)));
+    }
+
+    /// Issue #50: 未登録 device への transport メッセージは warn + drop で panic しない
+    #[tokio::test]
+    async fn transport_to_unknown_device_is_dropped() {
+        let evaluator = Arc::new(Mutex::new(Evaluator::new(120.0)));
+        let src = "\
+            device ghost { port pg }\n\
+            instrument inst { device ghost\n  channel 0\n}\n\
+            clip c [bars 1] { inst c }\n\
+            scene s { c }\n";
+        eval(&evaluator, src).await;
+        eval(&evaluator, "play s\n").await;
+
+        // ghost device を sinks に入れない
+        let other = SharedMockSink::new();
+        let mut sinks: HashMap<String, BoxedSink> = HashMap::new();
+        sinks.insert("other".to_string(), Box::new(other.clone()));
+        let mut driver = PlaybackDriver::with_sinks(evaluator.clone(), sinks);
+
+        driver.step_once().await.unwrap();
         assert!(other.snapshot().is_empty());
     }
 }

@@ -41,6 +41,7 @@ pub(crate) const RESERVED_KEYWORDS: &[&str] = &[
     "scale",
     "repeat",
     "loop",
+    "transport",
 ];
 
 /// 空白とコメント（行コメント `//` およびブロックコメント `/* */`）を消費する

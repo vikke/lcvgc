@@ -183,13 +183,23 @@ impl CompletionProvider {
     /// device ブロック内で有効なキーワード補完候補を返す
     ///
     /// # Returns
-    /// device ブロック内のキーワード（`port`）
+    /// device ブロック内のキーワード（`port`, `transport`）
     pub fn device_body_completions() -> Vec<CompletionItem> {
-        vec![CompletionItem {
-            label: "port".to_string(),
-            detail: Some("MIDIポート名".to_string()),
-            kind: CompletionKind::Keyword,
-        }]
+        vec![
+            CompletionItem {
+                label: "port".to_string(),
+                detail: Some("MIDIポート名".to_string()),
+                kind: CompletionKind::Keyword,
+            },
+            CompletionItem {
+                label: "transport".to_string(),
+                detail: Some(
+                    "MIDI System Real-Time (Start/Stop) 送出の有効化 (true|false, 既定: true)"
+                        .to_string(),
+                ),
+                kind: CompletionKind::Keyword,
+            },
+        ]
     }
 
     /// instrument ブロック内で有効なキーワード補完候補を返す
@@ -420,6 +430,16 @@ mod tests {
         let items = CompletionProvider::keyword_completions();
         assert!(items.iter().any(|i| i.label == "pause"));
         assert!(items.iter().any(|i| i.label == "resume"));
+    }
+
+    /// Issue #50: device ブロック内補完に `port` と `transport` の両方が含まれる
+    /// Issue #50: device body completions include both `port` and `transport`
+    #[test]
+    fn test_device_body_completions_contains_port_and_transport() {
+        let items = CompletionProvider::device_body_completions();
+        assert_eq!(items.len(), 2);
+        assert!(items.iter().any(|i| i.label == "port"));
+        assert!(items.iter().any(|i| i.label == "transport"));
     }
 
     /// §10.4: mute / unmute がキーワード補完に含まれる

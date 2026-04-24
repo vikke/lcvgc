@@ -69,6 +69,7 @@ mod tests {
             block: Block::Device(DeviceDef {
                 name: name.into(),
                 port: "port".into(),
+                transport: true,
             }),
             span,
             name_span,

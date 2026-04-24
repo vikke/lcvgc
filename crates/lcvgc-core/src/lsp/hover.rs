@@ -36,7 +36,10 @@ impl HoverProvider {
     /// Markdown-formatted hover text, or `None` for unsupported block types
     pub fn hover_content(sb: &SpannedBlock) -> Option<String> {
         match &sb.block {
-            Block::Device(d) => Some(format!("**device** `{}`\n- port: `\"{}\"`", d.name, d.port)),
+            Block::Device(d) => Some(format!(
+                "**device** `{}`\n- port: `\"{}\"`\n- transport: `{}`",
+                d.name, d.port, d.transport
+            )),
             Block::Instrument(i) => {
                 let mut s = format!(
                     "**instrument** `{}`\n- device: `{}`\n- channel: `{}`",
@@ -137,10 +140,23 @@ mod tests {
         let result = HoverProvider::hover_content(&sb(Block::Device(DeviceDef {
             name: "synth".into(),
             port: "USB MIDI".into(),
+            transport: true,
         })));
         let text = result.unwrap();
         assert!(text.contains("**device** `synth`"));
         assert!(text.contains("port: `\"USB MIDI\"`"));
+        assert!(text.contains("transport: `true`"));
+    }
+
+    #[test]
+    fn device_hover_shows_transport_false() {
+        let result = HoverProvider::hover_content(&sb(Block::Device(DeviceDef {
+            name: "synth".into(),
+            port: "USB MIDI".into(),
+            transport: false,
+        })));
+        let text = result.unwrap();
+        assert!(text.contains("transport: `false`"));
     }
 
     #[test]

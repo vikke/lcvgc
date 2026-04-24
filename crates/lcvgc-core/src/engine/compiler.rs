@@ -106,12 +106,17 @@ pub fn compile_clip(
 }
 
 /// ソート優先度: NoteOn(0) < CC(1) < NoteOff(2)
+/// System Real-Time (Start/Stop/Continue) は clip にコンパイルされないため到達しない。
+/// System Real-Time messages never appear in compiled clip events.
 fn event_sort_priority(msg: &MidiMessage) -> u8 {
     match msg {
         MidiMessage::NoteOn { .. } => 0,
         MidiMessage::ControlChange { .. } => 1,
         MidiMessage::NoteOff { .. } => 2,
         MidiMessage::ProgramChange { .. } => 1,
+        MidiMessage::Start | MidiMessage::Stop | MidiMessage::Continue => {
+            unreachable!("System Real-Time messages are not part of compiled clip events")
+        }
     }
 }
 

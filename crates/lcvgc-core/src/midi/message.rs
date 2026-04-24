@@ -51,6 +51,15 @@ pub enum MidiMessage {
         /// Program number (0-127)
         program: u8,
     },
+    /// System Real-Time: Start (0xFA) — 外部 device に再生開始を伝える
+    /// System Real-Time: Start (0xFA) — tells external devices to begin playback
+    Start,
+    /// System Real-Time: Stop (0xFC) — 外部 device に再生停止を伝える
+    /// System Real-Time: Stop (0xFC) — tells external devices to stop playback
+    Stop,
+    /// System Real-Time: Continue (0xFB) — 外部 device に再生再開を伝える
+    /// System Real-Time: Continue (0xFB) — tells external devices to resume playback
+    Continue,
 }
 
 impl MidiMessage {
@@ -81,6 +90,9 @@ impl MidiMessage {
             MidiMessage::ProgramChange { channel, program } => {
                 vec![0xC0 | channel, *program]
             }
+            MidiMessage::Start => vec![0xFA],
+            MidiMessage::Stop => vec![0xFC],
+            MidiMessage::Continue => vec![0xFB],
         }
     }
 }
@@ -146,5 +158,20 @@ mod tests {
             velocity: 100,
         };
         assert_eq!(msg.to_bytes(), vec![0x9F, 60, 100]);
+    }
+
+    #[test]
+    fn system_realtime_start() {
+        assert_eq!(MidiMessage::Start.to_bytes(), vec![0xFA]);
+    }
+
+    #[test]
+    fn system_realtime_stop() {
+        assert_eq!(MidiMessage::Stop.to_bytes(), vec![0xFC]);
+    }
+
+    #[test]
+    fn system_realtime_continue() {
+        assert_eq!(MidiMessage::Continue.to_bytes(), vec![0xFB]);
     }
 }

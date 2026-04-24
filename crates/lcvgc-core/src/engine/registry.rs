@@ -268,6 +268,7 @@ mod tests {
         reg.register_block(Block::Device(DeviceDef {
             name: "synth".into(),
             port: "IAC Bus 1".into(),
+            transport: true,
         }));
         assert!(!reg.is_empty());
     }
@@ -278,6 +279,7 @@ mod tests {
         let result = reg.register_block(Block::Device(DeviceDef {
             name: "synth".into(),
             port: "IAC Bus 1".into(),
+            transport: true,
         }));
         assert!(result);
         let d = reg.get_device("synth").unwrap();
@@ -290,10 +292,12 @@ mod tests {
         reg.register_block(Block::Device(DeviceDef {
             name: "synth".into(),
             port: "port1".into(),
+            transport: true,
         }));
         reg.register_block(Block::Device(DeviceDef {
             name: "synth".into(),
             port: "port2".into(),
+            transport: true,
         }));
         assert_eq!(reg.get_device("synth").unwrap().port, "port2");
     }
