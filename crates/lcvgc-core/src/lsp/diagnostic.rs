@@ -122,6 +122,54 @@ impl DiagnosticProvider {
         }
         diagnostics
     }
+
+    /// §10.4: pause / resume の target 名が未定義の場合の Warning 診断
+    ///
+    /// target 名が scene / session / clip のいずれにも該当しない場合に Warning を出す。
+    /// 名前不一致時の eval は no-op になるが、LSP で事前に気づけるようにする。
+    /// 引数なし（`pause` / `resume`）は診断対象外。
+    ///
+    /// Generates Warning diagnostics for `pause` / `resume` target names that do
+    /// not match any scene, session, or clip. Helps the user catch typos before
+    /// evaluation, where mismatched names are a no-op. Bareword `pause` /
+    /// `resume` (no target) is not diagnosed.
+    ///
+    /// # 引数 / Arguments
+    /// * `blocks` - スパン付きブロックのスライス / Slice of spanned blocks
+    /// * `registry` - 登録済みブロックの参照 / Reference to registered blocks
+    ///
+    /// # 戻り値 / Returns
+    /// 未定義ターゲットに対する Warning 診断リスト / Warnings for unknown targets
+    pub fn pause_resume_target_diagnostics(
+        blocks: &[SpannedBlock],
+        registry: &Registry,
+    ) -> Vec<Diagnostic> {
+        let mut diagnostics = Vec::new();
+        for sb in blocks {
+            let (kind, target) = match &sb.block {
+                Block::Pause(cmd) => ("pause", &cmd.target),
+                Block::Resume(cmd) => ("resume", &cmd.target),
+                _ => continue,
+            };
+            let Some(name) = target else {
+                continue;
+            };
+            let exists = registry.get_scene(name).is_some()
+                || registry.get_session(name).is_some()
+                || registry.get_clip(name).is_some();
+            if !exists {
+                diagnostics.push(Diagnostic {
+                    span: sb.span,
+                    message: format!(
+                        "未定義の {} 対象: '{}' （scene / session / clip のいずれにも該当しません）",
+                        kind, name
+                    ),
+                    severity: DiagnosticSeverity::Warning,
+                });
+            }
+        }
+        diagnostics
+    }
 }
 
 #[cfg(test)]
@@ -357,6 +405,85 @@ mod tests {
             spanned(Block::Tempo(Tempo::Absolute(120))),
         ];
         let diags = DiagnosticProvider::include_position_diagnostics(&blocks);
+        assert!(diags.is_empty());
+    }
+
+    // --- §10.4 pause / resume target diagnostics ---
+
+    /// 定義済み scene を pause target に指定 → 診断なし
+    /// pause target is a defined scene → no diagnostic
+    #[test]
+    fn pause_with_defined_scene_no_diagnostic() {
+        let mut registry = Registry::new();
+        registry.register_block(make_scene_block("verse", &[]));
+
+        let blocks = vec![spanned(Block::Pause(crate::ast::playback::PauseCommand {
+            target: Some("verse".into()),
+        }))];
+        let diags = DiagnosticProvider::pause_resume_target_diagnostics(&blocks, &registry);
+        assert!(diags.is_empty());
+    }
+
+    /// 未定義の pause target → Warning 診断
+    /// Unknown pause target → Warning diagnostic
+    #[test]
+    fn pause_with_unknown_target_warns() {
+        let registry = Registry::new();
+        let blocks = vec![spanned(Block::Pause(crate::ast::playback::PauseCommand {
+            target: Some("ghost".into()),
+        }))];
+        let diags = DiagnosticProvider::pause_resume_target_diagnostics(&blocks, &registry);
+        assert_eq!(diags.len(), 1);
+        assert_eq!(diags[0].severity, DiagnosticSeverity::Warning);
+        assert!(diags[0].message.contains("ghost"));
+        assert!(diags[0].message.contains("pause"));
+    }
+
+    /// 未定義の resume target → Warning 診断
+    /// Unknown resume target → Warning diagnostic
+    #[test]
+    fn resume_with_unknown_target_warns() {
+        let registry = Registry::new();
+        let blocks = vec![spanned(Block::Resume(
+            crate::ast::playback::ResumeCommand {
+                target: Some("ghost".into()),
+            },
+        ))];
+        let diags = DiagnosticProvider::pause_resume_target_diagnostics(&blocks, &registry);
+        assert_eq!(diags.len(), 1);
+        assert_eq!(diags[0].severity, DiagnosticSeverity::Warning);
+        assert!(diags[0].message.contains("ghost"));
+        assert!(diags[0].message.contains("resume"));
+    }
+
+    /// 引数なし pause / resume は診断対象外
+    /// Bareword pause / resume is not diagnosed
+    #[test]
+    fn bare_pause_resume_not_diagnosed() {
+        let registry = Registry::new();
+        let blocks = vec![
+            spanned(Block::Pause(crate::ast::playback::PauseCommand {
+                target: None,
+            })),
+            spanned(Block::Resume(crate::ast::playback::ResumeCommand {
+                target: None,
+            })),
+        ];
+        let diags = DiagnosticProvider::pause_resume_target_diagnostics(&blocks, &registry);
+        assert!(diags.is_empty());
+    }
+
+    /// clip 名を target にした場合も診断なし（active_scene での解決は runtime）
+    /// Clip-name target is accepted (active_scene resolution happens at runtime)
+    #[test]
+    fn pause_with_clip_name_no_diagnostic() {
+        let mut registry = Registry::new();
+        registry.register_block(make_clip_block("drums_a", &[]));
+
+        let blocks = vec![spanned(Block::Pause(crate::ast::playback::PauseCommand {
+            target: Some("drums_a".into()),
+        }))];
+        let diags = DiagnosticProvider::pause_resume_target_diagnostics(&blocks, &registry);
         assert!(diags.is_empty());
     }
 }
