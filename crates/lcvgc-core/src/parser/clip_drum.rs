@@ -92,6 +92,28 @@ pub fn parse_probability_row(input: &str) -> Result<Vec<u8>, String> {
         .collect()
 }
 
+/// 文字列中の「最も内側」の `(...)` ペアの位置を返す。
+///
+/// 最初に見つかる `)` の位置と、その前方で対応する `(` の位置を返す。
+/// 片方しか見つからない場合は `None` を返す。
+///
+/// Return the position of the innermost `(...)` pair in the string.
+///
+/// Returns the index of the first `)` and the last `(` before it.
+/// Returns `None` if either side is missing.
+///
+/// # Arguments
+/// * `s` - 探索対象の文字列 / string to search
+///
+/// # Returns
+/// `Some((open, close))` — `(` と `)` のバイト位置 / byte indices of `(` and `)`
+/// `None` — 対応するペアが見つからない場合 / no matching pair
+fn find_innermost_paren(s: &str) -> Option<(usize, usize)> {
+    let close = s.find(')')?;
+    let open = s[..close].rfind('(')?;
+    Some((open, close))
+}
+
 /// ドラムパターン文字列中の `(pattern)*N` 繰り返し記法を展開する。
 /// ネストした繰り返し（内側から順に展開）に対応。
 ///
@@ -105,16 +127,7 @@ pub fn parse_probability_row(input: &str) -> Result<Vec<u8>, String> {
 /// 展開済みのパターン文字列 / expanded pattern string
 pub fn expand_repetition(input: &str) -> String {
     let mut s = input.to_string();
-    loop {
-        // 内側に `(` を含まない最も内側の `(...)` ペアを探す
-        // Find the innermost `(...)` pair (no `(` inside)
-        let Some(close) = s.find(')') else {
-            break;
-        };
-        let prefix = &s[..close];
-        let Some(open) = prefix.rfind('(') else {
-            break;
-        };
+    while let Some((open, close)) = find_innermost_paren(&s) {
         let inner = &s[open + 1..close];
         let after = &s[close + 1..];
 
@@ -144,6 +157,49 @@ pub fn expand_repetition(input: &str) -> String {
 mod tests {
     use super::*;
     use crate::ast::clip_drum::HitSymbol::*;
+
+    // --- find_innermost_paren tests ---
+
+    /// 単純な `(...)` の `(`/`)` 位置を返すことを確認する。
+    ///
+    /// Verify that `find_innermost_paren` returns `(` / `)` indices for simple `(...)`.
+    #[test]
+    fn find_innermost_paren_simple() {
+        assert_eq!(find_innermost_paren("x.(ab)*2"), Some((2, 5)));
+    }
+
+    /// ネストしている場合は最も内側の `(...)` を返すことを確認する。
+    ///
+    /// Verify that for nested `(...)`, the innermost pair is returned.
+    #[test]
+    fn find_innermost_paren_nested() {
+        // "((ab)*2c)*3" → 最内は "(ab)" の 1..4
+        assert_eq!(find_innermost_paren("((ab)*2c)*3"), Some((1, 4)));
+    }
+
+    /// `(` のみで `)` が無ければ None を返すことを確認する。
+    ///
+    /// Verify None is returned when `)` is missing.
+    #[test]
+    fn find_innermost_paren_no_close() {
+        assert_eq!(find_innermost_paren("(abc"), None);
+    }
+
+    /// `)` のみで対応する `(` が無ければ None を返すことを確認する。
+    ///
+    /// Verify None is returned when matching `(` is missing.
+    #[test]
+    fn find_innermost_paren_no_open() {
+        assert_eq!(find_innermost_paren("abc)"), None);
+    }
+
+    /// 括弧が全く無ければ None を返すことを確認する。
+    ///
+    /// Verify None is returned when there are no parentheses.
+    #[test]
+    fn find_innermost_paren_none() {
+        assert_eq!(find_innermost_paren("x.x.x.x."), None);
+    }
 
     // --- expand_repetition tests ---
 
