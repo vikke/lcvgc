@@ -46,6 +46,18 @@ pub enum PlaybackState {
         /// Repeat mode for the current scene
         scene_repeat: RepeatMode,
     },
+    /// ポーズ中（§10.4）
+    /// Paused (§10.4)
+    ///
+    /// `prev` に pause 直前の状態を保持し、resume 時に復元する。
+    /// `prev` には `Paused` 自身は入らない（pause の二重適用は no-op）。
+    /// Holds the pre-pause state in `prev` and restores it on resume.
+    /// `prev` never nests `Paused` itself (re-pause is a no-op).
+    Paused {
+        /// pause 直前の state（resume 時に復元）
+        /// Pre-pause state (restored on resume)
+        prev: Box<PlaybackState>,
+    },
 }
 
 /// リピートモード（内部管理用）
@@ -96,6 +108,34 @@ pub enum PlaybackCommand {
     Stop {
         /// 停止対象の名前（Noneで全停止）
         /// Name of the target to stop (None to stop all)
+        target: Option<String>,
+    },
+    /// ポーズ（§10.4）
+    /// Pause (§10.4)
+    ///
+    /// `target = None` で全体 pause、`Some(name)` で scene/session 名一致時のみ全体 pause。
+    /// clip 名を指定した場合は StateManager レベルでは no-op となり、
+    /// Evaluator 側で active_scene の該当 clip を pause する。
+    ///
+    /// `None` pauses the whole playback; `Some(name)` only pauses when the
+    /// current scene/session name matches. Clip-name targets are no-ops at
+    /// the StateManager level (the evaluator handles clip-level pausing).
+    Pause {
+        /// ポーズ対象名（Noneで全体） / Pause target (None = whole)
+        target: Option<String>,
+    },
+    /// 再開（§10.4）
+    /// Resume (§10.4)
+    ///
+    /// `target = None` で全体 resume、`Some(name)` で Paused の prev 名と一致時のみ全体 resume。
+    /// clip 名を指定した場合は StateManager レベルでは no-op となり、
+    /// Evaluator 側で active_scene の該当 clip を resume する。
+    ///
+    /// `None` resumes the whole playback; `Some(name)` only resumes when the
+    /// paused scene/session name matches. Clip-name targets are no-ops at
+    /// the StateManager level (the evaluator handles clip-level resuming).
+    Resume {
+        /// 再開対象名（Noneで全体） / Resume target (None = whole)
         target: Option<String>,
     },
 }
@@ -195,6 +235,13 @@ impl StateManager {
                         PlaybackState::PlayingScene { name, .. } => name == target_name,
                         PlaybackState::PlayingSession { name, .. } => name == target_name,
                         PlaybackState::Stopped => false,
+                        // Paused 中の stop <name>: prev の名前と一致するなら停止する（§10.4 D7）
+                        // stop <name> while paused: stop if `prev` matches (§10.4 D7)
+                        PlaybackState::Paused { prev } => match prev.as_ref() {
+                            PlaybackState::PlayingScene { name, .. } => name == target_name,
+                            PlaybackState::PlayingSession { name, .. } => name == target_name,
+                            _ => false,
+                        },
                     };
                     if should_stop {
                         self.state = PlaybackState::Stopped;
@@ -203,7 +250,99 @@ impl StateManager {
                     }
                 }
             },
+            // §10.4 Pause: Paused バリアントへ遷移する
+            // §10.4 Pause: transition to the Paused variant
+            PlaybackCommand::Pause { target } => {
+                self.apply_pause(target);
+            }
+            // §10.4 Resume: Paused から prev へ復元する
+            // §10.4 Resume: restore `prev` from Paused
+            PlaybackCommand::Resume { target } => {
+                self.apply_resume(target);
+            }
         }
+    }
+
+    /// §10.4: Pause コマンドの state 遷移を適用する
+    ///
+    /// * `target = None`: 再生中なら Paused { prev } に遷移
+    /// * `target = Some(name)`: 現在再生中の scene/session 名と一致なら Paused に遷移、
+    ///   それ以外（clip 名・不一致）は state 不変（Evaluator 側で clip 個別 pause）
+    ///
+    /// 既に Stopped または Paused の場合は state 不変。
+    ///
+    /// Applies the state transition for a Pause command.
+    /// * `None`: if playing, move to `Paused { prev }`.
+    /// * `Some(name)`: only transitions when the current scene/session name matches.
+    ///   Clip names and mismatches leave the state unchanged (the evaluator
+    ///   handles clip-level pausing separately).
+    ///
+    /// Already Stopped or Paused states are left unchanged.
+    fn apply_pause(&mut self, target: Option<String>) {
+        // 既に Paused または Stopped の場合は何もしない
+        // No-op when already paused or stopped
+        let is_playing = matches!(
+            &self.state,
+            PlaybackState::PlayingScene { .. } | PlaybackState::PlayingSession { .. }
+        );
+        if !is_playing {
+            return;
+        }
+        let should_pause = match &target {
+            None => true,
+            Some(name) => match &self.state {
+                PlaybackState::PlayingScene { name: n, .. } => n == name,
+                PlaybackState::PlayingSession { name: n, .. } => n == name,
+                _ => false,
+            },
+        };
+        if should_pause {
+            let prev = std::mem::replace(&mut self.state, PlaybackState::Stopped);
+            self.state = PlaybackState::Paused {
+                prev: Box::new(prev),
+            };
+        }
+    }
+
+    /// §10.4: Resume コマンドの state 遷移を適用する
+    ///
+    /// * `target = None`: Paused なら prev へ復元
+    /// * `target = Some(name)`: Paused かつ prev の scene/session 名と一致なら復元、
+    ///   それ以外（clip 名・不一致）は state 不変（Evaluator 側で clip 個別 resume）
+    ///
+    /// Paused でない場合は state 不変。
+    ///
+    /// Applies the state transition for a Resume command.
+    /// * `None`: if Paused, restore `prev`.
+    /// * `Some(name)`: only restores when the `prev` scene/session name matches.
+    ///   Clip names and mismatches leave the state unchanged.
+    fn apply_resume(&mut self, target: Option<String>) {
+        let PlaybackState::Paused { prev } = &self.state else {
+            return;
+        };
+        let should_resume = match &target {
+            None => true,
+            Some(name) => match prev.as_ref() {
+                PlaybackState::PlayingScene { name: n, .. } => n == name,
+                PlaybackState::PlayingSession { name: n, .. } => n == name,
+                _ => false,
+            },
+        };
+        if should_resume {
+            // Paused の prev を取り出して state に戻す
+            // Extract `prev` from Paused and restore it as the current state
+            if let PlaybackState::Paused { prev } =
+                std::mem::replace(&mut self.state, PlaybackState::Stopped)
+            {
+                self.state = *prev;
+            }
+        }
+    }
+
+    /// 現在の state が Paused か
+    /// Whether the current state is Paused
+    pub fn is_paused(&self) -> bool {
+        matches!(&self.state, PlaybackState::Paused { .. })
     }
 
     /// セッション再生を SessionDef 付きで開始する（§9/§10.2）
@@ -250,6 +389,11 @@ impl StateManager {
     pub fn scene_loop_complete(&mut self) -> NextAction {
         match &mut self.state {
             PlaybackState::Stopped => NextAction::SceneComplete,
+            // §10.4: Paused 中は時間が止まっているため scene_loop_complete は基本呼ばれない。
+            // 念のため呼ばれても state を維持し、シーンを継続扱いにする。
+            // §10.4: scene_loop_complete should not fire while paused (tick is frozen),
+            // but if it does, keep the state and treat it as scene continuation.
+            PlaybackState::Paused { .. } => NextAction::ContinueScene,
             PlaybackState::PlayingScene { repeat, .. } => match repeat {
                 RepeatMode::Once => {
                     self.state = PlaybackState::Stopped;
@@ -435,12 +579,20 @@ impl StateManager {
     }
 
     /// 現在再生中のシーン名を返す
-    /// Returns the name of the currently playing scene
+    ///
+    /// Paused 中も prev の名前を返す（§10.4 stop <name> 等の名前一致判定で使用）。
+    /// Returns the name of the currently playing scene.
+    /// Also returns the `prev` name while Paused (used by stop <name> matching in §10.4).
     pub fn current_scene_name(&self) -> Option<&str> {
         match &self.state {
             PlaybackState::PlayingScene { name, .. } => Some(name),
             PlaybackState::PlayingSession { name, .. } => Some(name),
             PlaybackState::Stopped => None,
+            PlaybackState::Paused { prev } => match prev.as_ref() {
+                PlaybackState::PlayingScene { name, .. } => Some(name),
+                PlaybackState::PlayingSession { name, .. } => Some(name),
+                _ => None,
+            },
         }
     }
 }
@@ -938,5 +1090,225 @@ mod tests {
                 scene_name: "x".to_string()
             }
         );
+    }
+
+    // --- §10.4 pause / resume tests ---
+
+    /// 全体 pause → Paused { prev: PlayingScene }
+    /// Full pause transitions to `Paused { prev: PlayingScene }`
+    #[test]
+    fn pause_all_while_playing_scene_wraps_state() {
+        let mut sm = StateManager::new();
+        sm.apply_command(PlaybackCommand::PlayScene {
+            name: "verse".to_string(),
+            repeat: RepeatSpec::Loop,
+        });
+        sm.apply_command(PlaybackCommand::Pause { target: None });
+        assert!(sm.is_paused());
+        if let PlaybackState::Paused { prev } = sm.state() {
+            assert!(matches!(prev.as_ref(), PlaybackState::PlayingScene { .. }));
+        } else {
+            panic!("expected Paused");
+        }
+    }
+
+    /// Paused から resume で元の state に戻る
+    /// Resume restores the original state from Paused
+    #[test]
+    fn resume_all_restores_prev_state() {
+        let mut sm = StateManager::new();
+        sm.apply_command(PlaybackCommand::PlayScene {
+            name: "verse".to_string(),
+            repeat: RepeatSpec::Loop,
+        });
+        sm.apply_command(PlaybackCommand::Pause { target: None });
+        sm.apply_command(PlaybackCommand::Resume { target: None });
+        assert!(!sm.is_paused());
+        assert!(matches!(sm.state(), PlaybackState::PlayingScene { .. }));
+    }
+
+    /// 名前指定 pause: 一致時のみ Paused に遷移
+    /// Named pause: transitions to Paused only on name match
+    #[test]
+    fn pause_named_matches_current_scene() {
+        let mut sm = StateManager::new();
+        sm.apply_command(PlaybackCommand::PlayScene {
+            name: "verse".to_string(),
+            repeat: RepeatSpec::Loop,
+        });
+        sm.apply_command(PlaybackCommand::Pause {
+            target: Some("verse".to_string()),
+        });
+        assert!(sm.is_paused());
+    }
+
+    /// 名前不一致 pause は state 不変（§10.4 D2）
+    /// Mismatched name pause leaves state unchanged (§10.4 D2)
+    #[test]
+    fn pause_named_mismatch_is_noop() {
+        let mut sm = StateManager::new();
+        sm.apply_command(PlaybackCommand::PlayScene {
+            name: "verse".to_string(),
+            repeat: RepeatSpec::Loop,
+        });
+        sm.apply_command(PlaybackCommand::Pause {
+            target: Some("chorus".to_string()),
+        });
+        assert!(!sm.is_paused());
+        assert!(matches!(sm.state(), PlaybackState::PlayingScene { .. }));
+    }
+
+    /// 名前指定 resume: prev と一致時のみ復元
+    /// Named resume: restores only when prev name matches
+    #[test]
+    fn resume_named_matches_prev_scene() {
+        let mut sm = StateManager::new();
+        sm.apply_command(PlaybackCommand::PlayScene {
+            name: "verse".to_string(),
+            repeat: RepeatSpec::Loop,
+        });
+        sm.apply_command(PlaybackCommand::Pause { target: None });
+        sm.apply_command(PlaybackCommand::Resume {
+            target: Some("verse".to_string()),
+        });
+        assert!(!sm.is_paused());
+    }
+
+    /// 名前不一致 resume は state 不変（§10.4 D8）
+    /// Mismatched name resume leaves state unchanged (§10.4 D8)
+    #[test]
+    fn resume_named_mismatch_is_noop() {
+        let mut sm = StateManager::new();
+        sm.apply_command(PlaybackCommand::PlayScene {
+            name: "verse".to_string(),
+            repeat: RepeatSpec::Loop,
+        });
+        sm.apply_command(PlaybackCommand::Pause { target: None });
+        sm.apply_command(PlaybackCommand::Resume {
+            target: Some("chorus".to_string()),
+        });
+        assert!(sm.is_paused());
+    }
+
+    /// Stopped に対する pause は no-op
+    /// Pause against Stopped is a no-op
+    #[test]
+    fn pause_on_stopped_is_noop() {
+        let mut sm = StateManager::new();
+        sm.apply_command(PlaybackCommand::Pause { target: None });
+        assert!(!sm.is_paused());
+        assert_eq!(*sm.state(), PlaybackState::Stopped);
+    }
+
+    /// Paused に対する二重 pause は no-op（prev が二重 Paused にならない）
+    /// Double pause is a no-op (prev never wraps Paused)
+    #[test]
+    fn pause_on_paused_is_noop() {
+        let mut sm = StateManager::new();
+        sm.apply_command(PlaybackCommand::PlayScene {
+            name: "verse".to_string(),
+            repeat: RepeatSpec::Loop,
+        });
+        sm.apply_command(PlaybackCommand::Pause { target: None });
+        sm.apply_command(PlaybackCommand::Pause { target: None });
+        if let PlaybackState::Paused { prev } = sm.state() {
+            // prev は PlayingScene のまま（二重 Paused になっていない）
+            assert!(matches!(prev.as_ref(), PlaybackState::PlayingScene { .. }));
+        } else {
+            panic!("expected Paused");
+        }
+    }
+
+    /// Paused でないときの resume は no-op
+    /// Resume on non-paused state is a no-op
+    #[test]
+    fn resume_on_non_paused_is_noop() {
+        let mut sm = StateManager::new();
+        sm.apply_command(PlaybackCommand::PlayScene {
+            name: "verse".to_string(),
+            repeat: RepeatSpec::Loop,
+        });
+        sm.apply_command(PlaybackCommand::Resume { target: None });
+        assert!(!sm.is_paused());
+        assert!(matches!(sm.state(), PlaybackState::PlayingScene { .. }));
+    }
+
+    /// Paused 中の stop <name>: prev の名前と一致すれば Stopped に遷移（§10.4 D7）
+    /// stop <name> while paused: transitions to Stopped if prev matches (§10.4 D7)
+    #[test]
+    fn stop_named_while_paused_matches_prev() {
+        let mut sm = StateManager::new();
+        sm.apply_command(PlaybackCommand::PlayScene {
+            name: "verse".to_string(),
+            repeat: RepeatSpec::Loop,
+        });
+        sm.apply_command(PlaybackCommand::Pause { target: None });
+        sm.apply_command(PlaybackCommand::Stop {
+            target: Some("verse".to_string()),
+        });
+        assert_eq!(*sm.state(), PlaybackState::Stopped);
+    }
+
+    /// Paused 中の stop（全停止）は Stopped に遷移（§10.4 D7）
+    /// stop (all) while paused transitions to Stopped (§10.4 D7)
+    #[test]
+    fn stop_all_while_paused_resets_state() {
+        let mut sm = StateManager::new();
+        sm.apply_command(PlaybackCommand::PlayScene {
+            name: "verse".to_string(),
+            repeat: RepeatSpec::Loop,
+        });
+        sm.apply_command(PlaybackCommand::Pause { target: None });
+        sm.apply_command(PlaybackCommand::Stop { target: None });
+        assert_eq!(*sm.state(), PlaybackState::Stopped);
+    }
+
+    /// Paused 中の play <scene> は Paused を解除して新 scene を再生（§10.4 D6）
+    /// play <scene> while paused clears Paused and starts new scene (§10.4 D6)
+    #[test]
+    fn play_scene_while_paused_clears_paused() {
+        let mut sm = StateManager::new();
+        sm.apply_command(PlaybackCommand::PlayScene {
+            name: "verse".to_string(),
+            repeat: RepeatSpec::Loop,
+        });
+        sm.apply_command(PlaybackCommand::Pause { target: None });
+        sm.apply_command(PlaybackCommand::PlayScene {
+            name: "chorus".to_string(),
+            repeat: RepeatSpec::Once,
+        });
+        assert!(!sm.is_paused());
+        if let PlaybackState::PlayingScene { name, .. } = sm.state() {
+            assert_eq!(name, "chorus");
+        } else {
+            panic!("expected PlayingScene");
+        }
+    }
+
+    /// current_scene_name は Paused でも prev の名前を返す
+    /// current_scene_name returns the prev name while paused
+    #[test]
+    fn current_scene_name_returns_prev_while_paused() {
+        let mut sm = StateManager::new();
+        sm.apply_command(PlaybackCommand::PlayScene {
+            name: "verse".to_string(),
+            repeat: RepeatSpec::Loop,
+        });
+        sm.apply_command(PlaybackCommand::Pause { target: None });
+        assert_eq!(sm.current_scene_name(), Some("verse"));
+    }
+
+    /// scene_loop_complete は Paused 中に ContinueScene を返す（tick 凍結想定）
+    /// scene_loop_complete returns ContinueScene while paused (tick is frozen)
+    #[test]
+    fn scene_loop_complete_while_paused_continues() {
+        let mut sm = StateManager::new();
+        sm.apply_command(PlaybackCommand::PlayScene {
+            name: "verse".to_string(),
+            repeat: RepeatSpec::Loop,
+        });
+        sm.apply_command(PlaybackCommand::Pause { target: None });
+        assert_eq!(sm.scene_loop_complete(), NextAction::ContinueScene);
+        assert!(sm.is_paused());
     }
 }

@@ -425,50 +425,181 @@ impl Evaluator {
 
     /// `pause` コマンドを評価する（§10.4）
     ///
-    /// Phase 2 時点ではスタブ実装：すべて no-op を返す。
-    /// 本実装は Phase 3 で StateManager::Paused バリアント追加と同時に行う。
+    /// target の種類によって処理を分岐する：
+    /// * `None`: 全体 pause。再生中なら `PlaybackState::Paused` に遷移し、
+    ///   active_scene の全 clip を pause する。使用中チャンネル分の AllNotesOff を蓄積。
+    /// * `Some(name)`: name の種類を以下の優先順位で判定：
+    ///   1. 現在再生中の scene/session 名と一致 → 全体 pause と同等
+    ///   2. active_scene に該当 clip がある → clip 単位 pause（該当 ch の AllNotesOff）
+    ///   3. いずれでもない → no-op（EvalResult::PausedNoop）
+    ///
+    /// 名前不一致時は `EvalResult::PausedNoop { reason }` を返し、再生は継続する
+    /// （§11 音は絶対に止めない）。
     ///
     /// # 引数 / Arguments
     /// * `cmd` - PauseCommand（target = None で全体、Some で名前指定）
     ///
     /// # 戻り値 / Returns
-    /// `EvalResult::PausedNoop` または `EvalResult::Paused`。
+    /// 成功時 `EvalResult::Paused`、no-op 時 `EvalResult::PausedNoop`。
     fn eval_pause(
         &mut self,
         cmd: crate::ast::playback::PauseCommand,
     ) -> Result<EvalResult, EngineError> {
-        // TODO(Phase 3): StateManager 連携・AllNotesOff 蓄積
-        // TODO(Phase 3): Integrate with StateManager and queue AllNotesOff
-        Ok(EvalResult::PausedNoop {
-            reason: format!(
-                "pause not yet implemented in Phase 2 (target={:?})",
-                cmd.target
-            ),
-        })
+        match &cmd.target {
+            None => {
+                // 全体 pause。Stopped なら no-op。
+                // Full pause. No-op when stopped.
+                let is_playing = matches!(
+                    self.state.state(),
+                    crate::engine::state::PlaybackState::PlayingScene { .. }
+                        | crate::engine::state::PlaybackState::PlayingSession { .. }
+                );
+                if !is_playing {
+                    return Ok(EvalResult::PausedNoop {
+                        reason: "nothing is playing".to_string(),
+                    });
+                }
+                // AllNotesOff 蓄積 + active_scene 全 clip を pause
+                // Queue AllNotesOff and pause every clip in active_scene
+                if let Some(scene) = self.active_scene.as_mut() {
+                    self.pending_all_notes_off.extend(scene.channels_in_use());
+                    scene.pause_all_clips();
+                }
+                self.state
+                    .apply_command(PlaybackCommand::Pause { target: None });
+                Ok(EvalResult::Paused { target: None })
+            }
+            Some(name) => {
+                // 現在再生中の scene/session 名と一致 → 全体 pause と同等
+                // Name matches the currently playing scene/session → full pause
+                let is_current = self
+                    .state
+                    .current_scene_name()
+                    .map(|n| n == name)
+                    .unwrap_or(false);
+                let is_playing = matches!(
+                    self.state.state(),
+                    crate::engine::state::PlaybackState::PlayingScene { .. }
+                        | crate::engine::state::PlaybackState::PlayingSession { .. }
+                );
+                if is_current && is_playing {
+                    if let Some(scene) = self.active_scene.as_mut() {
+                        self.pending_all_notes_off.extend(scene.channels_in_use());
+                        scene.pause_all_clips();
+                    }
+                    self.state.apply_command(PlaybackCommand::Pause {
+                        target: Some(name.clone()),
+                    });
+                    return Ok(EvalResult::Paused {
+                        target: Some(name.clone()),
+                    });
+                }
+                // active_scene に該当 clip があれば clip 単位 pause
+                // If the active_scene has the named clip, pause it
+                if let Some(scene) = self.active_scene.as_mut() {
+                    if scene.has_clip(name) {
+                        let channels = scene.channels_of_clip(name);
+                        scene.pause_clip(name);
+                        self.pending_all_notes_off.extend(channels);
+                        return Ok(EvalResult::Paused {
+                            target: Some(name.clone()),
+                        });
+                    }
+                }
+                // どれにも該当しない → no-op
+                // No target matched → no-op
+                Ok(EvalResult::PausedNoop {
+                    reason: format!(
+                        "'{}' is not the current scene/session nor a clip in active scene",
+                        name
+                    ),
+                })
+            }
+        }
     }
 
     /// `resume` コマンドを評価する（§10.4）
     ///
-    /// Phase 2 時点ではスタブ実装：すべて no-op を返す。
-    /// 本実装は Phase 3 で行う。
+    /// target の種類によって処理を分岐する：
+    /// * `None`: 全体 resume。Paused なら prev に復元し、active_scene の全 clip の
+    ///   pause を解除する。ただし `pause <clip>` された clip は個別に解除する必要があるため、
+    ///   ここでは全 clip の pause を解除するが D5 の通り全体 pause の対称操作として扱う
+    ///   （= 個別 pause された clip も同時に resume される実装）。
+    /// * `Some(name)`: name の種類を以下の優先順位で判定：
+    ///   1. Paused の prev scene/session 名と一致 → 全体 resume
+    ///   2. active_scene に該当 clip がある → clip 単位 resume
+    ///   3. いずれでもない → no-op
+    ///
+    /// 名前不一致時は `EvalResult::ResumedNoop { reason }` を返す。
     ///
     /// # 引数 / Arguments
     /// * `cmd` - ResumeCommand（target = None で全体、Some で名前指定）
     ///
     /// # 戻り値 / Returns
-    /// `EvalResult::ResumedNoop` または `EvalResult::Resumed`。
+    /// 成功時 `EvalResult::Resumed`、no-op 時 `EvalResult::ResumedNoop`。
     fn eval_resume(
         &mut self,
         cmd: crate::ast::playback::ResumeCommand,
     ) -> Result<EvalResult, EngineError> {
-        // TODO(Phase 3): StateManager 連携・AllNotesOff 蓄積
-        // TODO(Phase 3): Integrate with StateManager and queue AllNotesOff
-        Ok(EvalResult::ResumedNoop {
-            reason: format!(
-                "resume not yet implemented in Phase 2 (target={:?})",
-                cmd.target
-            ),
-        })
+        match &cmd.target {
+            None => {
+                // 全体 resume。Paused でなければ no-op。
+                // Full resume. No-op when not paused.
+                if !self.state.is_paused() {
+                    return Ok(EvalResult::ResumedNoop {
+                        reason: "not paused".to_string(),
+                    });
+                }
+                // active_scene の全 clip を resume し、state を復元
+                // Resume every clip in active_scene and restore the state
+                if let Some(scene) = self.active_scene.as_mut() {
+                    scene.resume_all_clips();
+                }
+                self.state
+                    .apply_command(PlaybackCommand::Resume { target: None });
+                Ok(EvalResult::Resumed { target: None })
+            }
+            Some(name) => {
+                // Paused かつ prev の名前と一致 → 全体 resume
+                // If paused and prev name matches → full resume
+                if self.state.is_paused() {
+                    let is_prev = self
+                        .state
+                        .current_scene_name()
+                        .map(|n| n == name)
+                        .unwrap_or(false);
+                    if is_prev {
+                        if let Some(scene) = self.active_scene.as_mut() {
+                            scene.resume_all_clips();
+                        }
+                        self.state.apply_command(PlaybackCommand::Resume {
+                            target: Some(name.clone()),
+                        });
+                        return Ok(EvalResult::Resumed {
+                            target: Some(name.clone()),
+                        });
+                    }
+                }
+                // active_scene に該当 clip があれば clip 単位 resume
+                // If the active_scene has the named clip, resume it
+                if let Some(scene) = self.active_scene.as_mut() {
+                    if scene.has_clip(name) {
+                        scene.resume_clip(name);
+                        return Ok(EvalResult::Resumed {
+                            target: Some(name.clone()),
+                        });
+                    }
+                }
+                // どれにも該当しない → no-op
+                // No target matched → no-op
+                Ok(EvalResult::ResumedNoop {
+                    reason: format!(
+                        "'{}' is not a paused scene/session nor a clip in active scene",
+                        name
+                    ),
+                })
+            }
+        }
     }
 
     /// Registry参照
@@ -1995,5 +2126,276 @@ instrument bass {
             result.unwrap_err(),
             EngineError::InvalidVariableValue { .. }
         ));
+    }
+
+    // --- §10.4 pause / resume evaluator tests ---
+
+    use crate::ast::playback::{PauseCommand, ResumeCommand};
+
+    /// Pause(None) で再生中なら Paused に遷移、AllNotesOff 蓄積、全 clip が paused
+    /// Pause(None) while playing: transitions to Paused, queues AllNotesOff, all clips paused
+    #[test]
+    fn pause_none_queues_all_notes_off_and_pauses_clips() {
+        let mut ev = setup_with_single_clip("a", "verse", 5);
+        ev.eval_block(Block::Play(PlayCommand {
+            target: PlayTarget::Scene("verse".into()),
+            repeat: RepeatSpec::Loop,
+        }))
+        .unwrap();
+
+        let result = ev
+            .eval_block(Block::Pause(PauseCommand { target: None }))
+            .unwrap();
+        assert_eq!(result, EvalResult::Paused { target: None });
+
+        assert!(ev.state().is_paused());
+        assert_eq!(ev.take_pending_all_notes_off(), vec![5]);
+        let scene = ev.active_scene().unwrap();
+        assert!(scene.is_clip_paused("a"));
+    }
+
+    /// Pause(scene 名) で一致時は全体 pause 相当（AllNotesOff 全 ch、全 clip paused）
+    /// Pause(scene name) when matching: equivalent to full pause
+    #[test]
+    fn pause_with_current_scene_name_fully_pauses() {
+        let mut ev = setup_with_single_clip("a", "verse", 7);
+        ev.eval_block(Block::Play(PlayCommand {
+            target: PlayTarget::Scene("verse".into()),
+            repeat: RepeatSpec::Loop,
+        }))
+        .unwrap();
+
+        let result = ev
+            .eval_block(Block::Pause(PauseCommand {
+                target: Some("verse".into()),
+            }))
+            .unwrap();
+        assert_eq!(
+            result,
+            EvalResult::Paused {
+                target: Some("verse".into())
+            }
+        );
+
+        assert!(ev.state().is_paused());
+        assert_eq!(ev.take_pending_all_notes_off(), vec![7]);
+    }
+
+    /// Pause(clip 名) は該当 clip のみ pause、そのチャンネルだけ AllNotesOff
+    /// Pause(clip name) pauses only that clip and queues only its channel
+    #[test]
+    fn pause_with_clip_name_pauses_single_clip() {
+        let mut ev = Evaluator::new(120.0);
+        let src = "device dev { port test }\n\
+                   instrument inst_a {\n  device dev\n  channel 2\n}\n\
+                   instrument inst_b {\n  device dev\n  channel 9\n}\n\
+                   clip a [bars 1] {\n  inst_a c\n}\n\
+                   clip b [bars 1] {\n  inst_b c\n}\n\
+                   scene verse { a b }\n";
+        eval_src(&mut ev, src);
+        ev.eval_block(Block::Play(PlayCommand {
+            target: PlayTarget::Scene("verse".into()),
+            repeat: RepeatSpec::Loop,
+        }))
+        .unwrap();
+
+        let result = ev
+            .eval_block(Block::Pause(PauseCommand {
+                target: Some("a".into()),
+            }))
+            .unwrap();
+        assert_eq!(
+            result,
+            EvalResult::Paused {
+                target: Some("a".into())
+            }
+        );
+
+        // 全体 state は PlayingScene のまま、clip "a" だけ paused
+        // Global state stays PlayingScene; only clip "a" is paused
+        assert!(!ev.state().is_paused());
+        let scene = ev.active_scene().unwrap();
+        assert!(scene.is_clip_paused("a"));
+        assert!(!scene.is_clip_paused("b"));
+        assert_eq!(ev.take_pending_all_notes_off(), vec![2]);
+    }
+
+    /// Pause(未知名) は no-op で active_scene も state も不変、pending 空（§10.4 D3）
+    /// Pause(unknown) is no-op; active_scene and state unchanged, pending empty (§10.4 D3)
+    #[test]
+    fn pause_with_unknown_target_is_noop() {
+        let mut ev = setup_with_single_clip("a", "verse", 3);
+        ev.eval_block(Block::Play(PlayCommand {
+            target: PlayTarget::Scene("verse".into()),
+            repeat: RepeatSpec::Loop,
+        }))
+        .unwrap();
+
+        let result = ev
+            .eval_block(Block::Pause(PauseCommand {
+                target: Some("ghost".into()),
+            }))
+            .unwrap();
+        assert!(matches!(result, EvalResult::PausedNoop { .. }));
+
+        assert!(ev.active_scene().is_some());
+        assert!(!ev.state().is_paused());
+        assert!(ev.take_pending_all_notes_off().is_empty());
+    }
+
+    /// Pause(None) で Stopped 時は no-op
+    /// Pause(None) when stopped is no-op
+    #[test]
+    fn pause_when_stopped_is_noop() {
+        let mut ev = Evaluator::new(120.0);
+        let result = ev
+            .eval_block(Block::Pause(PauseCommand { target: None }))
+            .unwrap();
+        assert!(matches!(result, EvalResult::PausedNoop { .. }));
+        assert!(!ev.state().is_paused());
+    }
+
+    /// Resume(None) は Paused を解除して元の state に戻し、全 clip も resume
+    /// Resume(None) restores state from Paused and resumes every clip
+    #[test]
+    fn resume_none_restores_state_and_resumes_clips() {
+        let mut ev = setup_with_single_clip("a", "verse", 5);
+        ev.eval_block(Block::Play(PlayCommand {
+            target: PlayTarget::Scene("verse".into()),
+            repeat: RepeatSpec::Loop,
+        }))
+        .unwrap();
+        ev.eval_block(Block::Pause(PauseCommand { target: None }))
+            .unwrap();
+        let _ = ev.take_pending_all_notes_off();
+
+        let result = ev
+            .eval_block(Block::Resume(ResumeCommand { target: None }))
+            .unwrap();
+        assert_eq!(result, EvalResult::Resumed { target: None });
+        assert!(!ev.state().is_paused());
+        let scene = ev.active_scene().unwrap();
+        assert!(!scene.is_clip_paused("a"));
+    }
+
+    /// Resume(scene 名) は prev と一致時のみ復元
+    /// Resume(scene name) restores only when prev name matches
+    #[test]
+    fn resume_with_matching_name_restores_state() {
+        let mut ev = setup_with_single_clip("a", "verse", 5);
+        ev.eval_block(Block::Play(PlayCommand {
+            target: PlayTarget::Scene("verse".into()),
+            repeat: RepeatSpec::Loop,
+        }))
+        .unwrap();
+        ev.eval_block(Block::Pause(PauseCommand { target: None }))
+            .unwrap();
+
+        let result = ev
+            .eval_block(Block::Resume(ResumeCommand {
+                target: Some("verse".into()),
+            }))
+            .unwrap();
+        assert_eq!(
+            result,
+            EvalResult::Resumed {
+                target: Some("verse".into())
+            }
+        );
+        assert!(!ev.state().is_paused());
+    }
+
+    /// Resume(不一致名) は no-op で Paused のまま
+    /// Resume(mismatched name) is no-op; stays paused
+    #[test]
+    fn resume_with_mismatched_name_is_noop() {
+        let mut ev = setup_with_single_clip("a", "verse", 5);
+        ev.eval_block(Block::Play(PlayCommand {
+            target: PlayTarget::Scene("verse".into()),
+            repeat: RepeatSpec::Loop,
+        }))
+        .unwrap();
+        ev.eval_block(Block::Pause(PauseCommand { target: None }))
+            .unwrap();
+
+        let result = ev
+            .eval_block(Block::Resume(ResumeCommand {
+                target: Some("chorus".into()),
+            }))
+            .unwrap();
+        assert!(matches!(result, EvalResult::ResumedNoop { .. }));
+        assert!(ev.state().is_paused());
+    }
+
+    /// Resume(clip 名) は該当 clip のみ resume（全体 state は変化しない）
+    /// Resume(clip name) resumes only that clip; global state unchanged
+    #[test]
+    fn resume_with_clip_name_resumes_single_clip() {
+        let mut ev = Evaluator::new(120.0);
+        let src = "device dev { port test }\n\
+                   instrument inst_a {\n  device dev\n  channel 2\n}\n\
+                   instrument inst_b {\n  device dev\n  channel 9\n}\n\
+                   clip a [bars 1] {\n  inst_a c\n}\n\
+                   clip b [bars 1] {\n  inst_b c\n}\n\
+                   scene verse { a b }\n";
+        eval_src(&mut ev, src);
+        ev.eval_block(Block::Play(PlayCommand {
+            target: PlayTarget::Scene("verse".into()),
+            repeat: RepeatSpec::Loop,
+        }))
+        .unwrap();
+        ev.eval_block(Block::Pause(PauseCommand {
+            target: Some("a".into()),
+        }))
+        .unwrap();
+        let _ = ev.take_pending_all_notes_off();
+
+        let result = ev
+            .eval_block(Block::Resume(ResumeCommand {
+                target: Some("a".into()),
+            }))
+            .unwrap();
+        assert_eq!(
+            result,
+            EvalResult::Resumed {
+                target: Some("a".into())
+            }
+        );
+        let scene = ev.active_scene().unwrap();
+        assert!(!scene.is_clip_paused("a"));
+    }
+
+    /// Resume(None) Paused でない場合は no-op（§10.4 D4）
+    /// Resume(None) when not paused is no-op (§10.4 D4)
+    #[test]
+    fn resume_when_not_paused_is_noop() {
+        let mut ev = setup_with_single_clip("a", "verse", 5);
+        ev.eval_block(Block::Play(PlayCommand {
+            target: PlayTarget::Scene("verse".into()),
+            repeat: RepeatSpec::Loop,
+        }))
+        .unwrap();
+        let result = ev
+            .eval_block(Block::Resume(ResumeCommand { target: None }))
+            .unwrap();
+        assert!(matches!(result, EvalResult::ResumedNoop { .. }));
+    }
+
+    /// Resume(未知名) は no-op
+    /// Resume(unknown name) is no-op
+    #[test]
+    fn resume_with_unknown_target_is_noop() {
+        let mut ev = setup_with_single_clip("a", "verse", 3);
+        ev.eval_block(Block::Play(PlayCommand {
+            target: PlayTarget::Scene("verse".into()),
+            repeat: RepeatSpec::Loop,
+        }))
+        .unwrap();
+        let result = ev
+            .eval_block(Block::Resume(ResumeCommand {
+                target: Some("ghost".into()),
+            }))
+            .unwrap();
+        assert!(matches!(result, EvalResult::ResumedNoop { .. }));
     }
 }

@@ -233,6 +233,27 @@ mod tests {
         assert_eq!(tl.sink().sent.len(), 3);
     }
 
+    /// paused クリップの step は sink に何も送出せず、clip 側の tick も進まない
+    /// §10.4: step on a paused clip sends nothing and the clip's tick stays frozen.
+    #[test]
+    fn paused_clip_events_are_not_dispatched_and_tick_frozen() {
+        let mut scene = ScenePlayer::new();
+        scene.add_clip(
+            "a".to_string(),
+            make_clip(vec![(0, note_on(60)), (1, note_on(61))], 480),
+            true,
+        );
+        scene.pause_clip("a");
+        let mut tl = TickLoop::new(scene, Clock::new(120.0), MockSink::default());
+
+        tl.step().unwrap();
+        tl.step().unwrap();
+        assert!(tl.sink().sent.is_empty());
+        // tick_loop 側の current_tick は進むが、clip 側の current_tick は凍結
+        // TickLoop's current_tick advances, but the paused clip's tick is frozen
+        assert_eq!(tl.current_tick(), 2);
+    }
+
     /// scene_mut 経由のミュート操作が次 step から反映される
     #[test]
     fn scene_mut_mute_takes_effect_next_step() {
