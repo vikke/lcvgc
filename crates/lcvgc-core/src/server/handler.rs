@@ -168,6 +168,12 @@ pub async fn handle_request(evaluator: &Arc<Mutex<Evaluator>>, request: Request)
                 analyzer.blocks(),
                 analyzer.registry(),
             ));
+            // §10.4: mute / unmute の target 名が未定義の clip なら Warning
+            // §10.4: Warn on mute / unmute with unknown clip target names
+            diags.extend(DiagnosticProvider::mute_unmute_target_diagnostics(
+                analyzer.blocks(),
+                analyzer.registry(),
+            ));
             // include_diagnostics()は呼ばない（Lua側で実施）
             // Do not call include_diagnostics() (handled on Lua side)
             let items: Vec<LspDiagnosticItem> = diags

@@ -102,6 +102,8 @@ impl Registry {
             | Block::Stop(_)
             | Block::Pause(_)
             | Block::Resume(_)
+            | Block::Mute(_)
+            | Block::Unmute(_)
             | Block::Include(_) => false,
         }
     }

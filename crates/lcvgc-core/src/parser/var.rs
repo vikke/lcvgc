@@ -62,4 +62,12 @@ mod tests {
         assert!(parse_var("var pause = something").is_err());
         assert!(parse_var("var resume = something").is_err());
     }
+
+    /// §10.4: mute / unmute は予約語なので変数名に使えない
+    /// §10.4: `mute` and `unmute` are reserved keywords and cannot be used as variable names
+    #[test]
+    fn var_mute_unmute_reserved() {
+        assert!(parse_var("var mute = something").is_err());
+        assert!(parse_var("var unmute = something").is_err());
+    }
 }

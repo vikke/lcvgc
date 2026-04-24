@@ -66,6 +66,8 @@ impl CompletionProvider {
             "stop",
             "pause",
             "resume",
+            "mute",
+            "unmute",
         ]
         .iter()
         .map(|kw| CompletionItem {
@@ -402,7 +404,7 @@ mod tests {
 
     #[test]
     fn test_keyword_completions_count() {
-        assert_eq!(CompletionProvider::keyword_completions().len(), 14);
+        assert_eq!(CompletionProvider::keyword_completions().len(), 16);
     }
 
     #[test]
@@ -418,6 +420,15 @@ mod tests {
         let items = CompletionProvider::keyword_completions();
         assert!(items.iter().any(|i| i.label == "pause"));
         assert!(items.iter().any(|i| i.label == "resume"));
+    }
+
+    /// §10.4: mute / unmute がキーワード補完に含まれる
+    /// §10.4: mute and unmute are included in keyword completions
+    #[test]
+    fn test_keyword_completions_contains_mute_unmute() {
+        let items = CompletionProvider::keyword_completions();
+        assert!(items.iter().any(|i| i.label == "mute"));
+        assert!(items.iter().any(|i| i.label == "unmute"));
     }
 
     #[test]

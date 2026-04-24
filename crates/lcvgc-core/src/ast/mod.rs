@@ -22,7 +22,7 @@ use device::DeviceDef;
 use include::IncludeDef;
 use instrument::InstrumentDef;
 use kit::KitDef;
-use playback::{PauseCommand, PlayCommand, ResumeCommand, StopCommand};
+use playback::{MuteCommand, PauseCommand, PlayCommand, ResumeCommand, StopCommand, UnmuteCommand};
 use scale::ScaleDef;
 use scene::SceneDef;
 use session::SessionDef;
@@ -75,4 +75,10 @@ pub enum Block {
     /// 再開コマンドブロック（§10.4）
     /// Resume command block (§10.4)
     Resume(ResumeCommand),
+    /// クリップ・ミュートコマンドブロック（§10.4）
+    /// Clip mute command block (§10.4)
+    Mute(MuteCommand),
+    /// クリップ・アンミュートコマンドブロック（§10.4）
+    /// Clip unmute command block (§10.4)
+    Unmute(UnmuteCommand),
 }
