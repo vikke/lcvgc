@@ -6,13 +6,35 @@ use std::sync::Arc;
 
 use clap::Parser;
 use cli::Cli;
+use lcvgc_core::engine::clock::Clock;
 use lcvgc_core::engine::config::Config;
 use lcvgc_core::engine::evaluator::Evaluator;
+use lcvgc_core::engine::midi_sink::MidirSink;
+use lcvgc_core::engine::playback::run_driver;
 use lcvgc_core::engine::watcher::{run_hot_reload, WatcherConfig};
 use lcvgc_core::midi::monitor::{log_startup_ports, run_port_monitor, PortMonitorConfig};
+use lcvgc_core::midi::port::PortManager;
 use lcvgc_core::server::run_server;
 use tokio::sync::Mutex;
 use tracing::{error, info, warn};
+
+/// `--midi-device` で指定された名前の MIDI 出力ポートに接続し、`MidirSink` を構築する。
+/// 既定の論理名として `"default"` を使用する（現時点で device は 1 台のみ対応）。
+///
+/// Connects to the MIDI output port named by `--midi-device` and builds a
+/// `MidirSink`. Uses the logical name `"default"` (only one device is
+/// supported for now).
+///
+/// # Arguments
+/// * `device` - 接続先ポート名（`list_ports()` が返す文字列のいずれか）
+///
+/// # Errors
+/// ポート接続に失敗した場合は `MidiError` を返す。
+fn build_midir_sink(device: &str) -> Result<MidirSink, lcvgc_core::midi::MidiError> {
+    let mut pm = PortManager::new();
+    pm.connect("default", device)?;
+    Ok(MidirSink::new(pm, "default".to_string()))
+}
 
 /// 設定ファイルパスを解決する。
 /// --config 指定時はそのパスを返し、未指定時は ~/.config/lcvgc/config.toml を返す。
@@ -125,6 +147,27 @@ async fn main() {
         tokio::spawn(async move {
             run_hot_reload(ev, path, WatcherConfig::default()).await;
         });
+    }
+
+    // MIDI デバイスが指定されていれば本番再生ドライバを起動
+    // When --midi-device is specified, boot the production playback driver.
+    if let Some(ref device) = cli.midi_device {
+        match build_midir_sink(device) {
+            Ok(sink) => {
+                info!("  MIDI 再生ドライバを起動: デバイス={}", device);
+                let ev = evaluator.clone();
+                let clock = Clock::new(default_bpm);
+                tokio::spawn(async move {
+                    run_driver(ev, sink, clock).await;
+                });
+            }
+            Err(e) => {
+                warn!(
+                    "  MIDI デバイスへの接続に失敗しました: {} ({}). 再生ドライバは起動しません。",
+                    device, e
+                );
+            }
+        }
     }
 
     info!("Ctrl+C で終了します");

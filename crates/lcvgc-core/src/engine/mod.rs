@@ -4,6 +4,7 @@ pub mod config;
 pub mod error;
 pub mod evaluator;
 pub mod midi_sink;
+pub mod playback;
 pub mod player;
 pub mod registry;
 pub mod resolver;

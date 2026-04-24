@@ -1295,6 +1295,9 @@ unmute drums_a
 > - `stop <clip>` has been **removed** (Issue #43). The former behavior moved to `mute <clip>`
 > - `pause` / `resume` are **implemented** (every pause/resume row in §10.4.1, Issue #44)
 > - `mute <clip>` / `unmute <clip>` are **implemented** (Issue #43)
+> - MIDI hardware output is enabled only when `--midi-device <port>` is specified (Issue #48).
+>   **Only a single device is supported at this time.** Multi-device routing, MIDI transport
+>   messages (Start/Stop/Continue), and Timing Clock / SPP are tracked for future issues.
 
 lcvgc provides **three independent kinds of "stop" operations**, each with different effects on tick (time), sound, and phase (current position inside a loop).
 

@@ -1295,6 +1295,9 @@ unmute drums_a
 > - `stop <clip>` は **削除済み**（Issue #43）。以前の挙動は `mute <clip>` に移行
 > - `pause` / `resume` は **実装済み**（§10.4.1 の表の pause/resume 行すべて、Issue #44）
 > - `mute <clip>` / `unmute <clip>` は **実装済み**（Issue #43）
+> - MIDI 実機出力は `--midi-device <port>` を指定した場合にのみ有効（Issue #48）。
+>   **現時点で device は 1 台のみ対応**。複数 device ルーティング、MIDI トランスポート
+>   メッセージ（Start/Stop/Continue）、Timing Clock / SPP 送出は今後の Issue で対応予定。
 
 lcvgc には「再生を止める」ための**独立した 3 種類の操作**がある。それぞれ tick（時間）・音・位相（ループ内の現在位置）への作用が異なる。
 
