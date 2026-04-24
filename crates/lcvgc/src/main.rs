@@ -1,5 +1,6 @@
 mod cli;
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::process;
 use std::sync::Arc;
@@ -10,7 +11,7 @@ use lcvgc_core::engine::clock::Clock;
 use lcvgc_core::engine::config::Config;
 use lcvgc_core::engine::evaluator::Evaluator;
 use lcvgc_core::engine::midi_sink::MidirSink;
-use lcvgc_core::engine::playback::run_driver;
+use lcvgc_core::engine::playback::{run_driver, BoxedSink};
 use lcvgc_core::engine::watcher::{run_hot_reload, WatcherConfig};
 use lcvgc_core::midi::monitor::{log_startup_ports, run_port_monitor, PortMonitorConfig};
 use lcvgc_core::midi::port::PortManager;
@@ -18,22 +19,59 @@ use lcvgc_core::server::run_server;
 use tokio::sync::Mutex;
 use tracing::{error, info, warn};
 
-/// `--midi-device` で指定された名前の MIDI 出力ポートに接続し、`MidirSink` を構築する。
-/// 既定の論理名として `"default"` を使用する（現時点で device は 1 台のみ対応）。
+/// 単一ポート名から `MidirSink` を構築するヘルパ
 ///
-/// Connects to the MIDI output port named by `--midi-device` and builds a
-/// `MidirSink`. Uses the logical name `"default"` (only one device is
-/// supported for now).
+/// DSL に `device` ブロックが無い場合の後方互換経路として、論理名
+/// `"default"` で CLI 引数 `--midi-device` に指定されたポートに接続する。
+///
+/// Builds a single-port `MidirSink` for the backward-compatibility path
+/// when the DSL has no `device` block. Uses the logical name `"default"`.
 ///
 /// # Arguments
-/// * `device` - 接続先ポート名（`list_ports()` が返す文字列のいずれか）
+/// * `port_name` - 接続先ポート名（`list_ports()` が返す文字列のいずれか）
 ///
 /// # Errors
 /// ポート接続に失敗した場合は `MidiError` を返す。
-fn build_midir_sink(device: &str) -> Result<MidirSink, lcvgc_core::midi::MidiError> {
+fn build_default_sink(port_name: &str) -> Result<MidirSink, lcvgc_core::midi::MidiError> {
     let mut pm = PortManager::new();
-    pm.connect("default", device)?;
+    pm.connect("default", port_name)?;
     Ok(MidirSink::new(pm, "default".to_string()))
+}
+
+/// DSL の `device <name> { port "..." }` ブロックから複数 sink マップを構築する
+///
+/// Issue #49: 各 `DeviceDef.port` を個別の `PortManager` に接続し、
+/// 論理名 `DeviceDef.name` をキーとする `MidirSink` を sinks に詰める。
+/// ポート接続に失敗した device は warn ログして当該 sink のみスキップし、
+/// 他 device への振り分けは継続する。
+///
+/// Builds a per-device sink map from `DeviceDef` entries registered in the
+/// evaluator's `Registry` (Issue #49). Connection failures for one device
+/// are logged at `warn` and skipped; the remaining devices continue to be
+/// wired so that routing for healthy devices is unaffected.
+fn build_sinks_from_registry(evaluator: &Evaluator) -> HashMap<String, BoxedSink> {
+    let mut sinks: HashMap<String, BoxedSink> = HashMap::new();
+    let registry = evaluator.registry();
+    for name in registry.device_names() {
+        let Some(def) = registry.get_device(&name) else {
+            continue;
+        };
+        let mut pm = PortManager::new();
+        match pm.connect(&name, &def.port) {
+            Ok(()) => {
+                info!("  MIDI device 接続: {} -> {}", name, def.port);
+                let sink: BoxedSink = Box::new(MidirSink::new(pm, name.clone()));
+                sinks.insert(name.clone(), sink);
+            }
+            Err(e) => {
+                warn!(
+                    "  MIDI device 接続失敗: {} -> {} ({}). この device への送出はスキップします。",
+                    name, def.port, e
+                );
+            }
+        }
+    }
+    sinks
 }
 
 /// 設定ファイルパスを解決する。
@@ -149,25 +187,48 @@ async fn main() {
         });
     }
 
-    // MIDI デバイスが指定されていれば本番再生ドライバを起動
-    // When --midi-device is specified, boot the production playback driver.
-    if let Some(ref device) = cli.midi_device {
-        match build_midir_sink(device) {
+    // MIDI 再生ドライバの起動（Issue #49: 複数 device 対応）
+    //
+    // 1. DSL の `device` ブロックから sink マップを構築（失敗した device は warn & skip）
+    // 2. `--midi-device` 指定時は後方互換の "default" sink を追加
+    // 3. sinks が空でなければ PlaybackDriver を起動
+    //
+    // Multi-device playback driver bootstrap (Issue #49):
+    // - Build a per-device sink map from DSL `device` blocks
+    // - Add a legacy `"default"` sink from `--midi-device` if provided
+    // - Spawn the driver only when at least one sink was wired
+    let mut sinks: HashMap<String, BoxedSink> = {
+        let ev = evaluator.lock().await;
+        build_sinks_from_registry(&ev)
+    };
+
+    if let Some(ref port_name) = cli.midi_device {
+        match build_default_sink(port_name) {
             Ok(sink) => {
-                info!("  MIDI 再生ドライバを起動: デバイス={}", device);
-                let ev = evaluator.clone();
-                let clock = Clock::new(default_bpm);
-                tokio::spawn(async move {
-                    run_driver(ev, sink, clock).await;
-                });
+                info!("  MIDI default sink 接続: {}", port_name);
+                sinks.insert("default".to_string(), Box::new(sink));
             }
             Err(e) => {
                 warn!(
-                    "  MIDI デバイスへの接続に失敗しました: {} ({}). 再生ドライバは起動しません。",
-                    device, e
+                    "  --midi-device の接続に失敗しました: {} ({}). default sink は登録しません。",
+                    port_name, e
                 );
             }
         }
+    }
+
+    if !sinks.is_empty() {
+        info!(
+            "  MIDI 再生ドライバを起動: sinks={:?}",
+            sinks.keys().collect::<Vec<_>>()
+        );
+        let ev = evaluator.clone();
+        let clock = Clock::new(default_bpm);
+        tokio::spawn(async move {
+            run_driver(ev, sinks, clock).await;
+        });
+    } else {
+        info!("  MIDI sink 未登録のため、再生ドライバは起動しません");
     }
 
     info!("Ctrl+C で終了します");

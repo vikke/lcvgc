@@ -12,10 +12,34 @@ use crate::parser::clip_articulation::Articulation;
 use crate::parser::clip_shorthand::CarryOverState;
 
 /// tickベースMIDIイベント
+///
+/// Issue #49 対応: `device` フィールドで送出先デバイスの論理名を保持する。
+/// `PlaybackDriver` はこの値をキーに、対応する `MidiSink` に振り分ける。
+/// 空文字列の場合は「未指定」を意味し、デフォルト sink へルーティングされる
+/// （後方互換目的）。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MidiEvent {
     pub tick: u64,
     pub message: MidiMessage,
+    /// 送出先デバイスの論理名（`instrument.device` / `kit.device` 由来）
+    /// Logical device name for routing, resolved from `instrument.device` or `kit.device`.
+    pub device: String,
+}
+
+impl MidiEvent {
+    /// `MidiEvent` を構築する。
+    ///
+    /// # Arguments
+    /// * `tick` - イベント発生位置（tick 単位）
+    /// * `message` - MIDI メッセージ
+    /// * `device` - 送出先デバイスの論理名
+    pub fn new(tick: u64, message: MidiMessage, device: impl Into<String>) -> Self {
+        Self {
+            tick,
+            message,
+            device: device.into(),
+        }
+    }
 }
 
 /// コンパイル済みクリップ
@@ -125,6 +149,7 @@ fn compile_pitched_line(
     let channel = inst.channel;
     let gate_normal = inst.gate_normal.unwrap_or(80);
     let gate_staccato = inst.gate_staccato.unwrap_or(40);
+    let device = inst.device.clone();
 
     let mut events = Vec::new();
     let mut current_tick: u64 = 0;
@@ -134,6 +159,7 @@ fn compile_pitched_line(
         &line.elements,
         clock,
         channel,
+        &device,
         gate_normal,
         gate_staccato,
         &mut current_tick,
@@ -154,6 +180,7 @@ fn compile_elements(
     elements: &[PitchedElement],
     clock: &Clock,
     channel: u8,
+    device: &str,
     gate_normal: u8,
     gate_staccato: u8,
     current_tick: &mut u64,
@@ -178,22 +205,24 @@ fn compile_elements(
                         resolve_gate_percent(articulation, gate_normal, gate_staccato);
                     let gate_ticks = apply_min_gate_off(note_ticks, gate_percent, clock);
 
-                    events.push(MidiEvent {
-                        tick: *current_tick,
-                        message: MidiMessage::NoteOn {
+                    events.push(MidiEvent::new(
+                        *current_tick,
+                        MidiMessage::NoteOn {
                             channel,
                             note,
                             velocity: 100,
                         },
-                    });
-                    events.push(MidiEvent {
-                        tick: *current_tick + gate_ticks,
-                        message: MidiMessage::NoteOff {
+                        device,
+                    ));
+                    events.push(MidiEvent::new(
+                        *current_tick + gate_ticks,
+                        MidiMessage::NoteOff {
                             channel,
                             note,
                             velocity: 0,
                         },
-                    });
+                        device,
+                    ));
 
                     *current_tick += note_ticks;
                 }
@@ -220,22 +249,24 @@ fn compile_elements(
                     let gate_ticks = apply_min_gate_off(note_ticks, gate_percent, clock);
 
                     for &note in &notes {
-                        events.push(MidiEvent {
-                            tick: *current_tick,
-                            message: MidiMessage::NoteOn {
+                        events.push(MidiEvent::new(
+                            *current_tick,
+                            MidiMessage::NoteOn {
                                 channel,
                                 note,
                                 velocity: 100,
                             },
-                        });
-                        events.push(MidiEvent {
-                            tick: *current_tick + gate_ticks,
-                            message: MidiMessage::NoteOff {
+                            device,
+                        ));
+                        events.push(MidiEvent::new(
+                            *current_tick + gate_ticks,
+                            MidiMessage::NoteOff {
                                 channel,
                                 note,
                                 velocity: 0,
                             },
-                        });
+                            device,
+                        ));
                     }
 
                     *current_tick += note_ticks;
@@ -259,22 +290,24 @@ fn compile_elements(
                 for &(name, oct_opt) in notes {
                     let oct = oct_opt.unwrap_or(carry.octave);
                     let note = note_number(name, oct);
-                    events.push(MidiEvent {
-                        tick: *current_tick,
-                        message: MidiMessage::NoteOn {
+                    events.push(MidiEvent::new(
+                        *current_tick,
+                        MidiMessage::NoteOn {
                             channel,
                             note,
                             velocity: 100,
                         },
-                    });
-                    events.push(MidiEvent {
-                        tick: *current_tick + gate_ticks,
-                        message: MidiMessage::NoteOff {
+                        device,
+                    ));
+                    events.push(MidiEvent::new(
+                        *current_tick + gate_ticks,
+                        MidiMessage::NoteOff {
                             channel,
                             note,
                             velocity: 0,
                         },
-                    });
+                        device,
+                    ));
                 }
 
                 *current_tick += note_ticks;
@@ -287,6 +320,7 @@ fn compile_elements(
                         &inner_elements,
                         clock,
                         channel,
+                        device,
                         gate_normal,
                         gate_staccato,
                         current_tick,
@@ -364,6 +398,7 @@ fn compile_cc_automations(
                         EngineError::UnknownInstrument(step.target.instrument.clone())
                     })?;
                 let channel = inst.channel;
+                let device = inst.device.clone();
                 let cc_number = inst
                     .cc_mappings
                     .iter()
@@ -382,14 +417,15 @@ fn compile_cc_automations(
                 // デフォルト16分音符
                 let ticks_per_step = clock.duration_to_ticks(16, false);
                 for (i, &value) in step.values.iter().enumerate() {
-                    events.push(MidiEvent {
-                        tick: i as u64 * ticks_per_step,
-                        message: MidiMessage::ControlChange {
+                    events.push(MidiEvent::new(
+                        i as u64 * ticks_per_step,
+                        MidiMessage::ControlChange {
                             channel,
                             cc: cc_number,
                             value,
                         },
-                    });
+                        &device,
+                    ));
                 }
             }
             CcAutomation::Time(time) => {
@@ -399,6 +435,7 @@ fn compile_cc_automations(
                         EngineError::UnknownInstrument(time.target.instrument.clone())
                     })?;
                 let channel = inst.channel;
+                let device = inst.device.clone();
                 let cc_number = inst
                     .cc_mappings
                     .iter()
@@ -418,14 +455,15 @@ fn compile_cc_automations(
                     let from_tick = (segment.from.bar as u64 - 1) * bar_ticks
                         + (segment.from.beat as u64 - 1) * beat_ticks;
 
-                    events.push(MidiEvent {
-                        tick: from_tick,
-                        message: MidiMessage::ControlChange {
+                    events.push(MidiEvent::new(
+                        from_tick,
+                        MidiMessage::ControlChange {
                             channel,
                             cc: cc_number,
                             value: segment.from.value,
                         },
-                    });
+                        &device,
+                    ));
 
                     // 補間処理
                     // Interpolation processing
@@ -459,14 +497,15 @@ fn compile_cc_automations(
                                 };
                                 let tick = from_tick + s * step_ticks;
                                 if tick <= to_tick {
-                                    events.push(MidiEvent {
+                                    events.push(MidiEvent::new(
                                         tick,
-                                        message: MidiMessage::ControlChange {
+                                        MidiMessage::ControlChange {
                                             channel,
                                             cc: cc_number,
                                             value,
                                         },
-                                    });
+                                        &device,
+                                    ));
                                 }
                             }
                         }
@@ -489,6 +528,7 @@ fn compile_drum(
         .get_kit(&body.kit)
         .ok_or_else(|| EngineError::UnknownKit(body.kit.clone()))?;
 
+    let device = kit.device.clone();
     let ticks_per_step = clock.duration_to_ticks(body.resolution, false);
 
     let mut events = Vec::new();
@@ -517,22 +557,24 @@ fn compile_drum(
             let tick = i as u64 * ticks_per_step;
             let gate_ticks = apply_min_gate_off(ticks_per_step, gate_percent, clock);
 
-            events.push(MidiEvent {
+            events.push(MidiEvent::new(
                 tick,
-                message: MidiMessage::NoteOn {
+                MidiMessage::NoteOn {
                     channel,
                     note,
                     velocity,
                 },
-            });
-            events.push(MidiEvent {
-                tick: tick + gate_ticks,
-                message: MidiMessage::NoteOff {
+                &device,
+            ));
+            events.push(MidiEvent::new(
+                tick + gate_ticks,
+                MidiMessage::NoteOff {
                     channel,
                     note,
                     velocity: 0,
                 },
-            });
+                &device,
+            ));
         }
     }
 
@@ -1802,5 +1844,166 @@ mod tests {
                 value: 64
             }
         ));
+    }
+
+    // ---------------------------------------------------------------------
+    // Issue #49: 複数 device へのルーティングのため、
+    // compile 時に MidiEvent.device が正しく埋まることを検証する。
+    // ---------------------------------------------------------------------
+
+    /// Issue #49: pitched clip の全イベントに `instrument.device` が埋まる
+    #[test]
+    fn pitched_events_carry_instrument_device() {
+        let registry = make_registry_with_bass();
+        let clock = Clock::new(120.0);
+        let clip = make_pitched_clip(
+            "test",
+            None,
+            vec![PitchedLine {
+                instrument: "bass".to_string(),
+                elements: vec![single_note(NoteName::C, Some(4), Some(4), false)],
+            }],
+        );
+
+        let compiled = compile_clip(&clip, &clock, &registry).unwrap();
+        assert!(!compiled.events.is_empty());
+        // make_registry_with_bass で device="dev" に設定されている
+        for ev in &compiled.events {
+            assert_eq!(ev.device, "dev", "NoteOn/NoteOff should carry device");
+        }
+    }
+
+    /// Issue #49: 異なる device を持つ 2 つの instrument を同じ clip に並べた
+    /// 場合、各 line の events に該当 instrument の device が割り振られる
+    #[test]
+    fn pitched_multi_line_uses_per_instrument_device() {
+        let mut registry = Registry::default();
+        registry.register_block(crate::ast::Block::Instrument(InstrumentDef {
+            name: "lead".to_string(),
+            device: "synth_a".to_string(),
+            channel: 1,
+            note: None,
+            gate_normal: Some(80),
+            gate_staccato: Some(40),
+            cc_mappings: vec![],
+            local_vars: vec![],
+            unresolved: Default::default(),
+        }));
+        registry.register_block(crate::ast::Block::Instrument(InstrumentDef {
+            name: "pad".to_string(),
+            device: "synth_b".to_string(),
+            channel: 2,
+            note: None,
+            gate_normal: Some(80),
+            gate_staccato: Some(40),
+            cc_mappings: vec![],
+            local_vars: vec![],
+            unresolved: Default::default(),
+        }));
+
+        let clock = Clock::new(120.0);
+        let clip = make_pitched_clip(
+            "dual",
+            None,
+            vec![
+                PitchedLine {
+                    instrument: "lead".to_string(),
+                    elements: vec![single_note(NoteName::C, Some(4), Some(4), false)],
+                },
+                PitchedLine {
+                    instrument: "pad".to_string(),
+                    elements: vec![single_note(NoteName::E, Some(4), Some(4), false)],
+                },
+            ],
+        );
+
+        let compiled = compile_clip(&clip, &clock, &registry).unwrap();
+
+        let lead_events: Vec<_> = compiled
+            .events
+            .iter()
+            .filter(|e| {
+                matches!(
+                    e.message,
+                    MidiMessage::NoteOn { channel: 1, .. }
+                        | MidiMessage::NoteOff { channel: 1, .. }
+                )
+            })
+            .collect();
+        let pad_events: Vec<_> = compiled
+            .events
+            .iter()
+            .filter(|e| {
+                matches!(
+                    e.message,
+                    MidiMessage::NoteOn { channel: 2, .. }
+                        | MidiMessage::NoteOff { channel: 2, .. }
+                )
+            })
+            .collect();
+
+        assert!(!lead_events.is_empty());
+        assert!(!pad_events.is_empty());
+        for ev in lead_events {
+            assert_eq!(ev.device, "synth_a");
+        }
+        for ev in pad_events {
+            assert_eq!(ev.device, "synth_b");
+        }
+    }
+
+    /// Issue #49: drum clip の全イベントに `kit.device` が埋まる
+    #[test]
+    fn drum_events_carry_kit_device() {
+        use crate::ast::clip::DrumClipBody;
+        use crate::ast::clip_drum::{DrumRow, HitSymbol};
+
+        let mut registry = Registry::default();
+        registry.register_block(crate::ast::Block::Kit(KitDef {
+            name: "mykit".to_string(),
+            device: "drum_device".to_string(),
+            instruments: vec![KitInstrument {
+                name: "kick".to_string(),
+                channel: 10,
+                note: KitInstrumentNote {
+                    name: NoteName::C,
+                    octave: 2,
+                },
+                gate_normal: Some(80),
+                gate_staccato: Some(40),
+                unresolved: Default::default(),
+            }],
+        }));
+
+        let clock = Clock::new(120.0);
+        let clip = ClipDef {
+            name: "beat".to_string(),
+            options: ClipOptions {
+                bars: None,
+                time_sig: None,
+                scale: None,
+            },
+            body: ClipBody::Drum(DrumClipBody {
+                kit: "mykit".to_string(),
+                resolution: 16,
+                rows: vec![DrumRow {
+                    instrument: "kick".to_string(),
+                    hits: vec![
+                        HitSymbol::Accent,
+                        HitSymbol::Rest,
+                        HitSymbol::Normal,
+                        HitSymbol::Rest,
+                    ],
+                    probability: None,
+                }],
+                cc_automations: vec![],
+            }),
+        };
+
+        let compiled = compile_clip(&clip, &clock, &registry).unwrap();
+        assert!(!compiled.events.is_empty());
+        for ev in &compiled.events {
+            assert_eq!(ev.device, "drum_device");
+        }
     }
 }

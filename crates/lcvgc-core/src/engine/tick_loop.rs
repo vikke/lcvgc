@@ -131,7 +131,7 @@ mod tests {
         CompiledClip {
             events: events
                 .into_iter()
-                .map(|(tick, message)| MidiEvent { tick, message })
+                .map(|(tick, message)| MidiEvent::new(tick, message, ""))
                 .collect(),
             total_ticks,
             warnings: vec![],

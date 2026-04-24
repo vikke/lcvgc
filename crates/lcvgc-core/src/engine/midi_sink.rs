@@ -20,6 +20,48 @@ impl MidiSink for MockSink {
     }
 }
 
+/// 共有可能なテスト用モック
+///
+/// 内部で `Arc<Mutex<Vec<MidiMessage>>>` を保持するため、`Box<dyn MidiSink>`
+/// として `PlaybackDriver` に渡した後も、clone したハンドルから送出内容を
+/// 検証できる。Issue #49 の複数 device ルーティングテストで利用する。
+///
+/// A shareable mock sink backed by `Arc<Mutex<Vec<MidiMessage>>>`. Lets a
+/// test hand the sink to `PlaybackDriver` (as `Box<dyn MidiSink>`) while
+/// still being able to inspect the captured messages through a cloned
+/// handle. Introduced for Issue #49 multi-device routing tests.
+#[derive(Debug, Clone, Default)]
+pub struct SharedMockSink {
+    inner: std::sync::Arc<std::sync::Mutex<Vec<MidiMessage>>>,
+}
+
+impl SharedMockSink {
+    /// 新しい `SharedMockSink` を生成する
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// これまでに送出されたメッセージのスナップショットを返す
+    pub fn snapshot(&self) -> Vec<MidiMessage> {
+        self.inner.lock().expect("mock sink poisoned").clone()
+    }
+
+    /// 内部バッファを空にする
+    pub fn clear(&self) {
+        self.inner.lock().expect("mock sink poisoned").clear();
+    }
+}
+
+impl MidiSink for SharedMockSink {
+    fn send(&mut self, msg: &MidiMessage) -> Result<(), EngineError> {
+        self.inner
+            .lock()
+            .expect("mock sink poisoned")
+            .push(msg.clone());
+        Ok(())
+    }
+}
+
 /// midir経由の実MIDIポート送信
 pub struct MidirSink {
     port_manager: PortManager,

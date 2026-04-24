@@ -11,12 +11,13 @@
 //! AllNotesOff messages from Stop evaluation. The evaluator remains the
 //! single source of truth; the driver is a thin read-only adapter.
 
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
 use tokio::sync::Mutex;
 use tokio::time;
-use tracing::{error, info};
+use tracing::{error, info, warn};
 
 use crate::engine::clock::Clock;
 use crate::engine::error::EngineError;
@@ -24,14 +25,30 @@ use crate::engine::evaluator::{Evaluator, SceneTransitionOutcome};
 use crate::engine::midi_sink::MidiSink;
 use crate::midi::message::MidiMessage;
 
+/// 1 つの論理 device に紐付く MIDI sink エントリ
+///
+/// Issue #49 で追加された型エイリアス。`PlaybackDriver` は device 論理名を
+/// キーにこの sink を選び、MIDI イベントを送出する。
+///
+/// Boxed `MidiSink` entry keyed by logical device name (Issue #49).
+pub type BoxedSink = Box<dyn MidiSink>;
+
 /// tick 駆動の再生ドライバ
 ///
-/// Tick-driven playback driver.
-pub struct PlaybackDriver<S: MidiSink> {
+/// Issue #49: device ごとに `MidiSink` を保持する HashMap 形式に拡張。
+/// `MidiEvent.device` をキーに対応する sink へ振り分ける。未登録 device
+/// 宛のイベントは warn ログを出してドロップする。
+///
+/// Tick-driven playback driver. As of Issue #49 the driver owns a map of
+/// `(device name -> MidiSink)` and routes every event to the sink matching
+/// `MidiEvent.device`; events addressed to unknown devices are logged at
+/// `warn` level and dropped.
+pub struct PlaybackDriver {
     /// 共有 Evaluator / Shared evaluator
     evaluator: Arc<Mutex<Evaluator>>,
-    /// MIDI 送出先 / MIDI sink
-    sink: S,
+    /// device 論理名 -> MIDI sink のマップ
+    /// Logical device name -> MIDI sink map
+    sinks: HashMap<String, BoxedSink>,
     /// 現在の tick 位置 / Current tick position
     current_tick: u64,
     /// 前回 step 時に active_scene が Some だったか（None→Some の遷移で tick リセット）
@@ -40,19 +57,32 @@ pub struct PlaybackDriver<S: MidiSink> {
     was_active: bool,
 }
 
-impl<S: MidiSink> PlaybackDriver<S> {
-    /// 新しい PlaybackDriver を生成する
+impl PlaybackDriver {
+    /// sink マップを明示指定して `PlaybackDriver` を生成する
     ///
     /// # Arguments
     /// * `evaluator` - Arc<Mutex<Evaluator>> 共有参照
-    /// * `sink` - MIDI 出力先
-    pub fn new(evaluator: Arc<Mutex<Evaluator>>, sink: S) -> Self {
+    /// * `sinks` - device 論理名 -> MidiSink ボックスのマップ
+    pub fn with_sinks(evaluator: Arc<Mutex<Evaluator>>, sinks: HashMap<String, BoxedSink>) -> Self {
         Self {
             evaluator,
-            sink,
+            sinks,
             current_tick: 0,
             was_active: false,
         }
+    }
+
+    /// 単一 device (`"default"`) の sink を持つ `PlaybackDriver` を生成する
+    ///
+    /// 後方互換用の簡便コンストラクタ。MidiEvent.device が `""` または
+    /// `"default"` のいずれも `"default"` sink にルーティングされる。
+    ///
+    /// Convenience constructor wiring a single sink under the `"default"`
+    /// device name (for callers that still operate in single-device mode).
+    pub fn new<S: MidiSink + 'static>(evaluator: Arc<Mutex<Evaluator>>, sink: S) -> Self {
+        let mut sinks: HashMap<String, BoxedSink> = HashMap::new();
+        sinks.insert("default".to_string(), Box::new(sink));
+        Self::with_sinks(evaluator, sinks)
     }
 
     /// 現在の tick 位置を返す
@@ -61,16 +91,32 @@ impl<S: MidiSink> PlaybackDriver<S> {
         self.current_tick
     }
 
-    /// 内部 sink への不変参照（テスト用途）
-    /// Immutable reference to the sink (for tests).
-    pub fn sink(&self) -> &S {
-        &self.sink
+    /// 指定 device の sink への不変参照（テスト用途）
+    /// Immutable reference to the sink for `device` (for tests).
+    pub fn sink(&self, device: &str) -> Option<&BoxedSink> {
+        self.sinks.get(device)
     }
 
-    /// 内部 sink への可変参照（テスト用途）
-    /// Mutable reference to the sink (for tests).
-    pub fn sink_mut(&mut self) -> &mut S {
-        &mut self.sink
+    /// 指定 device の sink への可変参照（テスト用途）
+    /// Mutable reference to the sink for `device` (for tests).
+    pub fn sink_mut(&mut self, device: &str) -> Option<&mut BoxedSink> {
+        self.sinks.get_mut(device)
+    }
+
+    /// `MidiEvent.device` に対応する sink を解決する
+    ///
+    /// 空文字列 (= compile 時に device 未指定だった MidiEvent) は
+    /// `"default"` sink にフォールバックする。該当 sink が無ければ `None`。
+    ///
+    /// Resolve the sink for `event_device`; empty string falls back to the
+    /// `"default"` sink. Returns `None` when neither key is registered.
+    fn resolve_sink(&mut self, event_device: &str) -> Option<&mut BoxedSink> {
+        let key: &str = if event_device.is_empty() {
+            "default"
+        } else {
+            event_device
+        };
+        self.sinks.get_mut(key)
     }
 
     /// 1 tick 進める
@@ -86,20 +132,16 @@ impl<S: MidiSink> PlaybackDriver<S> {
     pub async fn step_once(&mut self) -> Result<(), EngineError> {
         let mut ev = self.evaluator.lock().await;
 
-        // AllNotesOff (CC#123 value=0) を各 channel に送出
-        for ch in ev.take_pending_all_notes_off() {
-            let msg = MidiMessage::ControlChange {
-                channel: ch,
-                cc: 123,
-                value: 0,
-            };
-            self.sink.send(&msg)?;
-        }
+        // Evaluator ロック中に AllNotesOff キューだけ吸い上げる（借用を短く保つ）
+        let pending_all_notes_off = ev.take_pending_all_notes_off();
 
         let Some(scene) = ev.active_scene_mut() else {
             // 再生停止中: tick をリセットして次の play に備える
+            // 残っている AllNotesOff だけは送出して stop 側面をカバーする
             self.current_tick = 0;
             self.was_active = false;
+            drop(ev);
+            self.dispatch_all_notes_off(&pending_all_notes_off)?;
             return Ok(());
         };
 
@@ -109,17 +151,28 @@ impl<S: MidiSink> PlaybackDriver<S> {
             self.was_active = true;
         }
 
-        let messages: Vec<MidiMessage> = scene
+        // Issue #49: (device, message) ペアで送出先を確定させる
+        let routed: Vec<(String, MidiMessage)> = scene
             .events_at(self.current_tick)
             .into_iter()
-            .map(|ev| ev.message.clone())
+            .map(|ev| (ev.device.clone(), ev.message.clone()))
             .collect();
         scene.advance_all(1);
         let scene_len = scene.scene_tick_length();
         drop(ev);
 
-        for msg in &messages {
-            self.sink.send(msg)?;
+        // 先に AllNotesOff を送出（scene 境界や mute で積まれた分）
+        self.dispatch_all_notes_off(&pending_all_notes_off)?;
+
+        // 続いて本来の tick イベントを送出
+        for (device, msg) in &routed {
+            match self.resolve_sink(device) {
+                Some(sink) => sink.send(msg)?,
+                None => warn!(
+                    "イベント送出先 sink が未登録: device={} msg={:?}",
+                    device, msg
+                ),
+            }
         }
 
         self.current_tick += 1;
@@ -141,25 +194,58 @@ impl<S: MidiSink> PlaybackDriver<S> {
 
         Ok(())
     }
+
+    /// 蓄積された `(device, channel)` ごとに AllNotesOff (CC#123 value=0) を
+    /// 該当 sink へ送出する。未登録 device は warn ログを出してスキップする。
+    ///
+    /// Dispatches `(device, channel)` AllNotesOff pairs queued by the
+    /// evaluator to the matching sink, warning and skipping unknown devices.
+    fn dispatch_all_notes_off(&mut self, pairs: &[(String, u8)]) -> Result<(), EngineError> {
+        for (device, ch) in pairs {
+            let msg = MidiMessage::ControlChange {
+                channel: *ch,
+                cc: 123,
+                value: 0,
+            };
+            match self.resolve_sink(device) {
+                Some(sink) => sink.send(&msg)?,
+                None => warn!(
+                    "AllNotesOff の送出先 sink が未登録: device={} channel={}",
+                    device, ch
+                ),
+            }
+        }
+        Ok(())
+    }
 }
 
 /// tokio タスクで PlaybackDriver を tick 間隔で駆動する
 ///
 /// Clock の `tick_duration_us()` を参照して sleep する単純なループ。
 /// `EngineError` は error ログに出力してループ継続する（将来的にはリカバリ戦略を拡張）。
+/// Issue #49: sink マップで複数 device 宛を受け取り、`MidiEvent.device` で
+/// 振り分ける。
 ///
 /// Runs `PlaybackDriver::step_once` on a tokio interval derived from the
-/// clock's tick duration. Errors are logged; the loop continues.
-pub async fn run_driver<S: MidiSink>(evaluator: Arc<Mutex<Evaluator>>, sink: S, clock: Clock) {
-    let mut driver = PlaybackDriver::new(evaluator, sink);
+/// clock's tick duration. Errors are logged; the loop continues. As of
+/// Issue #49 the caller supplies a `device name -> MidiSink` map so that
+/// events generated from clips bound to different devices are dispatched
+/// to the corresponding sink.
+pub async fn run_driver(
+    evaluator: Arc<Mutex<Evaluator>>,
+    sinks: HashMap<String, BoxedSink>,
+    clock: Clock,
+) {
+    let mut driver = PlaybackDriver::with_sinks(evaluator, sinks);
     let dur_us = clock.tick_duration_us().max(1);
     let mut interval = time::interval(Duration::from_micros(dur_us));
     interval.set_missed_tick_behavior(time::MissedTickBehavior::Delay);
     info!(
-        "再生ドライバ起動: tick duration = {} us (BPM={}, PPQ={})",
+        "再生ドライバ起動: tick duration = {} us (BPM={}, PPQ={}, devices={:?})",
         dur_us,
         clock.bpm(),
-        clock.ppq()
+        clock.ppq(),
+        driver.sinks.keys().collect::<Vec<_>>()
     );
 
     loop {
@@ -173,7 +259,7 @@ pub async fn run_driver<S: MidiSink>(evaluator: Arc<Mutex<Evaluator>>, sink: S, 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::engine::midi_sink::MockSink;
+    use crate::engine::midi_sink::SharedMockSink;
 
     /// eval_source で DSL を評価する小ヘルパ
     async fn eval(evaluator: &Arc<Mutex<Evaluator>>, source: &str) {
@@ -190,14 +276,24 @@ mod tests {
          scene s1 { c1 }\n"
     }
 
+    /// "dev" 1 つだけの sink マップを作るヘルパ。返り値の handle から
+    /// driver 内部 sink の送出履歴を観測できる。
+    fn single_dev_sinks() -> (HashMap<String, BoxedSink>, SharedMockSink) {
+        let handle = SharedMockSink::new();
+        let mut sinks: HashMap<String, BoxedSink> = HashMap::new();
+        sinks.insert("dev".to_string(), Box::new(handle.clone()));
+        (sinks, handle)
+    }
+
     /// 空 Evaluator に対する step_once は sink に何も出さず tick もリセット状態を保つ
     #[tokio::test]
     async fn step_once_on_empty_evaluator_is_noop() {
         let evaluator = Arc::new(Mutex::new(Evaluator::new(120.0)));
-        let mut driver = PlaybackDriver::new(evaluator, MockSink::default());
+        let (sinks, handle) = single_dev_sinks();
+        let mut driver = PlaybackDriver::with_sinks(evaluator, sinks);
 
         driver.step_once().await.unwrap();
-        assert!(driver.sink().sent.is_empty());
+        assert!(handle.snapshot().is_empty());
         assert_eq!(driver.current_tick(), 0);
     }
 
@@ -208,18 +304,16 @@ mod tests {
         eval(&evaluator, setup_src()).await;
         eval(&evaluator, "play s1\n").await;
 
-        let mut driver = PlaybackDriver::new(evaluator.clone(), MockSink::default());
+        let (sinks, handle) = single_dev_sinks();
+        let mut driver = PlaybackDriver::with_sinks(evaluator.clone(), sinks);
 
         // 最初の step で tick=0 のイベント (NoteOn) が送出される
         driver.step_once().await.unwrap();
+        let sent = handle.snapshot();
         assert!(
-            driver
-                .sink()
-                .sent
-                .iter()
-                .any(|m| matches!(m, MidiMessage::NoteOn { .. })),
+            sent.iter().any(|m| matches!(m, MidiMessage::NoteOn { .. })),
             "NoteOn が送出されていない: {:?}",
-            driver.sink().sent
+            sent
         );
     }
 
@@ -230,9 +324,10 @@ mod tests {
         eval(&evaluator, setup_src()).await;
         eval(&evaluator, "play s1\n").await;
         // まず 1 step 進めて NoteOn を出す
-        let mut driver = PlaybackDriver::new(evaluator.clone(), MockSink::default());
+        let (sinks, handle) = single_dev_sinks();
+        let mut driver = PlaybackDriver::with_sinks(evaluator.clone(), sinks);
         driver.step_once().await.unwrap();
-        driver.sink_mut().sent.clear();
+        handle.clear();
 
         // stop 評価 → active_scene=None + pending_all_notes_off に ch0 が積まれる
         eval(&evaluator, "stop\n").await;
@@ -240,7 +335,8 @@ mod tests {
         driver.step_once().await.unwrap();
 
         // CC#123 value=0 on channel 0 が送出されていること
-        let found_all_notes_off = driver.sink().sent.iter().any(|m| {
+        let sent = handle.snapshot();
+        let found_all_notes_off = sent.iter().any(|m| {
             matches!(
                 m,
                 MidiMessage::ControlChange {
@@ -253,7 +349,7 @@ mod tests {
         assert!(
             found_all_notes_off,
             "AllNotesOff (CC#123) が送出されていない: {:?}",
-            driver.sink().sent
+            sent
         );
     }
 
@@ -263,7 +359,8 @@ mod tests {
         let evaluator = Arc::new(Mutex::new(Evaluator::new(120.0)));
         eval(&evaluator, setup_src()).await;
         eval(&evaluator, "play s1\n").await;
-        let mut driver = PlaybackDriver::new(evaluator.clone(), MockSink::default());
+        let (sinks, handle) = single_dev_sinks();
+        let mut driver = PlaybackDriver::with_sinks(evaluator.clone(), sinks);
 
         // mute を入れてから step
         eval(&evaluator, "mute c1\n").await;
@@ -273,17 +370,15 @@ mod tests {
             driver.step_once().await.unwrap();
         }
 
-        let note_on_count = driver
-            .sink()
-            .sent
+        let sent = handle.snapshot();
+        let note_on_count = sent
             .iter()
             .filter(|m| matches!(m, MidiMessage::NoteOn { .. }))
             .count();
         assert_eq!(
-            note_on_count,
-            0,
+            note_on_count, 0,
             "mute 後に NoteOn が送出された: {:?}",
-            driver.sink().sent
+            sent
         );
     }
 
@@ -294,7 +389,8 @@ mod tests {
         let evaluator = Arc::new(Mutex::new(Evaluator::new(120.0)));
         eval(&evaluator, setup_src()).await;
         eval(&evaluator, "play s1\n").await;
-        let mut driver = PlaybackDriver::new(evaluator.clone(), MockSink::default());
+        let (sinks, handle) = single_dev_sinks();
+        let mut driver = PlaybackDriver::with_sinks(evaluator.clone(), sinks);
 
         // 5 tick 進める
         for _ in 0..5 {
@@ -308,17 +404,166 @@ mod tests {
         assert_eq!(driver.current_tick(), 0);
 
         // 再 play → 新 scene 先頭からの NoteOn が出る
-        driver.sink_mut().sent.clear();
+        handle.clear();
         eval(&evaluator, "play s1\n").await;
         driver.step_once().await.unwrap();
+        let sent = handle.snapshot();
         assert!(
-            driver
-                .sink()
-                .sent
-                .iter()
-                .any(|m| matches!(m, MidiMessage::NoteOn { .. })),
+            sent.iter().any(|m| matches!(m, MidiMessage::NoteOn { .. })),
             "再 play 後に NoteOn が出ていない: {:?}",
-            driver.sink().sent
+            sent
         );
+    }
+
+    // ---------------------------------------------------------------------
+    // Issue #49: 複数 device ルーティングの検証
+    // ---------------------------------------------------------------------
+
+    /// 2 つの異なる device を持つ scene を play すると、各 clip の
+    /// MIDI イベントが対応する sink に**のみ**届き、相手方には流れない。
+    ///
+    /// Issue #49: On a scene wiring two devices, events bound to one device
+    /// must be delivered only to that device's sink and not to the other.
+    #[tokio::test]
+    async fn multi_device_routes_events_to_correct_sinks() {
+        let evaluator = Arc::new(Mutex::new(Evaluator::new(120.0)));
+        let src = "device synth_a { port port_a }\n\
+                   device synth_b { port port_b }\n\
+                   instrument lead {\n  device synth_a\n  channel 1\n}\n\
+                   instrument pad {\n  device synth_b\n  channel 2\n}\n\
+                   clip a [bars 1] {\n  lead c\n}\n\
+                   clip b [bars 1] {\n  pad c\n}\n\
+                   scene s { a b }\n";
+        eval(&evaluator, src).await;
+        eval(&evaluator, "play s\n").await;
+
+        let handle_a = SharedMockSink::new();
+        let handle_b = SharedMockSink::new();
+        let mut sinks: HashMap<String, BoxedSink> = HashMap::new();
+        sinks.insert("synth_a".to_string(), Box::new(handle_a.clone()));
+        sinks.insert("synth_b".to_string(), Box::new(handle_b.clone()));
+        let mut driver = PlaybackDriver::with_sinks(evaluator.clone(), sinks);
+
+        // tick=0 の NoteOn が両 device に 1 つずつ流れる想定
+        driver.step_once().await.unwrap();
+
+        let a_sent = handle_a.snapshot();
+        let b_sent = handle_b.snapshot();
+
+        // synth_a には channel=1 の NoteOn のみ
+        assert!(
+            a_sent
+                .iter()
+                .any(|m| matches!(m, MidiMessage::NoteOn { channel: 1, .. })),
+            "synth_a に channel=1 の NoteOn が来ていない: {:?}",
+            a_sent
+        );
+        assert!(
+            !a_sent
+                .iter()
+                .any(|m| matches!(m, MidiMessage::NoteOn { channel: 2, .. })),
+            "synth_a に channel=2 の NoteOn が漏れた: {:?}",
+            a_sent
+        );
+
+        // synth_b には channel=2 の NoteOn のみ
+        assert!(
+            b_sent
+                .iter()
+                .any(|m| matches!(m, MidiMessage::NoteOn { channel: 2, .. })),
+            "synth_b に channel=2 の NoteOn が来ていない: {:?}",
+            b_sent
+        );
+        assert!(
+            !b_sent
+                .iter()
+                .any(|m| matches!(m, MidiMessage::NoteOn { channel: 1, .. })),
+            "synth_b に channel=1 の NoteOn が漏れた: {:?}",
+            b_sent
+        );
+    }
+
+    /// 複数 device 下で `mute <clip>` すると、該当 device にのみ AllNotesOff
+    /// (CC#123) が送出され、他 device には届かない。
+    ///
+    /// Issue #49: `mute <clip>` on a multi-device scene should send
+    /// AllNotesOff only to the sink of the clip's device.
+    #[tokio::test]
+    async fn multi_device_mute_emits_all_notes_off_only_on_target() {
+        let evaluator = Arc::new(Mutex::new(Evaluator::new(120.0)));
+        let src = "device synth_a { port port_a }\n\
+                   device synth_b { port port_b }\n\
+                   instrument lead {\n  device synth_a\n  channel 1\n}\n\
+                   instrument pad {\n  device synth_b\n  channel 2\n}\n\
+                   clip a [bars 1] {\n  lead c\n}\n\
+                   clip b [bars 1] {\n  pad c\n}\n\
+                   scene s { a b }\n";
+        eval(&evaluator, src).await;
+        eval(&evaluator, "play s\n").await;
+
+        let handle_a = SharedMockSink::new();
+        let handle_b = SharedMockSink::new();
+        let mut sinks: HashMap<String, BoxedSink> = HashMap::new();
+        sinks.insert("synth_a".to_string(), Box::new(handle_a.clone()));
+        sinks.insert("synth_b".to_string(), Box::new(handle_b.clone()));
+        let mut driver = PlaybackDriver::with_sinks(evaluator.clone(), sinks);
+
+        // 1 step 進めてから全履歴クリア、続いて clip "a" を mute
+        driver.step_once().await.unwrap();
+        handle_a.clear();
+        handle_b.clear();
+        eval(&evaluator, "mute a\n").await;
+        driver.step_once().await.unwrap();
+
+        let a_sent = handle_a.snapshot();
+        let b_sent = handle_b.snapshot();
+
+        let found_anof = |msgs: &[MidiMessage], ch: u8| {
+            msgs.iter().any(|m| {
+                matches!(
+                    m,
+                    MidiMessage::ControlChange { channel, cc: 123, value: 0 } if *channel == ch
+                )
+            })
+        };
+
+        assert!(
+            found_anof(&a_sent, 1),
+            "synth_a に AllNotesOff (ch=1) が来ていない: {:?}",
+            a_sent
+        );
+        assert!(
+            !found_anof(&b_sent, 2) && !found_anof(&b_sent, 1),
+            "synth_b に AllNotesOff が漏れた: {:?}",
+            b_sent
+        );
+    }
+
+    /// 未登録 device 宛のイベントは warn してドロップするだけで、step_once が
+    /// エラーにならないこと。
+    ///
+    /// Issue #49: Events addressed to an unknown device must be dropped with
+    /// a warning; `step_once` should not propagate an error.
+    #[tokio::test]
+    async fn events_to_unknown_device_are_dropped_without_error() {
+        let evaluator = Arc::new(Mutex::new(Evaluator::new(120.0)));
+        let src = "device unknown { port pX }\n\
+                   instrument lead {\n  device unknown\n  channel 1\n}\n\
+                   clip a [bars 1] {\n  lead c\n}\n\
+                   scene s { a }\n";
+        eval(&evaluator, src).await;
+        eval(&evaluator, "play s\n").await;
+
+        // sink マップには "unknown" を登録しない
+        let other = SharedMockSink::new();
+        let mut sinks: HashMap<String, BoxedSink> = HashMap::new();
+        sinks.insert("other".to_string(), Box::new(other.clone()));
+        let mut driver = PlaybackDriver::with_sinks(evaluator.clone(), sinks);
+
+        // step_once は Ok で抜ける
+        driver.step_once().await.unwrap();
+
+        // "other" sink には何も届かない
+        assert!(other.snapshot().is_empty());
     }
 }

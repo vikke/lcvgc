@@ -7,6 +7,7 @@
 * [Startup Options](#startup-options)
 * [1. Device Definition (device)](#1-device-definition-device)
     * [1.1 Listing Available MIDI Ports (list_ports)](#11-listing-available-midi-ports-list_ports)
+    * [1.2 Multi-Device MIDI Routing](#12-multi-device-midi-routing)
 * [2. Instrument Definition (instrument)](#2-instrument-definition-instrument)
     * [Default Gate Ratio Values](#default-gate-ratio-values)
 * [3. Kit Definition (kit)](#3-kit-definition-kit)
@@ -169,6 +170,29 @@ The port name specified in a `device`'s `port` field must match a name recognize
 | `direction` | string | `"out"` = MIDI output port, `"in"` = MIDI input port |
 
 The Neovim plugin sends `list_ports` to the engine when completing the `port` field inside a `device` block, and presents the returned port names as completion candidates. This works even when the engine and editor run on different hosts (e.g., editor on WSL2, engine on Windows Native), since the port list comes from the engine's actual MIDI environment. Use port names with `direction: "out"` for the `device`'s `port` field.
+
+### 1.2 Multi-Device MIDI Routing
+
+The logical device name referenced by `instrument.device` and `kit.device` acts as the lookup key for the MIDI sink a given event is dispatched to. At startup the engine reads every `device` block in the loaded DSL and builds a `device name -> MIDI output port connection` map (`PortManager` + `MidirSink`).
+
+During playback every MIDI event generated from a clip carries the `device` of the clip's instrument (or kit) **baked in at compile time**; the `PlaybackDriver` uses that value to select the target sink.
+
+#### Routing rules
+
+- **One clip targets one device per line**: every event from a single pitched line (or drum row) flows to the `device` of its referenced instrument (or kit). When multiple lines coexist in one clip, each line is routed independently.
+- **Per-device `AllNotesOff`**: `CC#123 value=0` messages emitted by `stop` / `mute` / `pause` are queued as `(device, channel)` pairs and delivered only to the sink of the named device. Other devices are not touched.
+- **Events for unknown devices**: events whose `device` has no entry in the sink map (connection failure at startup, or an unregistered name) are logged at `warn` and dropped; the engine keeps running.
+- **Partial connection success**: if one device fails to connect, routing to the remaining healthy devices continues unaffected.
+- **Backward-compatible `default` sink**: a connection given via the CLI option `--midi-device <port>` is registered under the logical name `"default"`. Events whose compile-time `device` is the empty string fall back to `"default"`.
+
+#### Startup sink map construction
+
+1. After loading the DSL, fetch the list of `DeviceDef` entries from the evaluator's `Registry`.
+2. For each entry, call `PortManager::connect(name, port)` using the logical `name`.
+3. On success, register `MidirSink::new(pm, name)` under that name in the sink map.
+4. On failure, log at `warn` and skip that device (others continue).
+5. If `--midi-device` is given, additionally attempt a `"default"` connection.
+6. If the sink map is non-empty, spawn `run_driver(evaluator, sinks, clock)` on a tokio task.
 
 ---
 
@@ -1295,9 +1319,13 @@ unmute drums_a
 > - `stop <clip>` has been **removed** (Issue #43). The former behavior moved to `mute <clip>`
 > - `pause` / `resume` are **implemented** (every pause/resume row in §10.4.1, Issue #44)
 > - `mute <clip>` / `unmute <clip>` are **implemented** (Issue #43)
-> - MIDI hardware output is enabled only when `--midi-device <port>` is specified (Issue #48).
->   **Only a single device is supported at this time.** Multi-device routing, MIDI transport
->   messages (Start/Stop/Continue), and Timing Clock / SPP are tracked for future issues.
+> - MIDI hardware output was wired up in Issue #48 via `--midi-device <port>`.
+> - Issue #49 **adds multi-device MIDI routing**. When the DSL declares multiple
+>   `device` blocks, the engine opens one connection per device at startup and
+>   dispatches MIDI events based on the `instrument.device` / `kit.device` of
+>   the originating clip. See §1.2 "Multi-Device MIDI Routing" for details.
+> - MIDI transport messages (Start/Stop/Continue) and Timing Clock / SPP
+>   emission are tracked for future issues.
 
 lcvgc provides **three independent kinds of "stop" operations**, each with different effects on tick (time), sound, and phase (current position inside a loop).
 
