@@ -138,6 +138,16 @@ pub struct Evaluator {
     /// AllNotesOff (CC#123 value=0) on after Stop/mute. Extended from a bare
     /// channel list to support multi-device routing (Issue #49).
     pending_all_notes_off: Vec<(String, u8)>,
+    /// Play/Stop 評価時に `transport = true` の device へ送出する MIDI System
+    /// Real-Time メッセージ (`Start` / `Stop`) のキュー。呼び出し側（tick
+    /// driver / daemon）は device 名をキーに対応する `MidiSink` を選び、
+    /// 各メッセージをそのまま送出する (Issue #50)。
+    ///
+    /// Queue of System Real-Time messages (`Start` / `Stop`) to emit to
+    /// devices whose `transport` flag is true when evaluating Play/Stop.
+    /// The caller dispatches each message to the matching `MidiSink` by
+    /// device name (Issue #50).
+    pending_transport: Vec<(String, crate::midi::message::MidiMessage)>,
 }
 
 impl Evaluator {
@@ -150,6 +160,7 @@ impl Evaluator {
             scope: ScopeChain::new(),
             active_scene: None,
             pending_all_notes_off: Vec::new(),
+            pending_transport: Vec::new(),
         }
     }
 
@@ -165,6 +176,37 @@ impl Evaluator {
     /// name and emits CC#123 value=0 on each channel (Issue #49).
     pub fn take_pending_all_notes_off(&mut self) -> Vec<(String, u8)> {
         std::mem::take(&mut self.pending_all_notes_off)
+    }
+
+    /// Play / Stop 評価で溜まった MIDI System Real-Time メッセージの
+    /// `(device, message)` 一覧を取り出してクリアする (Issue #50)。
+    ///
+    /// 呼び出し側（tick driver / daemon）は device 名をキーに対応する
+    /// `MidiSink` を選び、`MidiMessage::Start` / `MidiMessage::Stop` を
+    /// そのまま送出する。
+    ///
+    /// Takes the queued System Real-Time `(device, message)` pairs and clears
+    /// the internal buffer (Issue #50). The caller selects the matching
+    /// `MidiSink` by device name and forwards each message as-is.
+    pub fn take_pending_transport(&mut self) -> Vec<(String, crate::midi::message::MidiMessage)> {
+        std::mem::take(&mut self.pending_transport)
+    }
+
+    /// `transport = true` の device 名一覧を registry から取り出すヘルパー
+    /// (Issue #50)。
+    ///
+    /// Returns device names whose `transport` flag is `true` (Issue #50).
+    fn transport_enabled_devices(&self) -> Vec<String> {
+        self.registry
+            .device_names()
+            .into_iter()
+            .filter(|name| {
+                self.registry
+                    .get_device(name)
+                    .map(|d| d.transport)
+                    .unwrap_or(false)
+            })
+            .collect()
     }
 
     /// 現在 play 中の ScenePlayer への不変参照
@@ -349,6 +391,13 @@ impl Evaluator {
                 Ok(EvalResult::VarDefined { name })
             }
             Block::Play(cmd) => {
+                // Issue #50: play 実行時に `transport = true` の device に
+                // MIDI System Real-Time Start (0xFA) を送出キューへ積む。
+                // scene / session 成功パスで共通なので先にキュー投入する。
+                // Issue #50: queue MIDI Start (0xFA) for every device whose
+                // `transport` flag is true. Both scene and session targets share
+                // this path on success, so enqueue before dispatching.
+                let transport_targets = self.transport_enabled_devices();
                 match cmd.target {
                     PlayTarget::Scene(name) => {
                         // Phase 3: scene 定義を取り出して ScenePlayer を構築する
@@ -392,6 +441,14 @@ impl Evaluator {
                         }
                     }
                 }
+                // エラーで早期 return していない = Play 成功確定。transport
+                // 対象 device に Start (0xFA) を enqueue する。
+                // Play succeeded (no early return). Enqueue Start (0xFA) for
+                // transport-enabled devices.
+                for device in transport_targets {
+                    self.pending_transport
+                        .push((device, crate::midi::message::MidiMessage::Start));
+                }
                 Ok(EvalResult::PlayStarted)
             }
             Block::Stop(cmd) => {
@@ -402,6 +459,16 @@ impl Evaluator {
                 // Handles `stop`, `stop <scene>`, and `stop <session>`. Clip targets
                 // were moved to `mute <clip>` (§10.4); unknown names therefore become
                 // no-ops via the state manager.
+                //
+                // Issue #50: どの形式でも `transport = true` の device には MIDI
+                // System Real-Time Stop (0xFC) を送出キューへ積む。
+                // Issue #50: queue MIDI Stop (0xFC) for transport-enabled devices
+                // on every stop variant.
+                let transport_targets = self.transport_enabled_devices();
+                for device in transport_targets {
+                    self.pending_transport
+                        .push((device, crate::midi::message::MidiMessage::Stop));
+                }
                 match &cmd.target {
                     None => {
                         if let Some(scene) = &self.active_scene {
@@ -958,6 +1025,7 @@ mod tests {
             .eval_block(Block::Device(DeviceDef {
                 name: "synth".into(),
                 port: "IAC Bus 1".into(),
+                transport: true,
             }))
             .unwrap();
         assert_eq!(
@@ -2695,5 +2763,121 @@ instrument bass {
             }))
             .unwrap();
         assert!(matches!(result, EvalResult::ResumedNoop { .. }));
+    }
+
+    // =========================================================================
+    // Issue #50: MIDI System Real-Time (Start / Stop) 送出
+    // Issue #50: MIDI System Real-Time (Start / Stop) transport emission
+    // =========================================================================
+
+    /// Issue #50: play 実行時に transport=true の device に Start が積まれる
+    #[test]
+    fn play_queues_midi_start_for_transport_devices() {
+        use crate::midi::message::MidiMessage;
+        let mut ev = setup_with_single_clip("a", "verse", 1);
+        // setup_with_single_clip は `device dev { port test }` を登録済み（transport 省略 = true）
+        assert!(ev.take_pending_transport().is_empty());
+        ev.eval_block(Block::Play(PlayCommand {
+            target: PlayTarget::Scene("verse".into()),
+            repeat: RepeatSpec::Loop,
+        }))
+        .unwrap();
+        let queue = ev.take_pending_transport();
+        assert_eq!(queue, vec![("dev".to_string(), MidiMessage::Start)]);
+    }
+
+    /// Issue #50: stop 実行時に transport=true の device に Stop が積まれる
+    #[test]
+    fn stop_queues_midi_stop_for_transport_devices() {
+        use crate::midi::message::MidiMessage;
+        let mut ev = setup_with_single_clip("a", "verse", 1);
+        ev.eval_block(Block::Play(PlayCommand {
+            target: PlayTarget::Scene("verse".into()),
+            repeat: RepeatSpec::Loop,
+        }))
+        .unwrap();
+        // play で積まれた Start を drain してから stop を発行する
+        let _ = ev.take_pending_transport();
+        ev.eval_block(Block::Stop(StopCommand { target: None }))
+            .unwrap();
+        let queue = ev.take_pending_transport();
+        assert_eq!(queue, vec![("dev".to_string(), MidiMessage::Stop)]);
+    }
+
+    /// Issue #50: transport=false の device には Start/Stop が積まれない
+    #[test]
+    fn transport_false_devices_do_not_receive_transport_messages() {
+        let mut ev = Evaluator::new(120.0);
+        let src = "\
+            device a { port port_a\n  transport true\n}\n\
+            device b { port port_b\n  transport false\n}\n\
+            instrument inst_a { device a\n  channel 1\n}\n\
+            clip c [bars 1] { inst_a c }\n\
+            scene s { c }\n";
+        eval_src(&mut ev, src);
+
+        ev.eval_block(Block::Play(PlayCommand {
+            target: PlayTarget::Scene("s".into()),
+            repeat: RepeatSpec::Loop,
+        }))
+        .unwrap();
+        let queue = ev.take_pending_transport();
+        // a (true) のみが含まれ、b (false) は含まれない
+        let names: Vec<&str> = queue.iter().map(|(d, _)| d.as_str()).collect();
+        assert!(
+            names.contains(&"a"),
+            "device a (transport=true) must receive Start"
+        );
+        assert!(
+            !names.contains(&"b"),
+            "device b (transport=false) must NOT receive Start"
+        );
+
+        ev.eval_block(Block::Stop(StopCommand { target: None }))
+            .unwrap();
+        let queue = ev.take_pending_transport();
+        let names: Vec<&str> = queue.iter().map(|(d, _)| d.as_str()).collect();
+        assert!(names.contains(&"a"));
+        assert!(!names.contains(&"b"));
+    }
+
+    /// Issue #50: 複数 transport=true device すべてに Start/Stop が積まれる
+    #[test]
+    fn multiple_transport_true_devices_all_receive_messages() {
+        use crate::midi::message::MidiMessage;
+        let mut ev = Evaluator::new(120.0);
+        let src = "\
+            device a { port pa\n  transport true\n}\n\
+            device b { port pb\n}\n\
+            instrument inst_a { device a\n  channel 1\n}\n\
+            clip c [bars 1] { inst_a c }\n\
+            scene s { c }\n";
+        eval_src(&mut ev, src);
+
+        ev.eval_block(Block::Play(PlayCommand {
+            target: PlayTarget::Scene("s".into()),
+            repeat: RepeatSpec::Loop,
+        }))
+        .unwrap();
+        let mut queue = ev.take_pending_transport();
+        queue.sort_by(|a, b| a.0.cmp(&b.0));
+        assert_eq!(
+            queue,
+            vec![
+                ("a".to_string(), MidiMessage::Start),
+                ("b".to_string(), MidiMessage::Start),
+            ]
+        );
+    }
+
+    /// Issue #50: play が失敗（未知 scene）した場合、transport キューに何も積まれない
+    #[test]
+    fn failed_play_does_not_queue_transport() {
+        let mut ev = setup_with_single_clip("a", "verse", 1);
+        let _ = ev.eval_block(Block::Play(PlayCommand {
+            target: PlayTarget::Scene("missing".into()),
+            repeat: RepeatSpec::Loop,
+        }));
+        assert!(ev.take_pending_transport().is_empty());
     }
 }

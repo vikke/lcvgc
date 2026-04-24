@@ -410,7 +410,10 @@ impl ScenePlayer {
 }
 
 /// MidiMessage からチャンネル番号を取り出す
+/// System Real-Time (Start/Stop/Continue) は channel を持たず compiled clip にも
+/// 含まれないため到達しない。
 /// Extracts the channel number from a MidiMessage.
+/// System Real-Time messages do not carry a channel and never appear in compiled clip events.
 fn channel_of(msg: &crate::midi::message::MidiMessage) -> u8 {
     use crate::midi::message::MidiMessage;
     match msg {
@@ -418,6 +421,9 @@ fn channel_of(msg: &crate::midi::message::MidiMessage) -> u8 {
         | MidiMessage::NoteOff { channel, .. }
         | MidiMessage::ControlChange { channel, .. }
         | MidiMessage::ProgramChange { channel, .. } => *channel,
+        MidiMessage::Start | MidiMessage::Stop | MidiMessage::Continue => {
+            unreachable!("System Real-Time messages are not part of compiled clip events")
+        }
     }
 }
 

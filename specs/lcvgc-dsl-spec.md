@@ -69,6 +69,7 @@
     * [10.3.1 Pause and Resume (pause / resume)](#1031-pause-and-resume-pause--resume)
     * [10.3.2 Muting and Unmuting Clips (mute / unmute)](#1032-muting-and-unmuting-clips-mute--unmute)
     * [10.4 Playback Control Semantics (stop / pause / mute)](#104-playback-control-semantics-stop--pause--mute)
+    * [10.5 MIDI Transport Message Emission (Start / Stop)](#105-midi-transport-message-emission-start--stop)
 * [11. Error Handling](#11-error-handling)
     * [11.1 eval Failure](#111-eval-failure)
     * [11.2 Undefined References](#112-undefined-references)
@@ -128,7 +129,7 @@ When `--file` is specified, all blocks in the file are automatically eval'd on s
 
 ## 1. Device Definition (device)
 
-Assigns a name to a MIDI port. The port name specifies the name recognized as a MIDI device by the OS, written without quotes. The `port` value is read up to the closing `}`.
+Assigns a name to a MIDI port. The port name specifies the name recognized as a MIDI device by the OS, written without quotes. The `port` value is read up to the next newline or the closing `}`.
 
 ```
 device mutant_brain {
@@ -137,6 +138,27 @@ device mutant_brain {
 
 device volca_keys {
   port volca keys
+}
+```
+
+A `device` block accepts the following options:
+
+| Key | Type | Default | Description |
+|------|-----|--------|------|
+| `port` | unquoted string (until newline / `}`) | (required) | OS-level MIDI output port name |
+| `transport` | `true` or `false` | `true` | Whether to emit MIDI System Real-Time messages (Start/Stop) to this device on `play` / `stop` (see §10.5) |
+
+`port` and `transport` may appear in any order, each at most once.
+
+```
+device mb {
+  port Mutant Brain
+  transport true        // optional; this is the default
+}
+
+device monitor_synth {
+  port USB MIDI
+  transport false       // do not send Start/Stop to this device
 }
 ```
 
@@ -443,7 +465,7 @@ instrument bass {
 
 The following keywords cannot be used as variable names:
 
-`device`, `instrument`, `kit`, `clip`, `scene`, `session`, `include`, `tempo`, `play`, `stop`, `pause`, `resume`, `mute`, `unmute`, `var`, `port`, `channel`, `note`, `gate_normal`, `gate_staccato`, `cc`, `use`, `resolution`, `arp`, `bars`, `time`, `scale`, `repeat`, `loop`
+`device`, `instrument`, `kit`, `clip`, `scene`, `session`, `include`, `tempo`, `play`, `stop`, `pause`, `resume`, `mute`, `unmute`, `var`, `port`, `transport`, `channel`, `note`, `gate_normal`, `gate_staccato`, `cc`, `use`, `resolution`, `arp`, `bars`, `time`, `scale`, `repeat`, `loop`
 
 ---
 
@@ -1324,7 +1346,10 @@ unmute drums_a
 >   `device` blocks, the engine opens one connection per device at startup and
 >   dispatches MIDI events based on the `instrument.device` / `kit.device` of
 >   the originating clip. See §1.2 "Multi-Device MIDI Routing" for details.
-> - MIDI transport messages (Start/Stop/Continue) and Timing Clock / SPP
+> - Issue #50 **adds MIDI System Real-Time Start (0xFA) / Stop (0xFC) emission**.
+>   On `play` / `stop`, the messages are sent to every device whose `device`
+>   block declares `transport = true` (the default). See §10.5 for details.
+> - Continue (0xFB), Timing Clock (0xF8), and Song Position Pointer (0xF2)
 >   emission are tracked for future issues.
 
 lcvgc provides **three independent kinds of "stop" operations**, each with different effects on tick (time), sound, and phase (current position inside a loop).
@@ -1433,6 +1458,40 @@ drums_a: |1---2---3-[stopped]  ...  1---2---3---4---|
 | Freeze this drum and manually re-align it later | `pause <clip>` |
 | Fully stop and start over | `stop` |
 | Pause the whole song and resume where it left off | `pause` then `resume` |
+
+---
+
+### 10.5 MIDI Transport Message Emission (Start / Stop)
+
+To synchronize external sequencers and drum machines from lcvgc, `play` / `stop` emit the corresponding MIDI System Real-Time messages to every device declared with `transport = true` (Issue #50).
+
+#### DSL command to byte mapping
+
+| DSL command | Byte emitted | Name |
+|---|---|---|
+| `play <scene/session>` | `0xFA` | Start |
+| `stop` / `stop <scene>` / `stop <session>` | `0xFC` | Stop |
+
+Continue (`0xFB`) for `pause` / `resume`, Timing Clock (`0xF8`), and Song Position Pointer (`0xF2`) are out of scope for this issue.
+
+#### Meaning of the `transport` flag
+
+The `transport` field on a `device` block (§1) controls whether transport messages are sent to that device:
+
+- `transport true` (or omitted): on `play` / `stop` evaluation, Start / Stop is sent to that device's sink.
+- `transport false`: no transport messages are ever sent. Note and other regular events continue to be delivered.
+
+#### Dispatch path
+
+1. On successful `play` evaluation (the scene/session was built without errors), `MidiMessage::Start` is queued for every device whose `transport` flag is `true`. Failed evaluation (e.g., unknown scene/session) queues nothing.
+2. On `stop` evaluation, `MidiMessage::Stop` is queued for every device whose `transport` flag is `true`, regardless of whether the optional name argument matched the active scene/session.
+3. `PlaybackDriver` drains the queue at the start of the next `step_once` and dispatches each message to the matching `MidiSink` using the device name as the key.
+4. Queue entries whose device name is not present in the sink map are logged as a warning and dropped — the engine never halts because of routing misses.
+5. Start is sent before any regular events scheduled at the same tick. Stop is dispatched alongside AllNotesOff as part of the stop-side cleanup path.
+
+#### Backward compatibility
+
+- Because `transport` defaults to `true`, existing DSLs from before Issue #50 keep working unchanged: every registered device receives Start / Stop on `play` / `stop`. To opt a device out, write `transport false` explicitly.
 
 ---
 

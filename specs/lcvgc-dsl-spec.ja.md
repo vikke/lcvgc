@@ -69,6 +69,7 @@
     * [10.3.1 一時停止と再開 (pause / resume)](#1031-一時停止と再開pause--resume)
     * [10.3.2 クリップのミュートと解除 (mute / unmute)](#1032-クリップのミュートと解除mute--unmute)
     * [10.4 再生制御の semantics (stop / pause / mute)](#104-再生制御の-semanticsstop--pause--mute)
+    * [10.5 MIDI トランスポートメッセージの送出 (Start / Stop)](#105-midi-トランスポートメッセージの送出start--stop)
 * [11. エラーハンドリング](#11-エラーハンドリング)
     * [11.1 eval失敗](#111-eval失敗)
     * [11.2 未定義の参照](#112-未定義の参照)
@@ -128,7 +129,7 @@ $ lcvgc --file live.cvg --log-level debug
 
 ## 1. デバイス定義 (device)
 
-MIDIポートに名前を付ける。ポート名はOS上でMIDIデバイスとして認識されている名前を引用符なしで指定する。`port` の値は `}` の手前までがポート名として扱われる。
+MIDIポートに名前を付ける。ポート名はOS上でMIDIデバイスとして認識されている名前を引用符なしで指定する。`port` の値は改行または `}` の手前までがポート名として扱われる。
 
 ```
 device mutant_brain {
@@ -137,6 +138,27 @@ device mutant_brain {
 
 device volca_keys {
   port volca keys
+}
+```
+
+`device` ブロック内では以下のオプションを指定できる:
+
+| キー | 型 | 既定値 | 説明 |
+|------|-----|--------|------|
+| `port` | 文字列（引用符なし、行末/`}`まで） | （必須） | OS 上の MIDI 出力ポート名 |
+| `transport` | `true` または `false` | `true` | `play` / `stop` 実行時に MIDI System Real-Time (Start/Stop) をこの device に送出するかどうか (§10.5 参照) |
+
+`port` と `transport` は順序自由で、それぞれ最大 1 回だけ指定できる。
+
+```
+device mb {
+  port Mutant Brain
+  transport true        // 既定値なので省略可
+}
+
+device monitor_synth {
+  port USB MIDI
+  transport false       // この device には Start/Stop を送らない
 }
 ```
 
@@ -443,7 +465,7 @@ instrument bass {
 
 以下のキーワードは変数名に使えない:
 
-`device`, `instrument`, `kit`, `clip`, `scene`, `session`, `include`, `tempo`, `play`, `stop`, `pause`, `resume`, `mute`, `unmute`, `var`, `port`, `channel`, `note`, `gate_normal`, `gate_staccato`, `cc`, `use`, `resolution`, `arp`, `bars`, `time`, `scale`, `repeat`, `loop`
+`device`, `instrument`, `kit`, `clip`, `scene`, `session`, `include`, `tempo`, `play`, `stop`, `pause`, `resume`, `mute`, `unmute`, `var`, `port`, `transport`, `channel`, `note`, `gate_normal`, `gate_staccato`, `cc`, `use`, `resolution`, `arp`, `bars`, `time`, `scale`, `repeat`, `loop`
 
 ---
 
@@ -1324,8 +1346,11 @@ unmute drums_a
 >   `device` ブロックが複数あれば、各 device への個別接続が起動時に作られ、
 >   `instrument.device` / `kit.device` に基づいて MIDI イベントが振り分けられる。
 >   詳細は §1.2「複数 device への振り分けルーティング」を参照。
-> - MIDI トランスポートメッセージ（Start/Stop/Continue）、Timing Clock / SPP
->   送出は今後の Issue で対応予定。
+> - Issue #50 で **MIDI System Real-Time Start (0xFA) / Stop (0xFC) 送出を実装**。
+>   `play` / `stop` 実行時に、`device` ブロックで `transport = true`（既定値）
+>   と指定された device すべてへ送られる。詳細は §10.5 を参照。
+> - MIDI トランスポートメッセージのうち Continue (0xFB)、Timing Clock (0xF8)、
+>   Song Position Pointer (0xF2) 送出は今後の Issue で対応予定。
 
 lcvgc には「再生を止める」ための**独立した 3 種類の操作**がある。それぞれ tick（時間）・音・位相（ループ内の現在位置）への作用が異なる。
 
@@ -1435,6 +1460,40 @@ drums_a: |1---2---3-[停止]  ...  1---2---3---4---|
 | この drum を時間ごと止めて、後で手動で頭合わせしたい | `pause <clip>` |
 | 完全に止めてやり直したい | `stop` |
 | 曲全体を一時停止して、続きから再開したい | `pause` → `resume` |
+
+---
+
+### 10.5 MIDI トランスポートメッセージの送出（Start / Stop）
+
+外部のシーケンサーやドラムマシンを lcvgc 起点で同期制御するため、`play` / `stop` 実行時に該当する MIDI System Real-Time メッセージを `transport = true` の device に送出する (Issue #50)。
+
+#### DSL コマンドと送出バイトの対応
+
+| DSL コマンド | 送出されるバイト | 名称 |
+|---|---|---|
+| `play <scene/session>` | `0xFA` | Start |
+| `stop` / `stop <scene>` / `stop <session>` | `0xFC` | Stop |
+
+`pause` / `resume` の Continue (`0xFB`)、Timing Clock (`0xF8`)、Song Position Pointer (`0xF2`) は本 Issue ではスコープ外。
+
+#### `transport` フラグの意味
+
+`device` ブロックの `transport` フィールド (§1) は、その device に対してトランスポートメッセージを送出するかどうかを制御する:
+
+- `transport true` （または省略時）: `play` / `stop` 評価時に、その device の sink へ Start / Stop が送出される。
+- `transport false`: トランスポートメッセージは一切送出されない。ノート等の通常イベントは引き続き送出される。
+
+#### 送出経路
+
+1. `play` 評価時: scene/session の構築に成功した直後、`transport = true` の全 device に対し `MidiMessage::Start` を「送出キュー」に積む。失敗した場合（未知の scene/session など）は積まない。
+2. `stop` 評価時: target の名前一致に依らず、`transport = true` の全 device に対し `MidiMessage::Stop` を「送出キュー」に積む。
+3. `PlaybackDriver` は次の tick の `step_once` 冒頭でキューを取り出し、device 名をキーに対応する `MidiSink` へ送出する。
+4. sink マップに存在しない device 名のキューエントリは warn ログを出してドロップする（エンジンは停止しない）。
+5. Start は同 tick の通常イベントより前に送出される。Stop は AllNotesOff と並ぶ stop 系の片付け処理として送られる。
+
+#### 後方互換
+
+- `transport` 省略時の既定値は `true` のため、Issue #50 以前の DSL を変更なしで読み込んでも、登録済み device すべてに `play` / `stop` でトランスポートメッセージが送られる。送出させたくない device は明示的に `transport false` を指定する。
 
 ---
 

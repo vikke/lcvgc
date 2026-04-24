@@ -191,6 +191,7 @@ mod tests {
             Block::Device(DeviceDef {
                 name: "synth".into(),
                 port: "USB MIDI".into(),
+                transport: true,
             }),
             0,
             50,
@@ -242,6 +243,7 @@ mod tests {
                 Block::Device(DeviceDef {
                     name: "d1".into(),
                     port: "p1".into(),
+                    transport: true,
                 }),
                 0,
                 10,
@@ -250,6 +252,7 @@ mod tests {
                 Block::Device(DeviceDef {
                     name: "d2".into(),
                     port: "p2".into(),
+                    transport: true,
                 }),
                 11,
                 20,
@@ -309,6 +312,7 @@ mod tests {
             Block::Device(DeviceDef {
                 name: "d".into(),
                 port: "p".into(),
+                transport: true,
             }),
             42,
             99,
@@ -323,6 +327,7 @@ mod tests {
             Block::Device(DeviceDef {
                 name: "d".into(),
                 port: "p".into(),
+                transport: true,
             }),
             0,
             50,
