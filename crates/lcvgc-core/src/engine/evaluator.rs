@@ -57,6 +57,30 @@ pub enum EvalResult {
         /// 理由メッセージ / Reason message
         reason: String,
     },
+    /// クリップ・ミュート成功（§10.4）
+    /// Clip mute succeeded (§10.4)
+    Muted {
+        /// ミュート対象の clip 名 / Muted clip name
+        target: String,
+    },
+    /// クリップ・ミュートが no-op になった（§10.4 clip 名不一致等）
+    /// Clip mute was a no-op (§10.4 unknown clip name, no active scene, etc.)
+    MutedNoop {
+        /// 理由メッセージ / Reason message
+        reason: String,
+    },
+    /// クリップ・アンミュート成功（§10.4）
+    /// Clip unmute succeeded (§10.4)
+    Unmuted {
+        /// アンミュート対象の clip 名 / Unmuted clip name
+        target: String,
+    },
+    /// クリップ・アンミュートが no-op になった（§10.4 clip 名不一致等）
+    /// Clip unmute was a no-op (§10.4 unknown clip name, no active scene, etc.)
+    UnmutedNoop {
+        /// 理由メッセージ / Reason message
+        reason: String,
+    },
     /// インクルード処理済み / Include processed
     IncludeProcessed {
         /// インクルード先ファイルパス / Path of the included file
@@ -361,11 +385,13 @@ impl Evaluator {
                 Ok(EvalResult::PlayStarted)
             }
             Block::Stop(cmd) => {
-                // Phase 5: target が clip 名なら該当 clip をミュート、それ以外は scene/session
-                // 名との一致か全停止として従来通り扱い、使用中チャンネル分の AllNotesOff を蓄積。
-                // Phase 5: if target names a clip in active_scene, mute it; otherwise fall
-                // back to the legacy scene/session/global-stop path. In all cases, queue
-                // AllNotesOff on the affected channels for the caller to send.
+                // `stop` / `stop <scene>` / `stop <session>` の 3 形式のみ扱う。
+                // target が clip 名の場合は §10.4 の `mute <clip>` に移行済みのため、
+                // ここでは scene/session 名に一致しない名前は state 委譲で no-op となる。
+                //
+                // Handles `stop`, `stop <scene>`, and `stop <session>`. Clip targets
+                // were moved to `mute <clip>` (§10.4); unknown names therefore become
+                // no-ops via the state manager.
                 match &cmd.target {
                     None => {
                         if let Some(scene) = &self.active_scene {
@@ -376,8 +402,6 @@ impl Evaluator {
                         self.active_scene = None;
                     }
                     Some(name) => {
-                        // 現在の scene/session 名と一致 → 全停止扱い
-                        // Matches the currently playing scene/session → treat as full stop
                         let is_current = self
                             .state
                             .current_scene_name()
@@ -391,19 +415,9 @@ impl Evaluator {
                                 target: Some(name.clone()),
                             });
                             self.active_scene = None;
-                        } else if let Some(scene) = self.active_scene.as_mut() {
-                            if scene.has_clip(name) {
-                                let channels = scene.channels_of_clip(name);
-                                scene.mute_clip(name);
-                                self.pending_all_notes_off.extend(channels);
-                            } else {
-                                // 未知名: 従来通り state 側に委ねる（no-op になる）
-                                // Unknown name: delegate to state (becomes a no-op)
-                                self.state.apply_command(PlaybackCommand::Stop {
-                                    target: Some(name.clone()),
-                                });
-                            }
                         } else {
+                            // scene/session 名に一致しない target は no-op。
+                            // Target does not match the current scene/session → no-op.
                             self.state.apply_command(PlaybackCommand::Stop {
                                 target: Some(name.clone()),
                             });
@@ -420,6 +434,8 @@ impl Evaluator {
             // Stub for pause/resume — full implementation comes in Phase 3 (§10.4)
             Block::Pause(cmd) => self.eval_pause(cmd),
             Block::Resume(cmd) => self.eval_resume(cmd),
+            Block::Mute(cmd) => self.eval_mute(cmd),
+            Block::Unmute(cmd) => self.eval_unmute(cmd),
         }
     }
 
@@ -600,6 +616,72 @@ impl Evaluator {
                 })
             }
         }
+    }
+
+    /// `mute <clip>` コマンドを評価する（§10.4）
+    ///
+    /// `active_scene` に `cmd.target` と一致する clip が存在すれば、その clip を
+    /// mute する（tick は継続・位相維持、発音停止、該当チャンネルの AllNotesOff を蓄積）。
+    /// `active_scene` が無い、または clip 名が見つからない場合は `MutedNoop` を返す。
+    ///
+    /// Evaluates `mute <clip>`. When `active_scene` holds a clip matching
+    /// `cmd.target`, it is muted (tick continues, phase preserved, note output
+    /// stops, and AllNotesOff is queued for affected channels). If there is no
+    /// active scene or the clip is not found, `MutedNoop` is returned.
+    ///
+    /// # 引数 / Arguments
+    /// * `cmd` - MuteCommand（target = 対象 clip 名）
+    ///
+    /// # 戻り値 / Returns
+    /// 成功時 `EvalResult::Muted`、no-op 時 `EvalResult::MutedNoop`。
+    fn eval_mute(
+        &mut self,
+        cmd: crate::ast::playback::MuteCommand,
+    ) -> Result<EvalResult, EngineError> {
+        let name = cmd.target;
+        if let Some(scene) = self.active_scene.as_mut() {
+            if scene.has_clip(&name) {
+                let channels = scene.channels_of_clip(&name);
+                scene.mute_clip(&name);
+                self.pending_all_notes_off.extend(channels);
+                return Ok(EvalResult::Muted { target: name });
+            }
+        }
+        Ok(EvalResult::MutedNoop {
+            reason: format!("'{}' is not a clip in active scene", name),
+        })
+    }
+
+    /// `unmute <clip>` コマンドを評価する（§10.4）
+    ///
+    /// `active_scene` に `cmd.target` と一致する clip が存在すれば、ミュートを解除する。
+    /// `active_scene` が無い、または clip 名が見つからない場合は `UnmutedNoop` を返す。
+    /// 既にミュートされていない clip に対する `unmute` は成功扱い（べき等）。
+    ///
+    /// Evaluates `unmute <clip>`. When `active_scene` holds a matching clip,
+    /// its mute flag is released. If there is no active scene or the clip is
+    /// absent, `UnmutedNoop` is returned. Unmuting a non-muted clip succeeds
+    /// (idempotent behavior).
+    ///
+    /// # 引数 / Arguments
+    /// * `cmd` - UnmuteCommand（target = 対象 clip 名）
+    ///
+    /// # 戻り値 / Returns
+    /// 成功時 `EvalResult::Unmuted`、no-op 時 `EvalResult::UnmutedNoop`。
+    fn eval_unmute(
+        &mut self,
+        cmd: crate::ast::playback::UnmuteCommand,
+    ) -> Result<EvalResult, EngineError> {
+        let name = cmd.target;
+        if let Some(scene) = self.active_scene.as_mut() {
+            if scene.has_clip(&name) {
+                scene.unmute_clip(&name);
+                return Ok(EvalResult::Unmuted { target: name });
+            }
+        }
+        Ok(EvalResult::UnmutedNoop {
+            reason: format!("'{}' is not a clip in active scene", name),
+        })
     }
 
     /// Registry参照
@@ -1447,9 +1529,11 @@ mod tests {
         assert!(ev.active_scene().is_none());
     }
 
-    /// Stop(clip 名) は該当 clip をミュートし、そのチャンネルのみ pending に
+    /// §10.4: `mute <clip>` は該当 clip をミュートし、そのチャンネル分のみ AllNotesOff を蓄積する
+    /// §10.4: `mute <clip>` mutes the named clip and queues AllNotesOff only for its channel
     #[test]
-    fn stop_with_clip_name_mutes_and_queues_its_channel() {
+    fn mute_with_clip_name_mutes_and_queues_its_channel() {
+        use crate::ast::playback::MuteCommand;
         let mut ev = Evaluator::new(120.0);
         let src = "device dev { port test }\n\
                    instrument inst_a {\n  device dev\n  channel 2\n}\n\
@@ -1464,17 +1548,138 @@ mod tests {
         }))
         .unwrap();
 
-        ev.eval_block(Block::Stop(StopCommand {
-            target: Some("a".into()),
-        }))
-        .unwrap();
+        let result = ev
+            .eval_block(Block::Mute(MuteCommand { target: "a".into() }))
+            .unwrap();
 
+        assert!(matches!(result, EvalResult::Muted { ref target } if target == "a"));
         // active_scene は存続、"a" だけミュートされる
         // active_scene persists; only "a" is muted
         let scene = ev.active_scene().unwrap();
         assert!(scene.is_muted("a"));
         assert!(!scene.is_muted("b"));
         assert_eq!(ev.take_pending_all_notes_off(), vec![2]);
+        assert!(matches!(
+            ev.state().state(),
+            PlaybackState::PlayingScene { .. }
+        ));
+    }
+
+    /// §10.4: `mute <unknown>` は MutedNoop を返し、active_scene を変更しない
+    /// §10.4: `mute <unknown>` returns MutedNoop without altering active_scene
+    #[test]
+    fn mute_with_unknown_clip_is_noop() {
+        use crate::ast::playback::MuteCommand;
+        let mut ev = setup_with_single_clip("a", "verse", 3);
+        ev.eval_block(Block::Play(PlayCommand {
+            target: PlayTarget::Scene("verse".into()),
+            repeat: RepeatSpec::Loop,
+        }))
+        .unwrap();
+
+        let result = ev
+            .eval_block(Block::Mute(MuteCommand {
+                target: "ghost".into(),
+            }))
+            .unwrap();
+
+        assert!(matches!(result, EvalResult::MutedNoop { .. }));
+        let scene = ev.active_scene().unwrap();
+        assert!(!scene.is_muted("a"));
+        assert!(ev.take_pending_all_notes_off().is_empty());
+    }
+
+    /// §10.4: active_scene が無いときの `mute` は MutedNoop
+    /// §10.4: `mute` without an active scene is a MutedNoop
+    #[test]
+    fn mute_without_active_scene_is_noop() {
+        use crate::ast::playback::MuteCommand;
+        let mut ev = Evaluator::new(120.0);
+        let result = ev
+            .eval_block(Block::Mute(MuteCommand { target: "a".into() }))
+            .unwrap();
+        assert!(matches!(result, EvalResult::MutedNoop { .. }));
+    }
+
+    /// §10.4: `unmute <clip>` はミュート解除され、Unmuted を返す
+    /// §10.4: `unmute <clip>` releases mute flag and returns Unmuted
+    #[test]
+    fn unmute_with_clip_name_releases_mute() {
+        use crate::ast::playback::{MuteCommand, UnmuteCommand};
+        let mut ev = Evaluator::new(120.0);
+        let src = "device dev { port test }\n\
+                   instrument inst_a {\n  device dev\n  channel 2\n}\n\
+                   clip a [bars 1] {\n  inst_a c\n}\n\
+                   scene verse { a }\n";
+        eval_src(&mut ev, src);
+        ev.eval_block(Block::Play(PlayCommand {
+            target: PlayTarget::Scene("verse".into()),
+            repeat: RepeatSpec::Loop,
+        }))
+        .unwrap();
+        ev.eval_block(Block::Mute(MuteCommand { target: "a".into() }))
+            .unwrap();
+        // pending を一度吸い上げる
+        // Drain the pending queue once
+        let _ = ev.take_pending_all_notes_off();
+
+        let result = ev
+            .eval_block(Block::Unmute(UnmuteCommand { target: "a".into() }))
+            .unwrap();
+
+        assert!(matches!(result, EvalResult::Unmuted { ref target } if target == "a"));
+        let scene = ev.active_scene().unwrap();
+        assert!(!scene.is_muted("a"));
+        // unmute は AllNotesOff を蓄積しない（再生再開のため）
+        // unmute does not queue AllNotesOff (to allow sound resumption)
+        assert!(ev.take_pending_all_notes_off().is_empty());
+    }
+
+    /// §10.4: `unmute <unknown>` は UnmutedNoop
+    /// §10.4: `unmute <unknown>` yields UnmutedNoop
+    #[test]
+    fn unmute_with_unknown_clip_is_noop() {
+        use crate::ast::playback::UnmuteCommand;
+        let mut ev = setup_with_single_clip("a", "verse", 3);
+        ev.eval_block(Block::Play(PlayCommand {
+            target: PlayTarget::Scene("verse".into()),
+            repeat: RepeatSpec::Loop,
+        }))
+        .unwrap();
+        let result = ev
+            .eval_block(Block::Unmute(UnmuteCommand {
+                target: "ghost".into(),
+            }))
+            .unwrap();
+        assert!(matches!(result, EvalResult::UnmutedNoop { .. }));
+    }
+
+    /// §10.4: `stop <clip>` は clip 名に一致しても scene/session ではないため no-op
+    /// §10.4: `stop <clip>` is now a no-op because clip targets moved to `mute`
+    #[test]
+    fn stop_with_clip_name_is_noop() {
+        let mut ev = Evaluator::new(120.0);
+        let src = "device dev { port test }\n\
+                   instrument inst_a {\n  device dev\n  channel 2\n}\n\
+                   clip a [bars 1] {\n  inst_a c\n}\n\
+                   scene verse { a }\n";
+        eval_src(&mut ev, src);
+        ev.eval_block(Block::Play(PlayCommand {
+            target: PlayTarget::Scene("verse".into()),
+            repeat: RepeatSpec::Loop,
+        }))
+        .unwrap();
+
+        ev.eval_block(Block::Stop(StopCommand {
+            target: Some("a".into()),
+        }))
+        .unwrap();
+
+        // 再生は継続し、clip も mute されない
+        // Playback keeps running and the clip is not muted
+        let scene = ev.active_scene().unwrap();
+        assert!(!scene.is_muted("a"));
+        assert!(ev.take_pending_all_notes_off().is_empty());
         assert!(matches!(
             ev.state().state(),
             PlaybackState::PlayingScene { .. }

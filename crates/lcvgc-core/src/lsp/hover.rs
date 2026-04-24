@@ -98,6 +98,8 @@ impl HoverProvider {
                 None => "**resume** (全体 / whole)".to_string(),
                 Some(name) => format!("**resume** `{}`", name),
             }),
+            Block::Mute(m) => Some(format!("**mute** `{}`", m.target)),
+            Block::Unmute(u) => Some(format!("**unmute** `{}`", u.target)),
         }
     }
 }
@@ -112,7 +114,9 @@ mod tests {
     use crate::ast::include::IncludeDef;
     use crate::ast::instrument::{CcMapping, InstrumentDef};
     use crate::ast::kit::{KitDef, KitInstrument, KitInstrumentNote};
-    use crate::ast::playback::{PlayCommand, PlayTarget, RepeatSpec, StopCommand};
+    use crate::ast::playback::{
+        MuteCommand, PlayCommand, PlayTarget, RepeatSpec, StopCommand, UnmuteCommand,
+    };
     use crate::ast::scale::{ScaleDef, ScaleType};
     use crate::ast::scene::SceneDef;
     use crate::ast::session::SessionDef;
@@ -280,6 +284,30 @@ mod tests {
     fn stop_returns_none() {
         let result = HoverProvider::hover_content(&sb(Block::Stop(StopCommand { target: None })));
         assert!(result.is_none());
+    }
+
+    /// §10.4: mute は target 名を含む markdown を返す
+    /// §10.4: mute returns markdown including the target name
+    #[test]
+    fn mute_hover_shows_target() {
+        let result = HoverProvider::hover_content(&sb(Block::Mute(MuteCommand {
+            target: "drums_a".into(),
+        })));
+        let text = result.unwrap();
+        assert!(text.contains("**mute**"));
+        assert!(text.contains("drums_a"));
+    }
+
+    /// §10.4: unmute は target 名を含む markdown を返す
+    /// §10.4: unmute returns markdown including the target name
+    #[test]
+    fn unmute_hover_shows_target() {
+        let result = HoverProvider::hover_content(&sb(Block::Unmute(UnmuteCommand {
+            target: "drums_a".into(),
+        })));
+        let text = result.unwrap();
+        assert!(text.contains("**unmute**"));
+        assert!(text.contains("drums_a"));
     }
 
     #[test]

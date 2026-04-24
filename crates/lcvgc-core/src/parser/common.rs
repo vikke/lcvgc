@@ -24,6 +24,8 @@ pub(crate) const RESERVED_KEYWORDS: &[&str] = &[
     "stop",
     "pause",
     "resume",
+    "mute",
+    "unmute",
     "var",
     "port",
     "channel",

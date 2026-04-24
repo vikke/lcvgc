@@ -71,6 +71,12 @@ pub enum SymbolKind {
     /// 再開コマンド（§10.4）
     /// Resume command (§10.4)
     Resume,
+    /// クリップ・ミュートコマンド（§10.4）
+    /// Clip mute command (§10.4)
+    Mute,
+    /// クリップ・アンミュートコマンド（§10.4）
+    /// Clip unmute command (§10.4)
+    Unmute,
 }
 
 /// ドキュメントシンボルプロバイダ
@@ -117,6 +123,8 @@ impl DocumentSymbolProvider {
                         r.target.clone().unwrap_or_else(|| "resume".into()),
                         SymbolKind::Resume,
                     ),
+                    Block::Mute(m) => (m.target.clone(), SymbolKind::Mute),
+                    Block::Unmute(u) => (u.target.clone(), SymbolKind::Unmute),
                 };
                 DocumentSymbol {
                     name,
@@ -136,7 +144,9 @@ mod tests {
     use crate::ast::common::NoteName;
     use crate::ast::device::DeviceDef;
     use crate::ast::include::IncludeDef;
-    use crate::ast::playback::{PlayCommand, PlayTarget, RepeatSpec, StopCommand};
+    use crate::ast::playback::{
+        MuteCommand, PlayCommand, PlayTarget, RepeatSpec, StopCommand, UnmuteCommand,
+    };
     use crate::ast::scale::{ScaleDef, ScaleType};
     use crate::ast::scene::SceneDef;
     use crate::ast::session::SessionDef;
@@ -354,6 +364,33 @@ mod tests {
         assert_eq!(symbols[0].kind, SymbolKind::Play);
         assert_eq!(symbols[1].kind, SymbolKind::Stop);
         assert_eq!(symbols[1].name, "stop");
+    }
+
+    /// §10.4: mute / unmute の symbol kind と target 名が反映される
+    /// §10.4: mute / unmute symbols carry the correct kind and target name
+    #[test]
+    fn mute_and_unmute_kinds() {
+        let blocks = vec![
+            make_spanned(
+                Block::Mute(MuteCommand {
+                    target: "drums_a".into(),
+                }),
+                0,
+                10,
+            ),
+            make_spanned(
+                Block::Unmute(UnmuteCommand {
+                    target: "drums_a".into(),
+                }),
+                11,
+                20,
+            ),
+        ];
+        let symbols = DocumentSymbolProvider::symbols(&blocks);
+        assert_eq!(symbols[0].kind, SymbolKind::Mute);
+        assert_eq!(symbols[0].name, "drums_a");
+        assert_eq!(symbols[1].kind, SymbolKind::Unmute);
+        assert_eq!(symbols[1].name, "drums_a");
     }
 
     #[test]

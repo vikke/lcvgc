@@ -115,6 +115,12 @@ pub fn parse_block(input: &str) -> IResult<&str, Block> {
     } else if trimmed.starts_with("resume") {
         let (r, v) = playback::parse_resume(input)?;
         Ok((r, Block::Resume(v)))
+    } else if trimmed.starts_with("unmute ") {
+        let (r, v) = playback::parse_unmute(input)?;
+        Ok((r, Block::Unmute(v)))
+    } else if trimmed.starts_with("mute ") {
+        let (r, v) = playback::parse_mute(input)?;
+        Ok((r, Block::Mute(v)))
     } else {
         Err(nom::Err::Error(nom::error::Error::new(
             input,
@@ -255,5 +261,34 @@ stop
         assert!(matches!(blocks[4], Block::Pause(_)));
         assert!(matches!(blocks[5], Block::Resume(_)));
         assert!(matches!(blocks[6], Block::Stop(_)));
+    }
+
+    /// §10.4: mute / unmute ブロックが parse_block でパースできる
+    /// §10.4: parse_block dispatches mute / unmute correctly
+    #[test]
+    fn test_parse_mute_unmute_block() {
+        let (_, b) = parse_block("mute drums_a").unwrap();
+        if let Block::Mute(cmd) = b {
+            assert_eq!(cmd.target, "drums_a".to_string());
+        } else {
+            panic!("expected Block::Mute");
+        }
+
+        let (_, b) = parse_block("unmute drums_a").unwrap();
+        if let Block::Unmute(cmd) = b {
+            assert_eq!(cmd.target, "drums_a".to_string());
+        } else {
+            panic!("expected Block::Unmute");
+        }
+    }
+
+    /// §10.4: unmute は mute より先に判定される（`unmute` が `mute ` prefix に
+    /// マッチしてしまわない）
+    /// §10.4: parser dispatches `unmute` before `mute` so that the `unmute` prefix
+    /// is not mistakenly handled as `mute`
+    #[test]
+    fn test_parse_unmute_before_mute() {
+        let (_, b) = parse_block("unmute a").unwrap();
+        assert!(matches!(b, Block::Unmute(_)));
     }
 }

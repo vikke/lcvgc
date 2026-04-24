@@ -66,6 +66,7 @@
     * [10.2 Session Playback](#102-session-playback)
     * [10.3 Stop](#103-stop)
     * [10.3.1 Pause and Resume (pause / resume)](#1031-pause-and-resume-pause--resume)
+    * [10.3.2 Muting and Unmuting Clips (mute / unmute)](#1032-muting-and-unmuting-clips-mute--unmute)
     * [10.4 Playback Control Semantics (stop / pause / mute)](#104-playback-control-semantics-stop--pause--mute)
 * [11. Error Handling](#11-error-handling)
     * [11.1 eval Failure](#111-eval-failure)
@@ -418,7 +419,7 @@ instrument bass {
 
 The following keywords cannot be used as variable names:
 
-`device`, `instrument`, `kit`, `clip`, `scene`, `session`, `include`, `tempo`, `play`, `stop`, `pause`, `resume`, `var`, `port`, `channel`, `note`, `gate_normal`, `gate_staccato`, `cc`, `use`, `resolution`, `arp`, `bars`, `time`, `scale`, `repeat`, `loop`
+`device`, `instrument`, `kit`, `clip`, `scene`, `session`, `include`, `tempo`, `play`, `stop`, `pause`, `resume`, `mute`, `unmute`, `var`, `port`, `channel`, `note`, `gate_normal`, `gate_staccato`, `cc`, `use`, `resolution`, `arp`, `bars`, `time`, `scale`, `repeat`, `loop`
 
 ---
 
@@ -1230,11 +1231,15 @@ play session main [repeat 3]
 ### 10.3 Stop
 
 ```
-// Stop all
+// Stop everything (tick and phase reset; active_scene released)
 stop
 
-// Mute a specific clip only
-stop drums_a
+// Stops globally only when the name matches the currently playing scene/session (no-op otherwise)
+stop verse
+stop main
+
+// To mute a specific clip, use `mute <clip>` described in §10.3.2
+// (`stop <clip>` was removed by Issue #43; the old `stop drums_a` is now `mute drums_a`)
 ```
 
 ### 10.3.1 Pause and Resume (pause / resume)
@@ -1265,15 +1270,31 @@ resume verse           // Global resume only if the paused prev was verse
 - `pause <clip>` / `resume <clip>` — acts on a single clip. Unknown clip names in `active_scene` are **no-ops**
 - On name mismatch, eval returns `PausedNoop { reason }` / `ResumedNoop { reason }`. The LSP raises a diagnostic Warning up front.
 
+### 10.3.2 Muting and Unmuting Clips (mute / unmute)
+
+Use these when you want to stop the sound while keeping tick advancing (so the phase stays aligned). The behavior mirrors the clip mute in DAWs, and `unmute` rejoins instantly with the phase preserved. In contrast with `pause <clip>` (which freezes the tick as well), `mute <clip>` keeps the tick running so the beat stays aligned with the other clips.
+
+```
+// Mute a clip inside active_scene (tick continues; sends AllNotesOff)
+mute drums_a
+
+// Release the mute (starts sounding immediately, phase preserved)
+unmute drums_a
+```
+
+- `mute <clip>` / `unmute <clip>` — **clip-only** commands; scene / session names are not accepted
+- Bare `mute` / `unmute` is a parse error (global scene/session control belongs to `stop` / `pause`)
+- Clip names not present in active_scene are **no-ops** (`MutedNoop { reason }` / `UnmutedNoop { reason }`)
+- The LSP raises a Warning up front when the target clip is undefined
+- `unmute` is idempotent — running it on a clip that is not muted simply returns `Unmuted`
+
 ### 10.4 Playback Control Semantics (stop / pause / mute)
 
 > **Implementation status**:
 > - `stop` / `stop <scene>` / `stop <session>` are implemented
-> - `stop <clip>` (currently mute-equivalent) will be renamed to `mute <clip>` (Issue #43)
+> - `stop <clip>` has been **removed** (Issue #43). The former behavior moved to `mute <clip>`
 > - `pause` / `resume` are **implemented** (every pause/resume row in §10.4.1, Issue #44)
-> - `mute <clip>` / `unmute <clip>` are not implemented (#43 will rename `stop <clip>`)
->
-> The tables below describe the target specification. Code using `stop <clip>` will need to be migrated to `mute <clip>` once #43 lands.
+> - `mute <clip>` / `unmute <clip>` are **implemented** (Issue #43)
 
 lcvgc provides **three independent kinds of "stop" operations**, each with different effects on tick (time), sound, and phase (current position inside a loop).
 
@@ -1301,6 +1322,8 @@ lcvgc provides **three independent kinds of "stop" operations**, each with diffe
 |---|---|
 | `pause <name>` where name is neither the current scene/session nor a clip in active_scene | No-op (state unchanged). Eval returns `PausedNoop { reason }`. LSP raises a Warning up front. |
 | `resume <name>` where name is neither the paused prev scene/session name nor a clip in active_scene | No-op. Eval returns `ResumedNoop { reason }`. LSP raises a Warning up front. |
+| `mute <name>` / `unmute <name>` where name is not a clip in active_scene | No-op. Eval returns `MutedNoop { reason }` / `UnmutedNoop { reason }`. LSP raises a Warning up front for unknown clips. |
+| `stop <name>` where name does not match the current scene/session | No-op (delegated to StateManager; state unchanged) |
 | `resume` while not paused | No-op (`ResumedNoop { reason: "not paused" }`) |
 | `pause` while stopped | No-op (`PausedNoop { reason: "nothing is playing" }`) |
 | Re-running `pause` while already paused | No-op (no nested Paused) |
@@ -1314,7 +1337,7 @@ lcvgc provides **three independent kinds of "stop" operations**, each with diffe
 
 | Operation | tick | Sound | Use case |
 |---|---|---|---|
-| `stop <clip>` | — | — | **Does not exist** (`stop` targets scene/session/whole only) |
+| `stop <clip>` | — | — | **Does not exist** (removed by Issue #43; the former behavior moved to `mute <clip>`) |
 | `pause <clip>` | Stops | Silent | You want to resume **from that exact point** later |
 | `mute <clip>` | Continues | Silent | You want to **rejoin in phase** later (equivalent to DAW clip mute) |
 
@@ -1422,7 +1445,7 @@ The engine continues playback as-is. Restarting Neovim and reconnecting allows c
 
 ## 12. Grammar Rules Summary
 
-- Each block (device, instrument, kit, clip, scene, session, tempo, play, stop, pause, resume, include, var) can be independently parsed and eval'd
+- Each block (device, instrument, kit, clip, scene, session, tempo, play, stop, pause, resume, mute, unmute, include, var) can be independently parsed and eval'd
 - Eval'ing a block with the same name overwrites it
 - Overwriting a clip causes scenes using that clip to switch to the new content at the start of the next loop
 - Overwriting a session takes effect from the next scene transition
@@ -1451,4 +1474,7 @@ The engine continues playback as-is. Restarting Neovim and reconnecting allows c
 - Tempo is a global setting + can have change specifications within scenes
 - `pause` / `resume` act on the whole playback with no arguments, on the whole playback (only on match) with a scene/session name, and on a single clip with a clip name. `pause <clip>` freezes the tick while preserving phase — an operation independent of `stop` / `mute` (§10.4)
 - On `pause` / `resume` name mismatch, the result is a no-op plus `PausedNoop` / `ResumedNoop`. The LSP raises a Warning up front
+- `mute <clip>` / `unmute <clip>` are clip-only commands; scene/session names are not accepted. They control sound output while the tick keeps advancing, preserving the phase (§10.3.2, §10.4)
+- On `mute` / `unmute` name mismatch, the result is a no-op plus `MutedNoop` / `UnmutedNoop`. The LSP raises a Warning for unknown clip names
+- `stop <clip>` has been **removed** (the former behavior moved to `mute <clip>`). `stop <name>` now accepts only scene / session names
 - All errors do not stop playback. Notification only

@@ -170,6 +170,44 @@ impl DiagnosticProvider {
         }
         diagnostics
     }
+
+    /// §10.4: mute / unmute の target 名が未定義の clip の場合の Warning 診断
+    ///
+    /// `mute` / `unmute` は clip 専用コマンドであるため、target が clip として
+    /// 未定義の場合に Warning を出す。名前不一致時の eval は no-op になるが、LSP で
+    /// 事前に気づけるようにする。
+    ///
+    /// Generates Warning diagnostics for `mute` / `unmute` targets that do not
+    /// name a known clip. These commands are clip-only, and unknown names are
+    /// no-ops at evaluation time. The diagnostic surfaces typos early.
+    ///
+    /// # 引数 / Arguments
+    /// * `blocks` - スパン付きブロックのスライス / Slice of spanned blocks
+    /// * `registry` - 登録済みブロックの参照 / Reference to registered blocks
+    ///
+    /// # 戻り値 / Returns
+    /// 未定義ターゲットに対する Warning 診断リスト / Warnings for unknown clips
+    pub fn mute_unmute_target_diagnostics(
+        blocks: &[SpannedBlock],
+        registry: &Registry,
+    ) -> Vec<Diagnostic> {
+        let mut diagnostics = Vec::new();
+        for sb in blocks {
+            let (kind, name) = match &sb.block {
+                Block::Mute(cmd) => ("mute", cmd.target.as_str()),
+                Block::Unmute(cmd) => ("unmute", cmd.target.as_str()),
+                _ => continue,
+            };
+            if registry.get_clip(name).is_none() {
+                diagnostics.push(Diagnostic {
+                    span: sb.span,
+                    message: format!("未定義の {} 対象: '{}' （clip ではありません）", kind, name),
+                    severity: DiagnosticSeverity::Warning,
+                });
+            }
+        }
+        diagnostics
+    }
 }
 
 #[cfg(test)]
@@ -485,5 +523,68 @@ mod tests {
         }))];
         let diags = DiagnosticProvider::pause_resume_target_diagnostics(&blocks, &registry);
         assert!(diags.is_empty());
+    }
+
+    // --- §10.4 mute / unmute target diagnostics ---
+
+    /// 定義済み clip を mute target に指定 → 診断なし
+    /// mute target names a defined clip → no diagnostic
+    #[test]
+    fn mute_with_defined_clip_no_diagnostic() {
+        let mut registry = Registry::new();
+        registry.register_block(make_clip_block("drums_a", &[]));
+
+        let blocks = vec![spanned(Block::Mute(crate::ast::playback::MuteCommand {
+            target: "drums_a".into(),
+        }))];
+        let diags = DiagnosticProvider::mute_unmute_target_diagnostics(&blocks, &registry);
+        assert!(diags.is_empty());
+    }
+
+    /// 未定義の mute target → Warning 診断
+    /// Unknown mute target → Warning diagnostic
+    #[test]
+    fn mute_with_unknown_target_warns() {
+        let registry = Registry::new();
+        let blocks = vec![spanned(Block::Mute(crate::ast::playback::MuteCommand {
+            target: "ghost".into(),
+        }))];
+        let diags = DiagnosticProvider::mute_unmute_target_diagnostics(&blocks, &registry);
+        assert_eq!(diags.len(), 1);
+        assert_eq!(diags[0].severity, DiagnosticSeverity::Warning);
+        assert!(diags[0].message.contains("ghost"));
+        assert!(diags[0].message.contains("mute"));
+    }
+
+    /// 未定義の unmute target → Warning 診断
+    /// Unknown unmute target → Warning diagnostic
+    #[test]
+    fn unmute_with_unknown_target_warns() {
+        let registry = Registry::new();
+        let blocks = vec![spanned(Block::Unmute(
+            crate::ast::playback::UnmuteCommand {
+                target: "ghost".into(),
+            },
+        ))];
+        let diags = DiagnosticProvider::mute_unmute_target_diagnostics(&blocks, &registry);
+        assert_eq!(diags.len(), 1);
+        assert_eq!(diags[0].severity, DiagnosticSeverity::Warning);
+        assert!(diags[0].message.contains("ghost"));
+        assert!(diags[0].message.contains("unmute"));
+    }
+
+    /// scene 名を mute target に指定 → Warning（mute は clip 専用）
+    /// Scene-name mute target warns (mute is clip-only)
+    #[test]
+    fn mute_with_scene_name_warns() {
+        let mut registry = Registry::new();
+        registry.register_block(make_scene_block("verse", &[]));
+
+        let blocks = vec![spanned(Block::Mute(crate::ast::playback::MuteCommand {
+            target: "verse".into(),
+        }))];
+        let diags = DiagnosticProvider::mute_unmute_target_diagnostics(&blocks, &registry);
+        assert_eq!(diags.len(), 1);
+        assert_eq!(diags[0].severity, DiagnosticSeverity::Warning);
     }
 }

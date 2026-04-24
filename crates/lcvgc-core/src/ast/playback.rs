@@ -77,3 +77,37 @@ pub struct ResumeCommand {
     /// Target name to resume (`None` means resume all)
     pub target: Option<String>,
 }
+
+/// クリップ・ミュートコマンド（§10.4）
+/// Clip mute command (§10.4)
+///
+/// `active_scene` 内の指定 clip を mute する。tick は継続し、位相は維持されるが、
+/// 発音は停止し AllNotesOff が送出される。`stop <clip>` のリネームで追加された
+/// 構文で、scene/session 全体停止の `stop` とは挙動が明確に異なる。
+///
+/// Mutes the named clip inside `active_scene`. Tick continues and the phase is
+/// preserved, but note output stops and AllNotesOff is emitted. This replaces
+/// the previous `stop <clip>` form to distinguish it from the hard stop applied
+/// to scenes and sessions.
+#[derive(Debug, Clone, PartialEq)]
+pub struct MuteCommand {
+    /// ミュート対象の clip 名
+    /// Target clip name to mute
+    pub target: String,
+}
+
+/// クリップ・アンミュートコマンド（§10.4）
+/// Clip unmute command (§10.4)
+///
+/// `MuteCommand` で mute された clip のミュートを解除する。対応する clip が
+/// active_scene に存在しない、または mute されていない場合は Evaluator 側で
+/// no-op 扱いとなる。
+///
+/// Releases the mute applied by `MuteCommand`. If the clip is missing from
+/// `active_scene` or not muted, the evaluator treats it as a no-op.
+#[derive(Debug, Clone, PartialEq)]
+pub struct UnmuteCommand {
+    /// アンミュート対象の clip 名
+    /// Target clip name to unmute
+    pub target: String,
+}

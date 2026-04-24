@@ -105,6 +105,47 @@ pub fn parse_resume(input: &str) -> IResult<&str, ResumeCommand> {
     ))
 }
 
+/// クリップ・ミュートコマンドをパースする: `mute NAME`（§10.4）
+///
+/// `NAME` は `active_scene` 内の clip 名。名前不一致時の no-op 扱いは
+/// Evaluator 側で行う。`stop <clip>` のリネーム先として追加された構文で、
+/// 引数なしの `mute` は受理しない（scene/session 全体は `stop` が扱う）。
+///
+/// Parse: `mute NAME` (§10.4). `NAME` is a clip inside `active_scene`.
+/// No-op handling on name mismatch happens in the evaluator. A bare `mute`
+/// is rejected because scene/session-wide control belongs to `stop`.
+pub fn parse_mute(input: &str) -> IResult<&str, MuteCommand> {
+    let (input, _) = tag("mute")(input)?;
+    let (input, _) = space1(input)?;
+    let (input, name) = identifier(input)?;
+    Ok((
+        input,
+        MuteCommand {
+            target: name.to_string(),
+        },
+    ))
+}
+
+/// クリップ・アンミュートコマンドをパースする: `unmute NAME`（§10.4）
+///
+/// `NAME` は `active_scene` 内の clip 名。名前不一致時の no-op 扱いは
+/// Evaluator 側で行う。引数なしの `unmute` は受理しない。
+///
+/// Parse: `unmute NAME` (§10.4). `NAME` is a clip inside `active_scene`.
+/// No-op handling on name mismatch happens in the evaluator. A bare `unmute`
+/// is rejected.
+pub fn parse_unmute(input: &str) -> IResult<&str, UnmuteCommand> {
+    let (input, _) = tag("unmute")(input)?;
+    let (input, _) = space1(input)?;
+    let (input, name) = identifier(input)?;
+    Ok((
+        input,
+        UnmuteCommand {
+            target: name.to_string(),
+        },
+    ))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -233,5 +274,39 @@ mod tests {
         let (rest, cmd) = parse_resume("resume main").unwrap();
         assert_eq!(rest, "");
         assert_eq!(cmd.target, Some("main".into()));
+    }
+
+    // --- mute / unmute tests (§10.4) ---
+
+    /// `mute <clip>` はパースに成功し target が格納される
+    /// `mute <clip>` parses successfully with target populated
+    #[test]
+    fn mute_with_target() {
+        let (rest, cmd) = parse_mute("mute drums_a").unwrap();
+        assert_eq!(rest, "");
+        assert_eq!(cmd.target, "drums_a");
+    }
+
+    /// 引数なしの `mute` はエラーになる（clip 名必須）
+    /// Bare `mute` fails because the clip name is required
+    #[test]
+    fn mute_without_target_fails() {
+        assert!(parse_mute("mute").is_err());
+    }
+
+    /// `unmute <clip>` はパースに成功し target が格納される
+    /// `unmute <clip>` parses successfully with target populated
+    #[test]
+    fn unmute_with_target() {
+        let (rest, cmd) = parse_unmute("unmute drums_a").unwrap();
+        assert_eq!(rest, "");
+        assert_eq!(cmd.target, "drums_a");
+    }
+
+    /// 引数なしの `unmute` はエラーになる（clip 名必須）
+    /// Bare `unmute` fails because the clip name is required
+    #[test]
+    fn unmute_without_target_fails() {
+        assert!(parse_unmute("unmute").is_err());
     }
 }
