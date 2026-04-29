@@ -208,6 +208,50 @@ impl DiagnosticProvider {
         }
         diagnostics
     }
+
+    /// device の MIDI ポート接続失敗を Error 診断に変換する
+    ///
+    /// PR #55: `lcvgc` プロセスが各 device の MIDI ポートに接続失敗した情報
+    /// (`Evaluator::device_connection_errors()`) を AST 上の `Block::Device` と
+    /// 突き合わせ、エラーが残っている device ブロックに対して Error 診断を生成する。
+    /// span は当面 `SpannedBlock.span` (device ブロック全体) を採用する。port 値
+    /// だけに絞った range にしたい場合は、span_parser に `DeviceDef::port_span` を
+    /// 持たせる拡張が別途必要。
+    ///
+    /// Surfaces MIDI port connection failures as diagnostics. Cross-references
+    /// the `device` blocks in the AST with `Evaluator::device_connection_errors()`
+    /// and emits an `Error` diagnostic on each device block whose connection
+    /// failed. The span is the full device block for now; a tighter range on the
+    /// `port` value would require extending `span_parser` to capture
+    /// `DeviceDef::port_span`.
+    ///
+    /// # Arguments
+    /// * `blocks` - スパン付きブロックのスライス / Slice of spanned blocks
+    /// * `errors` - device 名 → 接続失敗情報のマップ / Map of device name to connection failure info
+    ///
+    /// # Returns
+    /// 接続失敗 device に対する Error 診断のリスト
+    pub fn device_connection_diagnostics(
+        blocks: &[SpannedBlock],
+        errors: &std::collections::HashMap<String, crate::engine::evaluator::DeviceConnectionError>,
+    ) -> Vec<Diagnostic> {
+        let mut diagnostics = Vec::new();
+        for sb in blocks {
+            if let Block::Device(d) = &sb.block {
+                if let Some(err) = errors.get(&d.name) {
+                    diagnostics.push(Diagnostic {
+                        span: sb.span,
+                        message: format!(
+                            "MIDI ポート接続失敗: device '{}' port \"{}\" ({})",
+                            d.name, err.port, err.message
+                        ),
+                        severity: DiagnosticSeverity::Error,
+                    });
+                }
+            }
+        }
+        diagnostics
+    }
 }
 
 #[cfg(test)]
@@ -586,5 +630,104 @@ mod tests {
         let diags = DiagnosticProvider::mute_unmute_target_diagnostics(&blocks, &registry);
         assert_eq!(diags.len(), 1);
         assert_eq!(diags[0].severity, DiagnosticSeverity::Warning);
+    }
+
+    // --- PR #55: device 接続失敗 → Error diagnostic ---
+
+    /// errors が空なら何も診断を出さない
+    /// Empty error map produces no diagnostics
+    #[test]
+    fn device_connection_diagnostics_empty_errors_returns_empty() {
+        use crate::ast::device::DeviceDef;
+        let blocks = vec![spanned(Block::Device(DeviceDef {
+            name: "synth".into(),
+            port: "port_a".into(),
+            transport: true,
+        }))];
+        let errors: std::collections::HashMap<
+            String,
+            crate::engine::evaluator::DeviceConnectionError,
+        > = std::collections::HashMap::new();
+        let diags = DiagnosticProvider::device_connection_diagnostics(&blocks, &errors);
+        assert!(diags.is_empty());
+    }
+
+    /// 接続失敗が記録されている device に Error 診断が出る
+    /// Failed device produces an Error diagnostic with message details
+    #[test]
+    fn device_connection_diagnostics_emits_error_for_failed_device() {
+        use crate::ast::device::DeviceDef;
+        use crate::engine::evaluator::DeviceConnectionError;
+
+        let blocks = vec![spanned(Block::Device(DeviceDef {
+            name: "synth".into(),
+            port: "port_a".into(),
+            transport: true,
+        }))];
+        let mut errors = std::collections::HashMap::new();
+        errors.insert(
+            "synth".to_string(),
+            DeviceConnectionError {
+                port: "port_a".into(),
+                message: "not found".into(),
+            },
+        );
+
+        let diags = DiagnosticProvider::device_connection_diagnostics(&blocks, &errors);
+        assert_eq!(diags.len(), 1);
+        assert_eq!(diags[0].severity, DiagnosticSeverity::Error);
+        assert!(diags[0].message.contains("synth"));
+        assert!(diags[0].message.contains("port_a"));
+        assert!(diags[0].message.contains("not found"));
+    }
+
+    /// errors に該当しない device は診断対象外
+    /// Devices without errors are skipped
+    #[test]
+    fn device_connection_diagnostics_skips_devices_without_errors() {
+        use crate::ast::device::DeviceDef;
+        use crate::engine::evaluator::DeviceConnectionError;
+
+        let blocks = vec![
+            spanned(Block::Device(DeviceDef {
+                name: "synth_a".into(),
+                port: "port_a".into(),
+                transport: true,
+            })),
+            spanned(Block::Device(DeviceDef {
+                name: "synth_b".into(),
+                port: "port_b".into(),
+                transport: true,
+            })),
+        ];
+        let mut errors = std::collections::HashMap::new();
+        errors.insert(
+            "synth_b".to_string(),
+            DeviceConnectionError {
+                port: "port_b".into(),
+                message: "fail".into(),
+            },
+        );
+
+        let diags = DiagnosticProvider::device_connection_diagnostics(&blocks, &errors);
+        assert_eq!(diags.len(), 1);
+        assert!(diags[0].message.contains("synth_b"));
+    }
+
+    /// device 以外のブロックは無視される（device 名一致でも対象外）
+    /// Non-device blocks are ignored even if a name matches in the error map
+    #[test]
+    fn device_connection_diagnostics_ignores_non_device_blocks() {
+        let blocks = vec![spanned(Block::Tempo(Tempo::Absolute(120)))];
+        let mut errors = std::collections::HashMap::new();
+        errors.insert(
+            "ghost".to_string(),
+            crate::engine::evaluator::DeviceConnectionError {
+                port: "p".into(),
+                message: "m".into(),
+            },
+        );
+        let diags = DiagnosticProvider::device_connection_diagnostics(&blocks, &errors);
+        assert!(diags.is_empty());
     }
 }

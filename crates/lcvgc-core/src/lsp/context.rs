@@ -1,5 +1,6 @@
 use super::completion::{CompletionItem, CompletionKind, CompletionProvider};
 use crate::engine::registry::Registry;
+use crate::midi::port::list_ports;
 
 /// カーソル位置のコンテキスト
 #[derive(Debug, PartialEq)]
@@ -10,6 +11,9 @@ pub enum CompletionContext {
     AfterBlockKeyword,
     /// device ブロック内の行頭
     DeviceBody,
+    /// device 内 "port " の後: 実 MIDI ポート名を提案（lcvgc プロセスから取得）
+    /// Inside device block after "port ": suggest actual MIDI port names (fetched from lcvgc process)
+    DeviceAfterPort,
     /// instrument ブロック内の行頭
     InstrumentBody,
     /// instrument 内 "device " の後: デバイス名を提案
@@ -278,7 +282,22 @@ fn determine_toplevel_context(trimmed: &str) -> CompletionContext {
 }
 
 /// device ブロック内のコンテキストを判定する
-fn determine_device_context(_trimmed: &str) -> CompletionContext {
+///
+/// 行頭からカーソル位置までのトリム済みテキスト `trimmed` を受け取り、
+/// 「port キーワード + 半角空白」で始まる場合は `DeviceAfterPort`（実 MIDI ポート名補完）、
+/// そうでない場合は `DeviceBody`（device ブロック内のキーワード補完）を返す。
+///
+/// # Arguments
+/// * `trimmed` - カーソル位置の行頭から先頭空白を除去した文字列
+///
+/// # Returns
+/// 判定された `CompletionContext`
+fn determine_device_context(trimmed: &str) -> CompletionContext {
+    // "port " (port + 半角空白1個以上) の後ろなら実ポート名補完
+    // "port" 単体（後続空白なし）はまだ DeviceBody（port キーワード自体の補完を許容）
+    if trimmed.starts_with("port ") {
+        return CompletionContext::DeviceAfterPort;
+    }
     CompletionContext::DeviceBody
 }
 
@@ -445,6 +464,20 @@ pub fn build_completion_items(ctx: &CompletionContext, registry: &Registry) -> V
         }
 
         CompletionContext::DeviceBody => CompletionProvider::device_body_completions(),
+
+        CompletionContext::DeviceAfterPort => {
+            // 実 MIDI 出力ポート一覧を補完候補として返す。`list_ports()` は環境
+            // 依存の I/O を含むため、ALSA 等が見えない CI などでは Err になる
+            // 場合がある。Err 時は空 vec を返してフォールバックする(補完が出ない
+            // だけで他機能には影響しない)。
+            //
+            // Returns the system MIDI output ports as completion candidates. The
+            // `list_ports()` call may fail in environments without ALSA/midir
+            // (e.g. CI runners); we silently fall back to an empty list so other
+            // completion paths remain unaffected.
+            let ports = list_ports().unwrap_or_default();
+            CompletionProvider::midi_port_completions(&ports)
+        }
 
         CompletionContext::InstrumentBody => CompletionProvider::instrument_body_completions(),
 
@@ -1030,5 +1063,56 @@ mod tests {
         // offset 1 in "a b" is space, but backward search finds 'a'
         // Use a string where space is surrounded by spaces
         assert_eq!(word_at_offset(" a ", 0), None);
+    }
+
+    // --- DeviceAfterPort context tests ---
+
+    #[test]
+    fn device_body_after_port_keyword_is_device_after_port() {
+        // device foo {
+        //   port <カーソル>
+        //
+        let src = "device foo {\n  port \n}";
+        let offset = src.find("port ").unwrap() + "port ".len();
+        let ctx = determine_completion_context(src, offset);
+        assert_eq!(ctx, CompletionContext::DeviceAfterPort);
+    }
+
+    #[test]
+    fn device_body_at_line_start_is_device_body() {
+        let src = "device foo {\n  \n}";
+        let offset = src.find("\n  ").unwrap() + 3; // 行頭の空白後
+        let ctx = determine_completion_context(src, offset);
+        assert_eq!(ctx, CompletionContext::DeviceBody);
+    }
+
+    #[test]
+    fn device_body_with_partial_port_keyword_is_device_body() {
+        // "p" だけ書いた状態は DeviceBody（port キーワード補完が出る位置）
+        let src = "device foo {\n  p\n}";
+        let offset = src.find("\n  p").unwrap() + 4; // "p" の直後
+        let ctx = determine_completion_context(src, offset);
+        assert_eq!(ctx, CompletionContext::DeviceBody);
+    }
+
+    #[test]
+    fn build_completion_items_for_device_after_port_returns_midi_ports_or_empty() {
+        // CI 環境では ALSA が見えず list_ports() が Err になることがあるため、
+        // 結果は「Vec<CompletionItem> として正しく返る」までを検証する。
+        // 環境に依存して空 or 非空のどちらも許容する。
+        //
+        // In CI environments without ALSA, `list_ports()` may fail; we only
+        // verify that the result is a well-formed `Vec<CompletionItem>`, and
+        // tolerate both empty and non-empty results depending on the host.
+        let ctx = CompletionContext::DeviceAfterPort;
+        let registry = Registry::new();
+        let items = build_completion_items(&ctx, &registry);
+
+        // 全アイテムが Identifier kind かつ detail が "MIDI port" であること
+        // Every returned item must be an Identifier whose detail is "MIDI port".
+        for item in &items {
+            assert_eq!(item.kind, CompletionKind::Identifier);
+            assert_eq!(item.detail.as_deref(), Some("MIDI port"));
+        }
     }
 }

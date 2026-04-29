@@ -12,13 +12,15 @@
 //! `MockSink`.
 
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use lcvgc_core::engine::device_event::DeviceEvent;
+use lcvgc_core::engine::evaluator::Evaluator;
 use lcvgc_core::engine::midi_sink::{send_all_notes_off_all_channels, MidirSink};
 use lcvgc_core::engine::playback::{BoxedSink, SharedSinks, SinksNotify};
 use lcvgc_core::midi::port::PortManager;
 use lcvgc_core::midi::MidiError;
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, Mutex};
 use tracing::{info, warn};
 
 /// 本番用の sink builder（`MidirSink` を実 MIDI ポートに接続して構築する）
@@ -36,20 +38,47 @@ pub fn build_midir_sink(name: &str, port: &str) -> Result<BoxedSink, MidiError> 
     Ok(Box::new(MidirSink::new(pm, name.to_string())))
 }
 
+/// `apply_device_event` の処理結果
+///
+/// PR #55: receiver loop は本結果を見て、Evaluator の
+/// `device_connection_errors` を record / clear する。LSP diagnostic は
+/// このエラー状態を読んで device ブロックに Error 診断を出す。
+///
+/// Outcome of `apply_device_event`. The receiver loop inspects this result
+/// to record or clear `Evaluator::device_connection_errors`, which the LSP
+/// diagnostic path then surfaces against the corresponding device block.
+#[derive(Debug)]
+pub enum DeviceApplyOutcome {
+    /// sink 構築に成功し sinks マップに insert 済み
+    /// Successfully built and inserted into the sink map
+    Connected { name: String },
+    /// sink 構築に失敗（ポート接続エラー等）。`name` / `port` / `message`
+    /// をそのまま `Evaluator::record_device_connection_error` に渡せばよい。
+    ///
+    /// Build failed (e.g. port connection error). `name` / `port` / `message`
+    /// can be forwarded verbatim to `Evaluator::record_device_connection_error`.
+    Failed {
+        name: String,
+        port: String,
+        message: String,
+    },
+}
+
 /// 単一の `DeviceEvent` を共有 sink マップに反映する（builder 注入形）
 ///
-/// PR #54: 同名 + 同 port の no-op 判定は呼び出し側 (receiver loop) の責務。
+/// PR #54/#55: 同名 + 同 port の no-op 判定は呼び出し側 (receiver loop) の責務。
 /// 本関数は受け取った `Upsert` を必ず「旧 sink を AllNotesOff 送出後に drop し、
 /// `build_sink` を呼んで新 sink を insert」する流れで処理する。
-/// 接続失敗は warn ログを出して当該 device のみスキップし、既存 sink には触れない。
-/// 反映が成功した場合のみ `notify.notify_one()` で driver を起こす。
+/// 接続失敗は warn ログを出して当該 device のみスキップし、既存 sink は drop した
+/// まま（再接続待ち）になる。反映が成功した場合のみ `notify.notify_one()` で
+/// driver を起こす。
 ///
-/// Applies one `DeviceEvent` to the shared sink map. The receiver loop is
-/// responsible for deduplicating same-name + same-port events; this function
-/// always drops the old sink (after sending AllNotesOff on every channel) and
-/// invokes `build_sink` to create the replacement. Build failures are logged at
-/// `warn` and the existing sink is left intact. `notify.notify_one()` runs only
-/// when the map was successfully mutated.
+/// 戻り値の `DeviceApplyOutcome` を receiver 側で見て Evaluator のエラー状態を
+/// 更新する。
+///
+/// Applies one `DeviceEvent` to the shared sink map. Returns a
+/// `DeviceApplyOutcome` so the caller can update `Evaluator`'s connection-
+/// error map accordingly (PR #55).
 ///
 /// # Type parameters
 /// * `F` - sink builder closure。引数 `(name, port)` を受け取り `BoxedSink` を返す
@@ -59,7 +88,8 @@ pub async fn apply_device_event<F, E>(
     sinks: &SharedSinks,
     notify: &SinksNotify,
     build_sink: &F,
-) where
+) -> DeviceApplyOutcome
+where
     F: Fn(&str, &str) -> Result<BoxedSink, E>,
     E: std::fmt::Display,
 {
@@ -90,12 +120,19 @@ pub async fn apply_device_event<F, E>(
                     }
                     info!("  MIDI device 動的登録: {} -> {}", name, port);
                     notify.notify_one();
+                    DeviceApplyOutcome::Connected { name }
                 }
                 Err(e) => {
+                    let message = e.to_string();
                     warn!(
                         "  MIDI device 接続失敗 (動的登録): {} -> {} ({}). この device への送出はスキップします。",
-                        name, port, e
+                        name, port, message
                     );
+                    DeviceApplyOutcome::Failed {
+                        name,
+                        port,
+                        message,
+                    }
                 }
             }
         }
@@ -109,16 +146,22 @@ pub async fn apply_device_event<F, E>(
 /// 避けるため、device 名 → 現 port の対応を内部 `HashMap` で記憶し、変化が
 /// 無いイベントは skip する。`initial_ports` で起動時 sink の重複弾きを行う。
 ///
+/// PR #55: 各イベントの結果を `DeviceApplyOutcome` で受け、Evaluator の
+/// `device_connection_errors` を成功時 clear / 失敗時 record する。LSP
+/// diagnostic 経路（`Request::LspDiagnostics`）はこのマップを読んで Error
+/// 診断を生成するため、本ループでの更新が反映される。
+///
 /// Consumes `DeviceEvent`s emitted by the Evaluator and applies them to the
-/// shared sink map via the injected `build_sink`. The loop deduplicates
-/// `Upsert`s with no port change against `current_ports` (seeded from
-/// `initial_ports` for startup parity).
+/// shared sink map via the injected `build_sink`. PR #55: also records
+/// connection failures in `Evaluator::device_connection_errors` (or clears
+/// them on success) so the LSP diagnostic path can surface failures.
 pub async fn run_device_event_receiver_with_initial<F, E>(
     mut rx: mpsc::UnboundedReceiver<DeviceEvent>,
     sinks: SharedSinks,
     notify: SinksNotify,
     initial_ports: HashMap<String, String>,
     build_sink: F,
+    evaluator: Arc<Mutex<Evaluator>>,
 ) where
     F: Fn(&str, &str) -> Result<BoxedSink, E>,
     E: std::fmt::Display,
@@ -134,6 +177,21 @@ pub async fn run_device_event_receiver_with_initial<F, E>(
                 current_ports.insert(name.clone(), port.clone());
             }
         }
-        apply_device_event(event, &sinks, &notify, &build_sink).await;
+        let outcome = apply_device_event(event, &sinks, &notify, &build_sink).await;
+        // PR #55: outcome に応じて Evaluator のエラー状態を更新
+        // PR #55: update the Evaluator's error map based on the outcome
+        let mut ev = evaluator.lock().await;
+        match outcome {
+            DeviceApplyOutcome::Connected { name } => {
+                ev.clear_device_connection_error(&name);
+            }
+            DeviceApplyOutcome::Failed {
+                name,
+                port,
+                message,
+            } => {
+                ev.record_device_connection_error(name, port, message);
+            }
+        }
     }
 }

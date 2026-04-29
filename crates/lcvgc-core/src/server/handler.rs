@@ -144,6 +144,9 @@ pub async fn handle_request(evaluator: &Arc<Mutex<Evaluator>>, request: Request)
                 .unwrap_or_default();
             ev.preload_from_source(&source, &additional);
             let mut analyzer = LspAnalyzer::with_base_registry(ev.registry().clone());
+            // PR #55: device 接続失敗 diagnostic 用に Evaluator のエラー状態を退避
+            // PR #55: snapshot the device connection errors for diagnostic generation
+            let device_connection_errors = ev.device_connection_errors().clone();
             drop(ev);
             // include_sourcesがある場合はinclude解決付きで更新、ない場合は従来通り
             // Use include resolution when include_sources is provided, otherwise use standard update
@@ -173,6 +176,12 @@ pub async fn handle_request(evaluator: &Arc<Mutex<Evaluator>>, request: Request)
             diags.extend(DiagnosticProvider::mute_unmute_target_diagnostics(
                 analyzer.blocks(),
                 analyzer.registry(),
+            ));
+            // PR #55: device の MIDI ポート接続失敗を Error 診断として加える
+            // PR #55: surface device MIDI port connection failures as Error diagnostics
+            diags.extend(DiagnosticProvider::device_connection_diagnostics(
+                analyzer.blocks(),
+                &device_connection_errors,
             ));
             // include_diagnostics()は呼ばない（Lua側で実施）
             // Do not call include_diagnostics() (handled on Lua side)
