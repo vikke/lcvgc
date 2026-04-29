@@ -1,5 +1,6 @@
 use super::completion::{CompletionItem, CompletionKind, CompletionProvider};
 use crate::engine::registry::Registry;
+use crate::midi::port::list_ports;
 
 /// カーソル位置のコンテキスト
 #[derive(Debug, PartialEq)]
@@ -464,9 +465,19 @@ pub fn build_completion_items(ctx: &CompletionContext, registry: &Registry) -> V
 
         CompletionContext::DeviceBody => CompletionProvider::device_body_completions(),
 
-        // 実装は list_ports 補完 agent が差し替える
-        // To be replaced by the list_ports completion agent
-        CompletionContext::DeviceAfterPort => vec![],
+        CompletionContext::DeviceAfterPort => {
+            // 実 MIDI 出力ポート一覧を補完候補として返す。`list_ports()` は環境
+            // 依存の I/O を含むため、ALSA 等が見えない CI などでは Err になる
+            // 場合がある。Err 時は空 vec を返してフォールバックする(補完が出ない
+            // だけで他機能には影響しない)。
+            //
+            // Returns the system MIDI output ports as completion candidates. The
+            // `list_ports()` call may fail in environments without ALSA/midir
+            // (e.g. CI runners); we silently fall back to an empty list so other
+            // completion paths remain unaffected.
+            let ports = list_ports().unwrap_or_default();
+            CompletionProvider::midi_port_completions(&ports)
+        }
 
         CompletionContext::InstrumentBody => CompletionProvider::instrument_body_completions(),
 
@@ -1082,5 +1093,26 @@ mod tests {
         let offset = src.find("\n  p").unwrap() + 4; // "p" の直後
         let ctx = determine_completion_context(src, offset);
         assert_eq!(ctx, CompletionContext::DeviceBody);
+    }
+
+    #[test]
+    fn build_completion_items_for_device_after_port_returns_midi_ports_or_empty() {
+        // CI 環境では ALSA が見えず list_ports() が Err になることがあるため、
+        // 結果は「Vec<CompletionItem> として正しく返る」までを検証する。
+        // 環境に依存して空 or 非空のどちらも許容する。
+        //
+        // In CI environments without ALSA, `list_ports()` may fail; we only
+        // verify that the result is a well-formed `Vec<CompletionItem>`, and
+        // tolerate both empty and non-empty results depending on the host.
+        let ctx = CompletionContext::DeviceAfterPort;
+        let registry = Registry::new();
+        let items = build_completion_items(&ctx, &registry);
+
+        // 全アイテムが Identifier kind かつ detail が "MIDI port" であること
+        // Every returned item must be an Identifier whose detail is "MIDI port".
+        for item in &items {
+            assert_eq!(item.kind, CompletionKind::Identifier);
+            assert_eq!(item.detail.as_deref(), Some("MIDI port"));
+        }
     }
 }
