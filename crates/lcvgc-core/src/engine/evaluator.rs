@@ -10,6 +10,7 @@ use crate::ast::scene::SceneDef;
 use crate::ast::Block;
 use crate::engine::clock::Clock;
 use crate::engine::compiler::compile_clip;
+use crate::engine::device_event::{DeviceEvent, DeviceEventTx};
 use crate::engine::error::EngineError;
 use crate::engine::player::ScenePlayer;
 use crate::engine::registry::Registry;
@@ -148,6 +149,17 @@ pub struct Evaluator {
     /// The caller dispatches each message to the matching `MidiSink` by
     /// device name (Issue #50).
     pending_transport: Vec<(String, crate::midi::message::MidiMessage)>,
+    /// core からバイナリ層への一方向通知 channel。`Block::Device` 評価時に
+    /// `DeviceEvent::Upsert` を emit し、受信側 (lcvgc バイナリ) が
+    /// `MidirSink` を構築・差し替える (PR #54)。未設定でも eval は通常通り
+    /// 動作する（後方互換のため `Option`）。
+    ///
+    /// One-way notification channel from core to the binary layer. On
+    /// `Block::Device` evaluation, an `DeviceEvent::Upsert` is emitted so
+    /// that the receiving side (the `lcvgc` binary) can build/swap the
+    /// matching `MidirSink` (PR #54). Eval still works normally when this
+    /// is `None` (kept `Option` for backward compatibility).
+    device_event_tx: Option<DeviceEventTx>,
 }
 
 impl Evaluator {
@@ -161,7 +173,21 @@ impl Evaluator {
             active_scene: None,
             pending_all_notes_off: Vec::new(),
             pending_transport: Vec::new(),
+            device_event_tx: None,
         }
+    }
+
+    /// `DeviceEvent` 通知用 tx を登録する (PR #54)。
+    ///
+    /// 設定後、`Block::Device` を eval すると `DeviceEvent::Upsert` が
+    /// receiver へ送出される。テストや tx を必要としない使い方では
+    /// 呼ばないことで後方互換を保つ。
+    ///
+    /// Registers the sender used for `DeviceEvent` notifications (PR #54).
+    /// Once set, evaluating a `Block::Device` emits `DeviceEvent::Upsert`
+    /// to the receiver. Skip this call to preserve the legacy behavior.
+    pub fn set_device_event_tx(&mut self, tx: DeviceEventTx) {
+        self.device_event_tx = Some(tx);
     }
 
     /// Stop/mute 評価で溜まった AllNotesOff 対象の `(device, channel)`
@@ -299,7 +325,21 @@ impl Evaluator {
         match block {
             Block::Device(ref d) => {
                 let name = d.name.clone();
+                let port = d.port.clone();
                 self.registry.register_block(block);
+                // tx が設定されていれば DeviceEvent::Upsert を通知する。
+                // 受信側が drop されている場合の SendError は意図的に握り潰す
+                // （LSP テストのノイズ抑制および後方互換のため）。
+                //
+                // Notify `DeviceEvent::Upsert` if a tx is registered. Any
+                // `SendError` from a dropped receiver is intentionally
+                // ignored to keep eval quiet and backward compatible.
+                if let Some(tx) = &self.device_event_tx {
+                    let _ = tx.send(DeviceEvent::Upsert {
+                        name: name.clone(),
+                        port,
+                    });
+                }
                 Ok(EvalResult::Registered {
                     kind: "Device".into(),
                     name,
@@ -2879,5 +2919,81 @@ instrument bass {
             repeat: RepeatSpec::Loop,
         }));
         assert!(ev.take_pending_transport().is_empty());
+    }
+
+    // ---------------------------------------------------------------------
+    // PR #54: DeviceEvent emission tests
+    //
+    // Evaluator は `Block::Device` を eval した際に、`set_device_event_tx`
+    // で渡された tx 経由で `DeviceEvent::Upsert` を emit する。tx 未設定でも
+    // eval は通常通り成功する（後方互換）。
+    //
+    // Tests for the `DeviceEvent` channel: evaluating a `Block::Device`
+    // emits `Upsert` via the registered tx; eval still works when no tx is
+    // set (backward compatibility).
+    // ---------------------------------------------------------------------
+
+    /// tx 未設定の Evaluator で device を eval しても panic せず後方互換が保たれる
+    /// Eval still works (no panic) when no `DeviceEvent` tx is registered.
+    #[test]
+    fn device_event_tx_unset_does_not_panic_on_device_eval() {
+        let mut ev = Evaluator::new(120.0);
+        // tx を登録しないまま device を eval。registered で成功し、
+        // 後続の eval にも影響を与えないことを確認する。
+        eval_src(&mut ev, "device foo { port px }\n");
+        assert!(ev.registry().get_device("foo").is_some());
+    }
+
+    /// tx を登録した状態で device を eval すると `Upsert` が 1 件届く
+    /// Registering a tx and evaluating a new device emits one `Upsert`.
+    #[test]
+    fn device_event_emits_upsert_on_new_device() {
+        use crate::engine::device_event::DeviceEvent;
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut ev = Evaluator::new(120.0);
+        ev.set_device_event_tx(tx);
+        eval_src(&mut ev, "device foo { port px }\n");
+        // 受信側で 1 件取り出せること
+        let received = rx.try_recv().expect("expected one DeviceEvent");
+        assert_eq!(
+            received,
+            DeviceEvent::Upsert {
+                name: "foo".into(),
+                port: "px".into(),
+            }
+        );
+        // それ以上のイベントは無いこと
+        assert!(rx.try_recv().is_err());
+    }
+
+    /// 同名 device の port を変えて 2 回 eval すると `Upsert` が 2 件届く
+    /// （Evaluator は同一性判定をせず、識別は受信側責務）
+    /// Re-evaluating the same device name with a different port emits two
+    /// `Upsert`s; deduplication is the receiver's responsibility.
+    #[test]
+    fn device_event_emits_upsert_on_redefinition_with_same_name() {
+        use crate::engine::device_event::DeviceEvent;
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut ev = Evaluator::new(120.0);
+        ev.set_device_event_tx(tx);
+        eval_src(&mut ev, "device foo { port px }\n");
+        eval_src(&mut ev, "device foo { port py }\n");
+        let first = rx.try_recv().expect("expected first DeviceEvent");
+        let second = rx.try_recv().expect("expected second DeviceEvent");
+        assert_eq!(
+            first,
+            DeviceEvent::Upsert {
+                name: "foo".into(),
+                port: "px".into(),
+            }
+        );
+        assert_eq!(
+            second,
+            DeviceEvent::Upsert {
+                name: "foo".into(),
+                port: "py".into(),
+            }
+        );
+        assert!(rx.try_recv().is_err());
     }
 }

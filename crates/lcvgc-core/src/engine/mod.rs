@@ -1,6 +1,7 @@
 pub mod clock;
 pub mod compiler;
 pub mod config;
+pub mod device_event;
 pub mod error;
 pub mod evaluator;
 pub mod midi_sink;
