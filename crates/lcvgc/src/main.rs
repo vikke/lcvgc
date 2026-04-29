@@ -7,11 +7,12 @@ use std::sync::Arc;
 
 use clap::Parser;
 use cli::Cli;
+use lcvgc::{build_midir_sink, run_device_event_receiver_with_initial};
 use lcvgc_core::engine::clock::Clock;
 use lcvgc_core::engine::config::Config;
 use lcvgc_core::engine::device_event::DeviceEvent;
 use lcvgc_core::engine::evaluator::Evaluator;
-use lcvgc_core::engine::midi_sink::{send_all_notes_off_all_channels, MidirSink};
+use lcvgc_core::engine::midi_sink::MidirSink;
 use lcvgc_core::engine::playback::{run_driver_with_shared, BoxedSink, SharedSinks, SinksNotify};
 use lcvgc_core::engine::watcher::{run_hot_reload, WatcherConfig};
 use lcvgc_core::midi::monitor::{log_startup_ports, run_port_monitor, PortMonitorConfig};
@@ -37,117 +38,6 @@ fn build_default_sink(port_name: &str) -> Result<MidirSink, lcvgc_core::midi::Mi
     let mut pm = PortManager::new();
     pm.connect("default", port_name)?;
     Ok(MidirSink::new(pm, "default".to_string()))
-}
-
-/// 単一の `DeviceEvent` を共有 sink マップに反映する
-///
-/// PR #54: Evaluator が emit した `DeviceEvent::Upsert { name, port }` を受けて
-/// 共有 sink マップ (`SharedSinks`) を更新する。挙動は以下:
-/// - 同名 + 同 port: no-op（共有 sink を保ったまま）
-/// - 同名 + port 変更: 旧 sink へ全 16 channel に AllNotesOff を送ってから drop し、
-///   新 port で `MidirSink` を build → insert
-/// - 新規: 新 port で `MidirSink` を build → insert
-/// - 接続失敗: warn ログを出して当該 device のみスキップ（既存 sink には触れない）
-///
-/// 反映が成功した場合のみ `notify.notify_one()` で driver を起こす。
-///
-/// Applies one `DeviceEvent` to the shared sink map. Same-name + same-port is a
-/// no-op; same-name + new-port sends AllNotesOff (CC#123 on all 16 channels) to
-/// the old sink before dropping it and rebuilding with the new port; otherwise
-/// inserts a freshly built `MidirSink`. Connection failures are logged at warn
-/// level and skipped without touching the existing sink. Calls
-/// `notify.notify_one()` only when the map was actually mutated.
-async fn apply_device_event(event: DeviceEvent, sinks: &SharedSinks, notify: &SinksNotify) {
-    match event {
-        DeviceEvent::Upsert { name, port } => {
-            // 既存 sink の port をチェックするには `MidirSink` 内の port 情報を読む必要がある
-            // が、現在 `MidirSink` は connect 先の port 文字列を外部に公開していない。
-            // 代わりに、Upsert 受信時は同 port かどうかを「main 側で別途保持している
-            // device→port マップ」で判定する設計が望ましい。本関数は呼び出し側で
-            // 同一性判定を済ませた前提とし、呼び出し側 (receiver loop) で「現在の
-            // port と異なる場合のみ」本関数を呼ぶ責務を負わせる。
-            //
-            // `MidirSink` 単体では現 port を読み出せないため、receiver 側で
-            // `HashMap<String, String>` を保持して同一性判定を行うことを前提とする。
-
-            // 旧 sink を取り出して AllNotesOff を送出してから drop（port 張り替え時の
-            // 安全停止）。新規追加の場合は旧 sink は None なのでスキップされる。
-            // `Box<dyn MidiSink>` から `&mut dyn MidiSink` を得るため `as_mut()` を使う。
-            {
-                let mut map = sinks.lock().await;
-                if let Some(mut old) = map.remove(&name) {
-                    if let Err(e) = send_all_notes_off_all_channels(old.as_mut()) {
-                        warn!(
-                            "  旧 sink への AllNotesOff 送出に失敗: device={} ({})",
-                            name, e
-                        );
-                    }
-                    // old はスコープ末で drop され、内部の `MidirSink` の port 接続が閉じる
-                    drop(old);
-                }
-            }
-
-            // 新 port で MidirSink を構築
-            let mut pm = PortManager::new();
-            let connected = pm.connect(&name, &port);
-            match connected {
-                Ok(()) => {
-                    let sink: BoxedSink = Box::new(MidirSink::new(pm, name.clone()));
-                    {
-                        let mut map = sinks.lock().await;
-                        map.insert(name.clone(), sink);
-                    }
-                    info!("  MIDI device 動的登録: {} -> {}", name, port);
-                    notify.notify_one();
-                }
-                Err(e) => {
-                    warn!(
-                        "  MIDI device 接続失敗 (動的登録): {} -> {} ({}). この device への送出はスキップします。",
-                        name, port, e
-                    );
-                }
-            }
-        }
-    }
-}
-
-/// `DeviceEvent` の receiver loop（初期 port マップ付き）
-///
-/// PR #54: Evaluator から流れてくる `DeviceEvent` を消費し、各イベントを
-/// `apply_device_event` で共有 sink マップに反映する。同一 port の重複登録を
-/// 避けるため、device 名 → 現 port の対応を内部 `HashMap` で記憶し、変化が
-/// 無いイベントは skip する（同名 + 同 port の no-op 判定）。
-///
-/// `initial_ports` は起動時に file 経由で evaluator が評価した device の
-/// port マップ。起動時に同じ device の sink を `build_sinks_from_registry`
-/// 経由で既に登録済みのため、対応する `DeviceEvent::Upsert` を no-op として
-/// 弾けるよう初期値として渡す。
-///
-/// Consumes `DeviceEvent`s emitted by the Evaluator and applies them to the
-/// shared sink map. Tracks the current port per device locally to short-circuit
-/// no-op upserts (same name + same port). The `initial_ports` argument seeds
-/// this map with devices that were already wired at startup via
-/// `build_sinks_from_registry`, so their startup-time `Upsert` events are
-/// treated as no-ops.
-async fn run_device_event_receiver_with_initial(
-    mut rx: mpsc::UnboundedReceiver<DeviceEvent>,
-    sinks: SharedSinks,
-    notify: SinksNotify,
-    initial_ports: HashMap<String, String>,
-) {
-    let mut current_ports: HashMap<String, String> = initial_ports;
-    while let Some(event) = rx.recv().await {
-        match &event {
-            DeviceEvent::Upsert { name, port } => {
-                if current_ports.get(name) == Some(port) {
-                    // 同名 + 同 port は no-op（sink を張り替えない）
-                    continue;
-                }
-                current_ports.insert(name.clone(), port.clone());
-            }
-        }
-        apply_device_event(event, &sinks, &notify).await;
-    }
 }
 
 /// DSL の `device <name> { port "..." }` ブロックから複数 sink マップを構築する
@@ -380,6 +270,7 @@ async fn main() {
                 sinks_for_rx,
                 notify_for_rx,
                 initial_ports,
+                build_midir_sink,
             )
             .await;
         });

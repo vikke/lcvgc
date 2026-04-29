@@ -3,6 +3,14 @@ name = "lcvgc"
 version = "0.7.10"
 edition = "2021"
 
+[lib]
+name = "lcvgc"
+path = "src/lib.rs"
+
+[[bin]]
+name = "lcvgc"
+path = "src/main.rs"
+
 [dependencies]
 lcvgc-core = { path = "../lcvgc-core" }
 clap = { version = "4", features = ["derive"] }
