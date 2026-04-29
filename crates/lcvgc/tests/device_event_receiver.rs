@@ -81,17 +81,21 @@ async fn evaluator_emits_upsert_received_and_sink_inserted() {
         Ok(Box::new(SharedMockSink::new()))
     };
 
+    // Evaluator を共有 Mutex に詰めて receiver に渡す（PR #55 で必須）
+    // Wrap Evaluator in a shared Mutex; PR #55 requires it on the receiver.
+    let evaluator = Arc::new(TokioMutex::new(Evaluator::new(120.0)));
+
     let receiver_handle = tokio::spawn(run_device_event_receiver_with_initial(
         rx,
         Arc::clone(&sinks),
         Arc::clone(&notify),
         HashMap::new(),
         build_sink,
+        Arc::clone(&evaluator),
     ));
 
-    // Evaluator を共有 Mutex に詰めて、device_event_tx を登録してから device を eval
-    // Wrap Evaluator in a shared Mutex, wire up the tx, then evaluate `device`.
-    let evaluator = Arc::new(TokioMutex::new(Evaluator::new(120.0)));
+    // device_event_tx を登録してから device を eval
+    // Wire up the tx then evaluate `device`.
     {
         let mut ev = evaluator.lock().await;
         ev.set_device_event_tx(tx);
@@ -131,15 +135,17 @@ async fn same_name_same_port_redefinition_is_noop() {
         Ok(Box::new(SharedMockSink::new()))
     };
 
+    let evaluator = Arc::new(TokioMutex::new(Evaluator::new(120.0)));
+
     let receiver_handle = tokio::spawn(run_device_event_receiver_with_initial(
         rx,
         Arc::clone(&sinks),
         Arc::clone(&notify),
         HashMap::new(),
         build_sink,
+        Arc::clone(&evaluator),
     ));
 
-    let evaluator = Arc::new(TokioMutex::new(Evaluator::new(120.0)));
     {
         let mut ev = evaluator.lock().await;
         ev.set_device_event_tx(tx);
@@ -197,15 +203,17 @@ async fn same_name_different_port_rebuilds_sink() {
         Ok(Box::new(SharedMockSink::new()))
     };
 
+    let evaluator = Arc::new(TokioMutex::new(Evaluator::new(120.0)));
+
     let receiver_handle = tokio::spawn(run_device_event_receiver_with_initial(
         rx,
         Arc::clone(&sinks),
         Arc::clone(&notify),
         HashMap::new(),
         build_sink,
+        Arc::clone(&evaluator),
     ));
 
-    let evaluator = Arc::new(TokioMutex::new(Evaluator::new(120.0)));
     {
         let mut ev = evaluator.lock().await;
         ev.set_device_event_tx(tx);
@@ -267,15 +275,17 @@ async fn initial_ports_dedups_startup_event() {
     let mut initial_ports = HashMap::new();
     initial_ports.insert("foo".to_string(), "px".to_string());
 
+    let evaluator = Arc::new(TokioMutex::new(Evaluator::new(120.0)));
+
     let receiver_handle = tokio::spawn(run_device_event_receiver_with_initial(
         rx,
         Arc::clone(&sinks),
         Arc::clone(&notify),
         initial_ports,
         build_sink,
+        Arc::clone(&evaluator),
     ));
 
-    let evaluator = Arc::new(TokioMutex::new(Evaluator::new(120.0)));
     {
         let mut ev = evaluator.lock().await;
         ev.set_device_event_tx(tx);
@@ -329,15 +339,17 @@ async fn initial_ports_does_not_block_different_port() {
     let mut initial_ports = HashMap::new();
     initial_ports.insert("foo".to_string(), "px".to_string());
 
+    let evaluator = Arc::new(TokioMutex::new(Evaluator::new(120.0)));
+
     let receiver_handle = tokio::spawn(run_device_event_receiver_with_initial(
         rx,
         Arc::clone(&sinks),
         Arc::clone(&notify),
         initial_ports,
         build_sink,
+        Arc::clone(&evaluator),
     ));
 
-    let evaluator = Arc::new(TokioMutex::new(Evaluator::new(120.0)));
     {
         let mut ev = evaluator.lock().await;
         ev.set_device_event_tx(tx);
@@ -372,12 +384,15 @@ async fn dropping_tx_terminates_receiver() {
         Ok(Box::new(SharedMockSink::new()))
     };
 
+    let evaluator = Arc::new(TokioMutex::new(Evaluator::new(120.0)));
+
     let receiver_handle = tokio::spawn(run_device_event_receiver_with_initial(
         rx,
         Arc::clone(&sinks),
         Arc::clone(&notify),
         HashMap::new(),
         build_sink,
+        Arc::clone(&evaluator),
     ));
 
     // 直ちに tx を drop → rx.recv().await が None を返し、loop が抜ける
@@ -391,4 +406,127 @@ async fn dropping_tx_terminates_receiver() {
     );
     let join_result = result.unwrap();
     assert!(join_result.is_ok(), "receiver タスクが panic で終了した");
+}
+
+/// builder が失敗した場合、Evaluator の `device_connection_errors` に
+/// (port, message) が記録されることを確認する
+///
+/// On builder failure the receiver must record `(port, message)` into
+/// `Evaluator::device_connection_errors`, which the LSP diagnostic path
+/// reads later.
+#[tokio::test]
+async fn failed_build_records_device_connection_error() {
+    /// builder の失敗を表すテスト用エラー型
+    /// Test-only error type for simulating a builder failure.
+    #[derive(Debug)]
+    struct BuildErr;
+    impl std::fmt::Display for BuildErr {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.write_str("build failed: connection refused")
+        }
+    }
+
+    let (tx, rx) = mpsc::unbounded_channel::<DeviceEvent>();
+    let (sinks, notify) = fresh_sinks_and_notify();
+
+    // 常に失敗する builder
+    // Builder that always fails.
+    let build_sink = |_name: &str, _port: &str| -> Result<BoxedSink, BuildErr> { Err(BuildErr) };
+
+    let evaluator = Arc::new(TokioMutex::new(Evaluator::new(120.0)));
+
+    let receiver_handle = tokio::spawn(run_device_event_receiver_with_initial(
+        rx,
+        Arc::clone(&sinks),
+        Arc::clone(&notify),
+        HashMap::new(),
+        build_sink,
+        Arc::clone(&evaluator),
+    ));
+
+    {
+        let mut ev = evaluator.lock().await;
+        ev.set_device_event_tx(tx);
+        ev.eval_source("device foo { port px }\n").expect("eval ok");
+    }
+
+    // 失敗時は notify されないので、固定時間待ってから検証する
+    // Builder failure does not trigger notify, so wait a fixed duration.
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    let ev = evaluator.lock().await;
+    let errs = ev.device_connection_errors();
+    let entry = errs
+        .get("foo")
+        .expect("device_connection_errors に foo が記録されていない");
+    assert_eq!(entry.port, "px", "記録された port が期待と異なる");
+    assert!(
+        entry.message.contains("build failed: connection refused"),
+        "記録された message に builder エラー文字列が含まれていない: {}",
+        entry.message,
+    );
+    drop(ev);
+
+    drop(evaluator);
+    let _ = tokio::time::timeout(Duration::from_secs(1), receiver_handle).await;
+}
+
+/// builder 成功時、`device_connection_errors` から該当 device が削除される
+/// （事前に積んだエラーが clear される）ことを確認する
+///
+/// On builder success the receiver must clear the device's entry from
+/// `Evaluator::device_connection_errors`, even when an entry was recorded
+/// previously.
+#[tokio::test]
+async fn successful_build_clears_existing_device_connection_error() {
+    let (tx, rx) = mpsc::unbounded_channel::<DeviceEvent>();
+    let (sinks, notify) = fresh_sinks_and_notify();
+
+    let build_sink = |_name: &str, _port: &str| -> Result<BoxedSink, NeverError> {
+        Ok(Box::new(SharedMockSink::new()))
+    };
+
+    let evaluator = Arc::new(TokioMutex::new(Evaluator::new(120.0)));
+
+    // 事前に古いエラーを Evaluator に記録しておく
+    // Pre-populate an old error so the receiver has something to clear.
+    {
+        let mut ev = evaluator.lock().await;
+        ev.record_device_connection_error(
+            "foo".to_string(),
+            "old_port".to_string(),
+            "old err".to_string(),
+        );
+        assert!(ev.device_connection_errors().get("foo").is_some());
+    }
+
+    let receiver_handle = tokio::spawn(run_device_event_receiver_with_initial(
+        rx,
+        Arc::clone(&sinks),
+        Arc::clone(&notify),
+        HashMap::new(),
+        build_sink,
+        Arc::clone(&evaluator),
+    ));
+
+    {
+        let mut ev = evaluator.lock().await;
+        ev.set_device_event_tx(tx);
+        ev.eval_source("device foo { port new_port }\n")
+            .expect("eval ok");
+    }
+
+    // 成功時は notify されるので、それを待ってから検証
+    // Builder success notifies, so wait for that before checking.
+    wait_notified(&notify).await;
+
+    let ev = evaluator.lock().await;
+    assert!(
+        ev.device_connection_errors().get("foo").is_none(),
+        "成功時に device_connection_errors の foo が clear されていない",
+    );
+    drop(ev);
+
+    drop(evaluator);
+    let _ = tokio::time::timeout(Duration::from_secs(1), receiver_handle).await;
 }
