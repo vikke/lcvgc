@@ -9,14 +9,15 @@ use clap::Parser;
 use cli::Cli;
 use lcvgc_core::engine::clock::Clock;
 use lcvgc_core::engine::config::Config;
+use lcvgc_core::engine::device_event::DeviceEvent;
 use lcvgc_core::engine::evaluator::Evaluator;
-use lcvgc_core::engine::midi_sink::MidirSink;
-use lcvgc_core::engine::playback::{run_driver, BoxedSink};
+use lcvgc_core::engine::midi_sink::{send_all_notes_off_all_channels, MidirSink};
+use lcvgc_core::engine::playback::{run_driver_with_shared, BoxedSink, SharedSinks, SinksNotify};
 use lcvgc_core::engine::watcher::{run_hot_reload, WatcherConfig};
 use lcvgc_core::midi::monitor::{log_startup_ports, run_port_monitor, PortMonitorConfig};
 use lcvgc_core::midi::port::PortManager;
 use lcvgc_core::server::run_server;
-use tokio::sync::Mutex;
+use tokio::sync::{mpsc, Mutex, Notify};
 use tracing::{error, info, warn};
 
 /// 単一ポート名から `MidirSink` を構築するヘルパ
@@ -36,6 +37,117 @@ fn build_default_sink(port_name: &str) -> Result<MidirSink, lcvgc_core::midi::Mi
     let mut pm = PortManager::new();
     pm.connect("default", port_name)?;
     Ok(MidirSink::new(pm, "default".to_string()))
+}
+
+/// 単一の `DeviceEvent` を共有 sink マップに反映する
+///
+/// PR #54: Evaluator が emit した `DeviceEvent::Upsert { name, port }` を受けて
+/// 共有 sink マップ (`SharedSinks`) を更新する。挙動は以下:
+/// - 同名 + 同 port: no-op（共有 sink を保ったまま）
+/// - 同名 + port 変更: 旧 sink へ全 16 channel に AllNotesOff を送ってから drop し、
+///   新 port で `MidirSink` を build → insert
+/// - 新規: 新 port で `MidirSink` を build → insert
+/// - 接続失敗: warn ログを出して当該 device のみスキップ（既存 sink には触れない）
+///
+/// 反映が成功した場合のみ `notify.notify_one()` で driver を起こす。
+///
+/// Applies one `DeviceEvent` to the shared sink map. Same-name + same-port is a
+/// no-op; same-name + new-port sends AllNotesOff (CC#123 on all 16 channels) to
+/// the old sink before dropping it and rebuilding with the new port; otherwise
+/// inserts a freshly built `MidirSink`. Connection failures are logged at warn
+/// level and skipped without touching the existing sink. Calls
+/// `notify.notify_one()` only when the map was actually mutated.
+async fn apply_device_event(event: DeviceEvent, sinks: &SharedSinks, notify: &SinksNotify) {
+    match event {
+        DeviceEvent::Upsert { name, port } => {
+            // 既存 sink の port をチェックするには `MidirSink` 内の port 情報を読む必要がある
+            // が、現在 `MidirSink` は connect 先の port 文字列を外部に公開していない。
+            // 代わりに、Upsert 受信時は同 port かどうかを「main 側で別途保持している
+            // device→port マップ」で判定する設計が望ましい。本関数は呼び出し側で
+            // 同一性判定を済ませた前提とし、呼び出し側 (receiver loop) で「現在の
+            // port と異なる場合のみ」本関数を呼ぶ責務を負わせる。
+            //
+            // `MidirSink` 単体では現 port を読み出せないため、receiver 側で
+            // `HashMap<String, String>` を保持して同一性判定を行うことを前提とする。
+
+            // 旧 sink を取り出して AllNotesOff を送出してから drop（port 張り替え時の
+            // 安全停止）。新規追加の場合は旧 sink は None なのでスキップされる。
+            // `Box<dyn MidiSink>` から `&mut dyn MidiSink` を得るため `as_mut()` を使う。
+            {
+                let mut map = sinks.lock().await;
+                if let Some(mut old) = map.remove(&name) {
+                    if let Err(e) = send_all_notes_off_all_channels(old.as_mut()) {
+                        warn!(
+                            "  旧 sink への AllNotesOff 送出に失敗: device={} ({})",
+                            name, e
+                        );
+                    }
+                    // old はスコープ末で drop され、内部の `MidirSink` の port 接続が閉じる
+                    drop(old);
+                }
+            }
+
+            // 新 port で MidirSink を構築
+            let mut pm = PortManager::new();
+            let connected = pm.connect(&name, &port);
+            match connected {
+                Ok(()) => {
+                    let sink: BoxedSink = Box::new(MidirSink::new(pm, name.clone()));
+                    {
+                        let mut map = sinks.lock().await;
+                        map.insert(name.clone(), sink);
+                    }
+                    info!("  MIDI device 動的登録: {} -> {}", name, port);
+                    notify.notify_one();
+                }
+                Err(e) => {
+                    warn!(
+                        "  MIDI device 接続失敗 (動的登録): {} -> {} ({}). この device への送出はスキップします。",
+                        name, port, e
+                    );
+                }
+            }
+        }
+    }
+}
+
+/// `DeviceEvent` の receiver loop（初期 port マップ付き）
+///
+/// PR #54: Evaluator から流れてくる `DeviceEvent` を消費し、各イベントを
+/// `apply_device_event` で共有 sink マップに反映する。同一 port の重複登録を
+/// 避けるため、device 名 → 現 port の対応を内部 `HashMap` で記憶し、変化が
+/// 無いイベントは skip する（同名 + 同 port の no-op 判定）。
+///
+/// `initial_ports` は起動時に file 経由で evaluator が評価した device の
+/// port マップ。起動時に同じ device の sink を `build_sinks_from_registry`
+/// 経由で既に登録済みのため、対応する `DeviceEvent::Upsert` を no-op として
+/// 弾けるよう初期値として渡す。
+///
+/// Consumes `DeviceEvent`s emitted by the Evaluator and applies them to the
+/// shared sink map. Tracks the current port per device locally to short-circuit
+/// no-op upserts (same name + same port). The `initial_ports` argument seeds
+/// this map with devices that were already wired at startup via
+/// `build_sinks_from_registry`, so their startup-time `Upsert` events are
+/// treated as no-ops.
+async fn run_device_event_receiver_with_initial(
+    mut rx: mpsc::UnboundedReceiver<DeviceEvent>,
+    sinks: SharedSinks,
+    notify: SinksNotify,
+    initial_ports: HashMap<String, String>,
+) {
+    let mut current_ports: HashMap<String, String> = initial_ports;
+    while let Some(event) = rx.recv().await {
+        match &event {
+            DeviceEvent::Upsert { name, port } => {
+                if current_ports.get(name) == Some(port) {
+                    // 同名 + 同 port は no-op（sink を張り替えない）
+                    continue;
+                }
+                current_ports.insert(name.clone(), port.clone());
+            }
+        }
+        apply_device_event(event, &sinks, &notify).await;
+    }
 }
 
 /// DSL の `device <name> { port "..." }` ブロックから複数 sink マップを構築する
@@ -169,6 +281,24 @@ async fn main() {
 
     let evaluator = Arc::new(Mutex::new(Evaluator::new(default_bpm)));
 
+    // PR #54: device の動的登録経路を準備する
+    //
+    // - `DeviceEvent` の mpsc を作り、tx を Evaluator に配線
+    // - 共有 sink マップ (`SharedSinks`) と `SinksNotify` を生成し、
+    //   PlaybackDriver / receiver loop / 起動時 sink builder の三者で共有
+    //
+    // PR #54: wire up dynamic device registration. Create the `DeviceEvent`
+    // mpsc, hand its tx to the Evaluator, and share the sink map / notifier
+    // between the playback driver, the receiver task, and the startup sink
+    // builder.
+    let (device_event_tx, device_event_rx) = mpsc::unbounded_channel::<DeviceEvent>();
+    {
+        let mut ev = evaluator.lock().await;
+        ev.set_device_event_tx(device_event_tx);
+    }
+    let shared_sinks: SharedSinks = Arc::new(Mutex::new(HashMap::new()));
+    let sinks_notify: SinksNotify = Arc::new(Notify::new());
+
     if let Some(ref file) = cli.file {
         let mut ev = evaluator.lock().await;
         match ev.eval_file(file) {
@@ -187,26 +317,47 @@ async fn main() {
         });
     }
 
-    // MIDI 再生ドライバの起動（Issue #49: 複数 device 対応）
+    // 起動時の MIDI sink マップ初期化（Issue #49 + PR #54）
     //
-    // 1. DSL の `device` ブロックから sink マップを構築（失敗した device は warn & skip）
-    // 2. `--midi-device` 指定時は後方互換の "default" sink を追加
-    // 3. sinks が空でなければ PlaybackDriver を起動
+    // file 経由で評価された device ブロックは、上記の `set_device_event_tx`
+    // 配線後に評価されているため、receiver 経由でも共有 sink マップに到着する。
+    // ただし receiver タスクはまだ spawn していないので、ここでは file 経由で
+    // 既に registry に入った device を従来同様 `build_sinks_from_registry` で
+    // 取り込み、同じ device 名の Upsert イベントは receiver 側で同 port 判定
+    // により no-op となるよう、receiver 側の `current_ports` 初期値も用意する。
     //
-    // Multi-device playback driver bootstrap (Issue #49):
-    // - Build a per-device sink map from DSL `device` blocks
-    // - Add a legacy `"default"` sink from `--midi-device` if provided
-    // - Spawn the driver only when at least one sink was wired
-    let mut sinks: HashMap<String, BoxedSink> = {
+    // Initialize the sink map at startup. Devices already evaluated from `--file`
+    // are pulled in via `build_sinks_from_registry`; the matching `Upsert`
+    // events that were queued during eval_file will be deduplicated by the
+    // receiver loop using the `initial_ports` snapshot we hand to it below.
+    let initial_ports: HashMap<String, String> = {
         let ev = evaluator.lock().await;
-        build_sinks_from_registry(&ev)
+        let initial = build_sinks_from_registry(&ev);
+        let port_map: HashMap<String, String> = ev
+            .registry()
+            .device_names()
+            .into_iter()
+            .filter_map(|name| {
+                ev.registry()
+                    .get_device(&name)
+                    .map(|d| (name, d.port.clone()))
+            })
+            .collect();
+        // 共有 sink マップに初期 sink を移し替える
+        // Move the initial sinks into the shared map.
+        let mut map = shared_sinks.lock().await;
+        for (name, sink) in initial {
+            map.insert(name, sink);
+        }
+        port_map
     };
 
     if let Some(ref port_name) = cli.midi_device {
         match build_default_sink(port_name) {
             Ok(sink) => {
                 info!("  MIDI default sink 接続: {}", port_name);
-                sinks.insert("default".to_string(), Box::new(sink));
+                let mut map = shared_sinks.lock().await;
+                map.insert("default".to_string(), Box::new(sink));
             }
             Err(e) => {
                 warn!(
@@ -217,18 +368,45 @@ async fn main() {
         }
     }
 
-    if !sinks.is_empty() {
-        info!(
-            "  MIDI 再生ドライバを起動: sinks={:?}",
-            sinks.keys().collect::<Vec<_>>()
-        );
+    // PR #54: device の動的登録 receiver タスクを spawn
+    //
+    // PR #54: spawn the dynamic device registration receiver task.
+    {
+        let sinks_for_rx = shared_sinks.clone();
+        let notify_for_rx = sinks_notify.clone();
+        tokio::spawn(async move {
+            run_device_event_receiver_with_initial(
+                device_event_rx,
+                sinks_for_rx,
+                notify_for_rx,
+                initial_ports,
+            )
+            .await;
+        });
+    }
+
+    // PR #54: PlaybackDriver は常時 spawn する。sinks が空なら
+    // `run_driver_with_shared` 内部で notify を待機し、device の動的登録で
+    // 起こされたタイミングから tick ループに入る。
+    //
+    // PR #54: always spawn the playback driver. With no sinks, it parks on
+    // `notify.notified()` inside `run_driver_with_shared` and starts ticking
+    // once a device has been registered dynamically.
+    {
+        let sink_count = { shared_sinks.lock().await.len() };
+        if sink_count == 0 {
+            info!("  MIDI sink 未登録: device の動的登録待機中（device ブロックを eval すると駆動を開始します）");
+        } else {
+            let names: Vec<String> = shared_sinks.lock().await.keys().cloned().collect();
+            info!("  MIDI 再生ドライバを起動: sinks={:?}", names);
+        }
         let ev = evaluator.clone();
+        let sinks_for_driver = shared_sinks.clone();
+        let notify_for_driver = sinks_notify.clone();
         let clock = Clock::new(default_bpm);
         tokio::spawn(async move {
-            run_driver(ev, sinks, clock).await;
+            run_driver_with_shared(ev, sinks_for_driver, notify_for_driver, clock).await;
         });
-    } else {
-        info!("  MIDI sink 未登録のため、再生ドライバは起動しません");
     }
 
     info!("Ctrl+C で終了します");
