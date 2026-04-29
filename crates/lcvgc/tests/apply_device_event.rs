@@ -18,7 +18,7 @@ use std::time::Duration;
 use tokio::sync::{Mutex, Notify};
 use tokio::time::timeout;
 
-use lcvgc::apply_device_event;
+use lcvgc::{apply_device_event, DeviceApplyOutcome};
 use lcvgc_core::engine::device_event::DeviceEvent;
 use lcvgc_core::engine::midi_sink::SharedMockSink;
 use lcvgc_core::engine::playback::{BoxedSink, SharedSinks, SinksNotify};
@@ -337,4 +337,97 @@ async fn apply_emits_no_notify_on_build_failure() {
     // 旧 sink が無いのでマップは空のまま / map stays empty (no prior sink)
     let map = sinks.lock().await;
     assert!(map.is_empty(), "旧 sink 無し + build 失敗なら sinks は空");
+}
+
+/// 5. build 成功時、戻り値が `DeviceApplyOutcome::Connected { name }` であることを検証する。
+///
+/// Verifies that on a successful build the function returns
+/// `DeviceApplyOutcome::Connected { name }` carrying the device name verbatim
+/// (PR #55). The receiver loop relies on this variant to clear any prior
+/// connection error recorded against that device on the Evaluator.
+#[tokio::test]
+async fn apply_returns_connected_outcome_on_success() {
+    let sinks = empty_shared_sinks();
+    let notify = new_notify();
+    let new_handle = SharedMockSink::new();
+    let (builder, _build_log) = make_success_builder(new_handle.clone());
+
+    let outcome = apply_device_event(
+        DeviceEvent::Upsert {
+            name: "synth_a".to_string(),
+            port: "port_ok".to_string(),
+        },
+        &sinks,
+        &notify,
+        &builder,
+    )
+    .await;
+
+    // 戻り値は Connected variant で、name には Upsert で渡した device 名が入る
+    // The outcome must be the `Connected` variant carrying the upserted name
+    match outcome {
+        DeviceApplyOutcome::Connected { name } => assert_eq!(name, "synth_a"),
+        other => panic!("expected Connected, got {other:?}"),
+    }
+}
+
+/// 6. build 失敗時、戻り値が `DeviceApplyOutcome::Failed { name, port, message }`
+///    で、`message` に builder の `Display` 出力が含まれることを検証する。
+///
+/// Verifies that on builder failure the function returns
+/// `DeviceApplyOutcome::Failed { name, port, message }` with the builder's
+/// `Display` output forwarded into `message`, so the receiver loop can call
+/// `Evaluator::record_device_connection_error(name, port, message)` directly.
+#[tokio::test]
+async fn apply_returns_failed_outcome_on_build_error() {
+    /// 専用エラー型: builder の `Display` 出力を outcome の `message` に
+    /// パススルーできることを確認するためのテスト用型。
+    /// Test-local error whose `Display` output is asserted against
+    /// `DeviceApplyOutcome::Failed::message`.
+    #[derive(Debug)]
+    struct BuildErr;
+    impl std::fmt::Display for BuildErr {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.write_str("build failed: connection refused")
+        }
+    }
+
+    let sinks = empty_shared_sinks();
+    let notify = new_notify();
+
+    // BuildErr を返す builder を局所定義（既存ヘルパは &'static str 用）
+    // Inline builder returning `BuildErr`; the existing helper is wired for
+    // `&'static str` errors so we roll a dedicated one here.
+    let builder = |_name: &str, _port: &str| -> Result<BoxedSink, BuildErr> { Err(BuildErr) };
+
+    let outcome = apply_device_event(
+        DeviceEvent::Upsert {
+            name: "synth_a".to_string(),
+            port: "port_x".to_string(),
+        },
+        &sinks,
+        &notify,
+        &builder,
+    )
+    .await;
+
+    // Failed variant で name / port が透過されており、message に builder の
+    // Display 出力（"connection refused"）が含まれている
+    // Failed variant carries name/port verbatim and message contains the
+    // builder's Display output ("connection refused").
+    match outcome {
+        DeviceApplyOutcome::Failed {
+            name,
+            port,
+            message,
+        } => {
+            assert_eq!(name, "synth_a");
+            assert_eq!(port, "port_x");
+            assert!(
+                message.contains("connection refused"),
+                "message='{message}'"
+            );
+        }
+        other => panic!("expected Failed, got {other:?}"),
+    }
 }
