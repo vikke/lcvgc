@@ -2,7 +2,7 @@
 //!
 //! DSLのBlockをレジストリ・クロック・ステートに振り分けて評価する。
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 use crate::ast::playback::PlayTarget;
@@ -117,6 +117,22 @@ pub enum SceneTransitionOutcome {
     SessionComplete,
 }
 
+/// device の MIDI ポート接続失敗を表す情報
+///
+/// LSP diagnostic で「device <name> の port "..." への接続に失敗した」旨を
+/// エディタに表示する用途で保持される。`port` は当該 device に最後に指定
+/// された port 文字列、`message` は基底ライブラリ (midir) が返したエラー文を
+/// そのまま格納する。
+///
+/// Connection failure record for a `device` MIDI port. Stored to surface a
+/// diagnostic in the editor showing the port string that failed and the
+/// underlying error message from the MIDI backend.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DeviceConnectionError {
+    pub port: String,
+    pub message: String,
+}
+
 /// evalコマンドディスパッチャ
 #[derive(Debug)]
 pub struct Evaluator {
@@ -160,6 +176,17 @@ pub struct Evaluator {
     /// matching `MidirSink` (PR #54). Eval still works normally when this
     /// is `None` (kept `Option` for backward compatibility).
     device_event_tx: Option<DeviceEventTx>,
+    /// device 名 → 直近の接続失敗情報のマップ
+    ///
+    /// main.rs (binary 側) が `MidirSink` 構築失敗時に `record_device_connection_error`
+    /// を呼び、成功時に `clear_device_connection_error` を呼ぶ。LSP diagnostic 計算は
+    /// このマップから errors を読み出す。
+    ///
+    /// Map of device name -> latest connection failure. The binary calls
+    /// `record_device_connection_error` on `MidirSink` build failure and
+    /// `clear_device_connection_error` on success. LSP diagnostic generation
+    /// reads this map.
+    device_connection_errors: HashMap<String, DeviceConnectionError>,
 }
 
 impl Evaluator {
@@ -174,6 +201,7 @@ impl Evaluator {
             pending_all_notes_off: Vec::new(),
             pending_transport: Vec::new(),
             device_event_tx: None,
+            device_connection_errors: HashMap::new(),
         }
     }
 
@@ -188,6 +216,37 @@ impl Evaluator {
     /// to the receiver. Skip this call to preserve the legacy behavior.
     pub fn set_device_event_tx(&mut self, tx: DeviceEventTx) {
         self.device_event_tx = Some(tx);
+    }
+
+    /// device の接続失敗を記録する
+    ///
+    /// `name` の既存エントリは上書きされる（最新の失敗情報のみ保持）。
+    ///
+    /// Records the latest connection failure for `name`, overwriting any prior
+    /// entry for the same device.
+    pub fn record_device_connection_error(&mut self, name: String, port: String, message: String) {
+        self.device_connection_errors
+            .insert(name, DeviceConnectionError { port, message });
+    }
+
+    /// device の接続失敗エントリを削除する（成功時に呼ぶ）
+    ///
+    /// 該当 device が存在しない場合は何もしない。
+    ///
+    /// Removes the connection-error entry for `name` (called on successful
+    /// connect). No-op if the device has no entry.
+    pub fn clear_device_connection_error(&mut self, name: &str) {
+        self.device_connection_errors.remove(name);
+    }
+
+    /// device 接続失敗マップへの不変参照
+    ///
+    /// LSP diagnostic 計算で device ブロックと突き合わせるために使う。
+    ///
+    /// Returns an immutable reference to the connection-error map. Used by LSP
+    /// diagnostic generation to cross-reference device blocks.
+    pub fn device_connection_errors(&self) -> &HashMap<String, DeviceConnectionError> {
+        &self.device_connection_errors
     }
 
     /// Stop/mute 評価で溜まった AllNotesOff 対象の `(device, channel)`
@@ -2995,5 +3054,46 @@ instrument bass {
             }
         );
         assert!(rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn device_connection_error_record_and_get() {
+        let mut ev = Evaluator::new(120.0);
+        assert!(ev.device_connection_errors().is_empty());
+
+        ev.record_device_connection_error("synth".into(), "port_a".into(), "not found".into());
+
+        let errs = ev.device_connection_errors();
+        assert_eq!(errs.len(), 1);
+        let entry = errs.get("synth").expect("synth recorded");
+        assert_eq!(entry.port, "port_a");
+        assert_eq!(entry.message, "not found");
+    }
+
+    #[test]
+    fn device_connection_error_overwrites_on_re_record() {
+        let mut ev = Evaluator::new(120.0);
+        ev.record_device_connection_error("synth".into(), "port_a".into(), "first".into());
+        ev.record_device_connection_error("synth".into(), "port_b".into(), "second".into());
+
+        let entry = ev.device_connection_errors().get("synth").unwrap();
+        assert_eq!(entry.port, "port_b");
+        assert_eq!(entry.message, "second");
+    }
+
+    #[test]
+    fn device_connection_error_clear_removes_entry() {
+        let mut ev = Evaluator::new(120.0);
+        ev.record_device_connection_error("synth".into(), "port_a".into(), "err".into());
+        ev.clear_device_connection_error("synth");
+        assert!(ev.device_connection_errors().get("synth").is_none());
+    }
+
+    #[test]
+    fn device_connection_error_clear_noop_for_missing_device() {
+        let mut ev = Evaluator::new(120.0);
+        // 存在しない device を clear しても panic せず空のまま
+        ev.clear_device_connection_error("ghost");
+        assert!(ev.device_connection_errors().is_empty());
     }
 }
