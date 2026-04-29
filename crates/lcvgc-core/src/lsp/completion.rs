@@ -202,6 +202,35 @@ impl CompletionProvider {
         ]
     }
 
+    /// 実 MIDI ポート名のスライスから補完候補を生成する
+    ///
+    /// `device foo { port |` 位置で `lcvgc` プロセスが認識している MIDI 出力
+    /// ポート一覧を補完候補に出すための純粋関数。`ports` には呼び出し側で
+    /// `lcvgc_core::midi::port::list_ports()` の結果を渡す（環境依存の I/O は
+    /// 呼び出し側で吸収）。
+    ///
+    /// Pure helper that turns a slice of MIDI port names into completion items
+    /// for the `device foo { port |` position. Callers are expected to pass in
+    /// the result of `lcvgc_core::midi::port::list_ports()` so this function can
+    /// stay free of environment-dependent I/O.
+    ///
+    /// # Arguments
+    /// * `ports` - 実 MIDI 出力ポート名のスライス
+    ///
+    /// # Returns
+    /// 各ポート名を `CompletionKind::Identifier` として包んだ補完候補リスト。
+    /// 入力が空なら空 vec を返す。
+    pub fn midi_port_completions(ports: &[String]) -> Vec<CompletionItem> {
+        ports
+            .iter()
+            .map(|name| CompletionItem {
+                label: name.clone(),
+                detail: Some("MIDI port".to_string()),
+                kind: CompletionKind::Identifier,
+            })
+            .collect()
+    }
+
     /// instrument ブロック内で有効なキーワード補完候補を返す
     ///
     /// # Returns
@@ -562,5 +591,49 @@ mod tests {
         use std::path::Path;
         let items = CompletionProvider::include_path_completions(Path::new("/nonexistent/path"));
         assert!(items.is_empty());
+    }
+
+    /// PR #55: 入力が空なら midi_port_completions は空を返す
+    /// PR #55: midi_port_completions returns empty when input is empty
+    #[test]
+    fn midi_port_completions_empty_input_returns_empty() {
+        let items = CompletionProvider::midi_port_completions(&[]);
+        assert!(items.is_empty());
+    }
+
+    /// PR #55: 各 port 名を Identifier kind の補完候補にマップする
+    /// PR #55: maps each port name to an Identifier-kind completion item
+    #[test]
+    fn midi_port_completions_maps_each_port_to_identifier_item() {
+        let ports = vec![
+            "Volca FM".to_string(),
+            "Volca Bass".to_string(),
+            "IAC Driver Bus 1".to_string(),
+        ];
+        let items = CompletionProvider::midi_port_completions(&ports);
+        assert_eq!(items.len(), 3);
+
+        let labels: Vec<&str> = items.iter().map(|i| i.label.as_str()).collect();
+        assert!(labels.contains(&"Volca FM"));
+        assert!(labels.contains(&"Volca Bass"));
+        assert!(labels.contains(&"IAC Driver Bus 1"));
+
+        // すべて Identifier kind で detail = "MIDI port"
+        // All items should be Identifier kind with detail = "MIDI port"
+        for item in &items {
+            assert_eq!(item.kind, CompletionKind::Identifier);
+            assert_eq!(item.detail.as_deref(), Some("MIDI port"));
+        }
+    }
+
+    /// PR #55: 入力スライスの順序を保ったまま補完候補を返す
+    /// PR #55: preserves the order of the input slice in the completion items
+    #[test]
+    fn midi_port_completions_preserves_input_order() {
+        let ports = vec!["a".to_string(), "b".to_string(), "c".to_string()];
+        let items = CompletionProvider::midi_port_completions(&ports);
+        assert_eq!(items[0].label, "a");
+        assert_eq!(items[1].label, "b");
+        assert_eq!(items[2].label, "c");
     }
 }
