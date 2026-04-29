@@ -258,12 +258,13 @@ async fn main() {
         }
     }
 
-    // PR #54: device の動的登録 receiver タスクを spawn
+    // PR #54/#55: device の動的登録 receiver タスクを spawn
     //
-    // PR #54: spawn the dynamic device registration receiver task.
+    // PR #54/#55: spawn the dynamic device registration receiver task.
     {
         let sinks_for_rx = shared_sinks.clone();
         let notify_for_rx = sinks_notify.clone();
+        let evaluator_for_rx = evaluator.clone();
         tokio::spawn(async move {
             run_device_event_receiver_with_initial(
                 device_event_rx,
@@ -271,6 +272,7 @@ async fn main() {
                 notify_for_rx,
                 initial_ports,
                 build_midir_sink,
+                evaluator_for_rx,
             )
             .await;
         });
