@@ -179,7 +179,8 @@ async fn apply_to_existing_sink_sends_all_notes_off_to_old_sink() {
         match msg {
             MidiMessage::ControlChange { channel, cc, value } => {
                 assert_eq!(
-                    *channel as usize, idx,
+                    channel.as_zero_based() as usize,
+                    idx,
                     "channel は 0..15 を順に網羅するはず"
                 );
                 assert_eq!(*cc, 123, "AllNotesOff の CC 番号は 123");
@@ -210,7 +211,7 @@ async fn apply_to_existing_sink_sends_all_notes_off_to_old_sink() {
     // Confirm the sink stored in the map is the new handle by sending a probe
     // message through the boxed sink and observing it through `new_handle`.
     let probe = MidiMessage::NoteOn {
-        channel: 7,
+        channel: lcvgc_core::midi::channel::MidiChannel::from_zero_based(7).unwrap(),
         note: 42,
         velocity: 99,
     };

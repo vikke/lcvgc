@@ -10,6 +10,7 @@ use crate::ast::instrument::InstrumentDef;
 use crate::ast::kit::KitDef;
 use crate::engine::error::EngineError;
 use crate::engine::scope::ScopeChain;
+use crate::midi::channel::MidiChannel;
 
 /// 変数参照を u8 値に解決するヘルパー
 /// Helper to resolve a variable reference to a u8 value
@@ -27,6 +28,22 @@ fn resolve_u8(scope: &ScopeChain, var_name: &str, field: &str) -> Result<u8, Eng
             value: value.to_string(),
             expected_type: "u8".to_string(),
         })
+}
+
+/// 変数参照を `MidiChannel` (1-based DSL 値として解釈) に解決するヘルパー
+/// Helper to resolve a variable reference into a `MidiChannel`,
+/// interpreting the value as 1-based (matching DSL notation).
+fn resolve_channel(
+    scope: &ScopeChain,
+    var_name: &str,
+    field: &str,
+) -> Result<MidiChannel, EngineError> {
+    let raw = resolve_u8(scope, var_name, field)?;
+    MidiChannel::from_one_based(raw).map_err(|_| EngineError::InvalidVariableValue {
+        name: var_name.to_string(),
+        value: raw.to_string(),
+        expected_type: "MIDI channel (1-16)".to_string(),
+    })
 }
 
 /// InstrumentDef の未解決変数参照を解決する（§6 変数展開）
@@ -52,10 +69,11 @@ pub fn resolve_instrument(inst: &mut InstrumentDef, scope: &ScopeChain) -> Resul
         inst.device = value.to_string();
     }
 
-    // channel の変数参照を解決（u8 に変換）
-    // Resolve channel variable reference (convert to u8)
+    // channel の変数参照を解決（DSL の値と同じく 1-based として MidiChannel に変換）
+    // Resolve channel variable reference; the value is interpreted as 1-based
+    // (same convention as DSL) and converted into a `MidiChannel`.
     if let Some(ref var_name) = inst.unresolved.channel {
-        inst.channel = resolve_u8(scope, var_name, "channel")?;
+        inst.channel = resolve_channel(scope, var_name, "channel")?;
     }
 
     // gate_normal の変数参照を解決
@@ -95,10 +113,10 @@ pub fn resolve_kit(kit: &mut KitDef, scope: &ScopeChain) -> Result<(), EngineErr
     // kit 内の各インストゥルメントの未解決参照を解決
     // Resolve unresolved references in each kit instrument
     for inst in &mut kit.instruments {
-        // channel の変数参照を解決
-        // Resolve channel variable reference
+        // channel の変数参照を解決（DSL の値と同じく 1-based として MidiChannel に変換）
+        // Resolve channel variable reference; interpreted as 1-based.
         if let Some(ref var_name) = inst.unresolved.channel {
-            inst.channel = resolve_u8(scope, var_name, "channel")?;
+            inst.channel = resolve_channel(scope, var_name, "channel")?;
         }
 
         // gate_normal の変数参照を解決
@@ -132,7 +150,7 @@ mod tests {
         let mut inst = InstrumentDef {
             name: "bass".into(),
             device: String::new(),
-            channel: 1,
+            channel: MidiChannel::from_one_based(1).unwrap(),
             note: None,
             gate_normal: None,
             gate_staccato: None,
@@ -156,7 +174,7 @@ mod tests {
         let mut inst = InstrumentDef {
             name: "bass".into(),
             device: "mb".into(),
-            channel: 0,
+            channel: MidiChannel::from_zero_based(0).unwrap(),
             note: None,
             gate_normal: None,
             gate_staccato: None,
@@ -169,7 +187,7 @@ mod tests {
         };
 
         resolve_instrument(&mut inst, &scope).unwrap();
-        assert_eq!(inst.channel, 3);
+        assert_eq!(inst.channel.as_one_based(), 3);
     }
 
     #[test]
@@ -181,7 +199,7 @@ mod tests {
         let mut inst = InstrumentDef {
             name: "bass".into(),
             device: "mb".into(),
-            channel: 1,
+            channel: MidiChannel::from_one_based(1).unwrap(),
             note: None,
             gate_normal: Some(0),
             gate_staccato: Some(0),
@@ -209,7 +227,7 @@ mod tests {
         let mut inst = InstrumentDef {
             name: "bass".into(),
             device: "mb".into(),
-            channel: 1,
+            channel: MidiChannel::from_one_based(1).unwrap(),
             note: None,
             gate_normal: None,
             gate_staccato: None,
@@ -233,7 +251,7 @@ mod tests {
         let mut inst = InstrumentDef {
             name: "bass".into(),
             device: String::new(),
-            channel: 0,
+            channel: MidiChannel::from_zero_based(0).unwrap(),
             note: None,
             gate_normal: None,
             gate_staccato: None,
@@ -264,7 +282,7 @@ mod tests {
         let mut inst = InstrumentDef {
             name: "bass".into(),
             device: "mb".into(),
-            channel: 0,
+            channel: MidiChannel::from_zero_based(0).unwrap(),
             note: None,
             gate_normal: None,
             gate_staccato: None,
@@ -302,7 +320,7 @@ mod tests {
             device: "td3".into(),
             instruments: vec![KitInstrument {
                 name: "bd".into(),
-                channel: 0,
+                channel: MidiChannel::from_zero_based(0).unwrap(),
                 note: KitInstrumentNote {
                     name: NoteName::C,
                     octave: 2,
@@ -317,7 +335,7 @@ mod tests {
         };
 
         resolve_kit(&mut kit, &scope).unwrap();
-        assert_eq!(kit.instruments[0].channel, 10);
+        assert_eq!(kit.instruments[0].channel.as_one_based(), 10);
     }
 
     #[test]
@@ -327,7 +345,7 @@ mod tests {
         let mut inst = InstrumentDef {
             name: "bass".into(),
             device: "mb".into(),
-            channel: 1,
+            channel: MidiChannel::from_one_based(1).unwrap(),
             note: None,
             gate_normal: Some(100),
             gate_staccato: None,
@@ -338,7 +356,7 @@ mod tests {
 
         resolve_instrument(&mut inst, &scope).unwrap();
         assert_eq!(inst.device, "mb");
-        assert_eq!(inst.channel, 1);
+        assert_eq!(inst.channel.as_one_based(), 1);
         assert_eq!(inst.gate_normal, Some(100));
     }
 }

@@ -43,7 +43,9 @@ impl HoverProvider {
             Block::Instrument(i) => {
                 let mut s = format!(
                     "**instrument** `{}`\n- device: `{}`\n- channel: `{}`",
-                    i.name, i.device, i.channel
+                    i.name,
+                    i.device,
+                    i.channel.as_one_based()
                 );
                 if let Some(gn) = i.gate_normal {
                     s += &format!("\n- gate_normal: `{}%`", gn);
@@ -125,6 +127,7 @@ mod tests {
     use crate::ast::session::SessionDef;
     use crate::ast::tempo::Tempo;
     use crate::ast::var::VarDef;
+    use crate::midi::channel::MidiChannel;
     use crate::parser::clip_options::ClipOptions;
 
     fn sb(block: Block) -> SpannedBlock {
@@ -164,7 +167,7 @@ mod tests {
         let result = HoverProvider::hover_content(&sb(Block::Instrument(InstrumentDef {
             name: "piano".into(),
             device: "synth".into(),
-            channel: 1,
+            channel: MidiChannel::from_one_based(1).unwrap(),
             note: None,
             gate_normal: None,
             gate_staccato: None,
@@ -182,7 +185,7 @@ mod tests {
         let result = HoverProvider::hover_content(&sb(Block::Instrument(InstrumentDef {
             name: "piano".into(),
             device: "synth".into(),
-            channel: 1,
+            channel: MidiChannel::from_one_based(1).unwrap(),
             note: None,
             gate_normal: Some(80),
             gate_staccato: Some(40),
@@ -207,7 +210,7 @@ mod tests {
             device: "drum_machine".into(),
             instruments: vec![KitInstrument {
                 name: "kick".into(),
-                channel: 10,
+                channel: MidiChannel::from_one_based(10).unwrap(),
                 note: KitInstrumentNote {
                     name: NoteName::C,
                     octave: 2,

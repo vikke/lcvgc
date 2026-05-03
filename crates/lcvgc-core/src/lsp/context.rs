@@ -516,7 +516,10 @@ pub fn build_completion_items(ctx: &CompletionContext, registry: &Registry) -> V
                 for inst in &kit.instruments {
                     items.push(CompletionItem {
                         label: inst.name.clone(),
-                        detail: Some(format!("kit instrument (ch{})", inst.channel)),
+                        detail: Some(format!(
+                            "kit instrument (ch{})",
+                            inst.channel.as_one_based()
+                        )),
                         kind: CompletionKind::Identifier,
                     });
                 }

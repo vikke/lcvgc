@@ -62,6 +62,7 @@ mod tests {
     use crate::ast::scene::SceneDef;
     use crate::ast::tempo::Tempo;
     use crate::ast::var::VarDef;
+    use crate::midi::channel::MidiChannel;
     use crate::parser::clip_options::ClipOptions;
 
     fn device_block(name: &str, span: Span, name_span: Option<Span>) -> SpannedBlock {
@@ -96,7 +97,7 @@ mod tests {
             block: Block::Instrument(InstrumentDef {
                 name: name.into(),
                 device: "dev".into(),
-                channel: 1,
+                channel: MidiChannel::from_one_based(1).unwrap(),
                 note: None,
                 gate_normal: None,
                 gate_staccato: None,

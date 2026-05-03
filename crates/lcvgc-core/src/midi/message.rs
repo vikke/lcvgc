@@ -1,13 +1,15 @@
+use crate::midi::channel::MidiChannel;
+
 /// MIDIメッセージ
 /// MIDI message representation
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MidiMessage {
     /// ノートオン: 発音開始
     /// Note On: start sounding a note
     NoteOn {
-        /// MIDIチャンネル (0-15)
-        /// MIDI channel (0-15)
-        channel: u8,
+        /// MIDIチャンネル
+        /// MIDI channel
+        channel: MidiChannel,
         /// ノート番号 (0-127)
         /// Note number (0-127)
         note: u8,
@@ -18,9 +20,9 @@ pub enum MidiMessage {
     /// ノートオフ: 発音停止
     /// Note Off: stop sounding a note
     NoteOff {
-        /// MIDIチャンネル (0-15)
-        /// MIDI channel (0-15)
-        channel: u8,
+        /// MIDIチャンネル
+        /// MIDI channel
+        channel: MidiChannel,
         /// ノート番号 (0-127)
         /// Note number (0-127)
         note: u8,
@@ -31,9 +33,9 @@ pub enum MidiMessage {
     /// コントロールチェンジ
     /// Control Change
     ControlChange {
-        /// MIDIチャンネル (0-15)
-        /// MIDI channel (0-15)
-        channel: u8,
+        /// MIDIチャンネル
+        /// MIDI channel
+        channel: MidiChannel,
         /// CC番号 (0-127)
         /// CC number (0-127)
         cc: u8,
@@ -44,9 +46,9 @@ pub enum MidiMessage {
     /// プログラムチェンジ: 音色変更
     /// Program Change: change instrument
     ProgramChange {
-        /// MIDIチャンネル (0-15)
-        /// MIDI channel (0-15)
-        channel: u8,
+        /// MIDIチャンネル
+        /// MIDI channel
+        channel: MidiChannel,
         /// プログラム番号 (0-127)
         /// Program number (0-127)
         program: u8,
@@ -75,20 +77,20 @@ impl MidiMessage {
                 note,
                 velocity,
             } => {
-                vec![0x90 | channel, *note, *velocity]
+                vec![0x90 | channel.as_zero_based(), *note, *velocity]
             }
             MidiMessage::NoteOff {
                 channel,
                 note,
                 velocity,
             } => {
-                vec![0x80 | channel, *note, *velocity]
+                vec![0x80 | channel.as_zero_based(), *note, *velocity]
             }
             MidiMessage::ControlChange { channel, cc, value } => {
-                vec![0xB0 | channel, *cc, *value]
+                vec![0xB0 | channel.as_zero_based(), *cc, *value]
             }
             MidiMessage::ProgramChange { channel, program } => {
-                vec![0xC0 | channel, *program]
+                vec![0xC0 | channel.as_zero_based(), *program]
             }
             MidiMessage::Start => vec![0xFA],
             MidiMessage::Stop => vec![0xFC],
@@ -101,10 +103,14 @@ impl MidiMessage {
 mod tests {
     use super::*;
 
+    fn ch0() -> MidiChannel {
+        MidiChannel::from_zero_based(0).unwrap()
+    }
+
     #[test]
     fn note_on_ch0() {
         let msg = MidiMessage::NoteOn {
-            channel: 0,
+            channel: ch0(),
             note: 60,
             velocity: 100,
         };
@@ -114,7 +120,7 @@ mod tests {
     #[test]
     fn note_off_ch0() {
         let msg = MidiMessage::NoteOff {
-            channel: 0,
+            channel: ch0(),
             note: 60,
             velocity: 0,
         };
@@ -124,7 +130,7 @@ mod tests {
     #[test]
     fn note_on_drum_ch9() {
         let msg = MidiMessage::NoteOn {
-            channel: 9,
+            channel: MidiChannel::from_zero_based(9).unwrap(),
             note: 36,
             velocity: 127,
         };
@@ -134,7 +140,7 @@ mod tests {
     #[test]
     fn control_change() {
         let msg = MidiMessage::ControlChange {
-            channel: 0,
+            channel: ch0(),
             cc: 74,
             value: 64,
         };
@@ -144,7 +150,7 @@ mod tests {
     #[test]
     fn program_change() {
         let msg = MidiMessage::ProgramChange {
-            channel: 0,
+            channel: ch0(),
             program: 0,
         };
         assert_eq!(msg.to_bytes(), vec![0xC0, 0]);
@@ -153,11 +159,37 @@ mod tests {
     #[test]
     fn channel_15_boundary() {
         let msg = MidiMessage::NoteOn {
-            channel: 15,
+            channel: MidiChannel::from_zero_based(15).unwrap(),
             note: 60,
             velocity: 100,
         };
         assert_eq!(msg.to_bytes(), vec![0x9F, 60, 100]);
+    }
+
+    /// 「DSL の `channel 1` (1-based) → MIDI バイト列の status バイトは
+    /// `0x90`」という end-to-end の保証。本 PR のバグ修正の核となるテスト。
+    /// End-to-end guarantee: DSL `channel 1` (1-based) → MIDI status byte
+    /// `0x90`. The core test of the bug fix in this PR.
+    #[test]
+    fn one_based_channel_1_yields_status_0x90() {
+        let msg = MidiMessage::NoteOn {
+            channel: MidiChannel::from_one_based(1).unwrap(),
+            note: 60,
+            velocity: 100,
+        };
+        assert_eq!(msg.to_bytes(), vec![0x90, 60, 100]);
+    }
+
+    /// DSL の `channel 10` (GM ドラム) は status バイト `0x99` を生む
+    /// DSL `channel 10` (GM drum) yields status byte `0x99`
+    #[test]
+    fn one_based_channel_10_yields_status_0x99() {
+        let msg = MidiMessage::NoteOn {
+            channel: MidiChannel::from_one_based(10).unwrap(),
+            note: 36,
+            velocity: 127,
+        };
+        assert_eq!(msg.to_bytes(), vec![0x99, 36, 127]);
     }
 
     #[test]

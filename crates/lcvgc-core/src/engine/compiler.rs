@@ -5,6 +5,7 @@ use crate::ast::clip_note::NoteEvent;
 use crate::engine::clock::Clock;
 use crate::engine::error::EngineError;
 use crate::engine::registry::Registry;
+use crate::midi::channel::MidiChannel;
 use crate::midi::chord::chord_notes;
 use crate::midi::message::MidiMessage;
 use crate::midi::note::note_number;
@@ -184,7 +185,7 @@ fn compile_pitched_line(
 fn compile_elements(
     elements: &[PitchedElement],
     clock: &Clock,
-    channel: u8,
+    channel: MidiChannel,
     device: &str,
     gate_normal: u8,
     gate_staccato: u8,
@@ -604,7 +605,7 @@ mod tests {
         registry.register_block(crate::ast::Block::Instrument(InstrumentDef {
             name: "bass".to_string(),
             device: "dev".to_string(),
-            channel: 1,
+            channel: MidiChannel::from_one_based(1).unwrap(),
             note: None,
             gate_normal: Some(80),
             gate_staccato: Some(40),
@@ -663,24 +664,26 @@ mod tests {
         let compiled = compile_clip(&clip, &clock, &registry).unwrap();
         assert_eq!(compiled.events.len(), 2);
         assert_eq!(compiled.events[0].tick, 0);
-        assert!(matches!(
-            compiled.events[0].message,
-            MidiMessage::NoteOn {
-                channel: 1,
-                note: 60,
-                velocity: 100
-            }
-        ));
+        if let MidiMessage::NoteOn {
+            channel,
+            note,
+            velocity,
+        } = compiled.events[0].message
+        {
+            assert_eq!(channel, MidiChannel::from_zero_based(0).unwrap());
+            assert_eq!(note, 60);
+            assert_eq!(velocity, 100);
+        } else {
+            panic!("expected NoteOn");
+        }
         // gate_normal=80%, 480ticks * 80% = 384ticks
         assert_eq!(compiled.events[1].tick, 384);
-        assert!(matches!(
-            compiled.events[1].message,
-            MidiMessage::NoteOff {
-                channel: 1,
-                note: 60,
-                ..
-            }
-        ));
+        if let MidiMessage::NoteOff { channel, note, .. } = compiled.events[1].message {
+            assert_eq!(channel, MidiChannel::from_zero_based(0).unwrap());
+            assert_eq!(note, 60);
+        } else {
+            panic!("expected NoteOff");
+        }
     }
 
     #[test]
@@ -899,7 +902,7 @@ mod tests {
             device: "dev".to_string(),
             instruments: vec![KitInstrument {
                 name: "bd".to_string(),
-                channel: 10,
+                channel: MidiChannel::from_one_based(10).unwrap(),
                 note: KitInstrumentNote {
                     name: NoteName::C,
                     octave: 2,
@@ -941,14 +944,18 @@ mod tests {
 
         let compiled = compile_clip(&clip, &clock, &registry).unwrap();
         assert_eq!(compiled.events.len(), 4);
-        assert!(matches!(
-            compiled.events[0].message,
-            MidiMessage::NoteOn {
-                channel: 10,
-                note: 36,
-                velocity: 100
-            }
-        ));
+        if let MidiMessage::NoteOn {
+            channel,
+            note,
+            velocity,
+        } = compiled.events[0].message
+        {
+            assert_eq!(channel, MidiChannel::from_zero_based(9).unwrap());
+            assert_eq!(note, 36);
+            assert_eq!(velocity, 100);
+        } else {
+            panic!("expected NoteOn");
+        }
         // 2nd hit at step 4, 16th = 120 ticks → tick 480
         let second_on = compiled
             .events
@@ -965,7 +972,7 @@ mod tests {
             device: "dev".to_string(),
             instruments: vec![KitInstrument {
                 name: "sn".to_string(),
-                channel: 10,
+                channel: MidiChannel::from_one_based(10).unwrap(),
                 note: KitInstrumentNote {
                     name: NoteName::D,
                     octave: 2,
@@ -1010,7 +1017,7 @@ mod tests {
         registry.register_block(crate::ast::Block::Instrument(InstrumentDef {
             name: "pad".to_string(),
             device: "dev".to_string(),
-            channel: 3,
+            channel: MidiChannel::from_one_based(3).unwrap(),
             note: None,
             gate_normal: Some(100),
             gate_staccato: Some(60),
@@ -1620,7 +1627,7 @@ mod tests {
         registry.register_block(crate::ast::Block::Instrument(InstrumentDef {
             name: "pad".to_string(),
             device: "dev".to_string(),
-            channel: 3,
+            channel: MidiChannel::from_one_based(3).unwrap(),
             note: None,
             gate_normal: Some(100),
             gate_staccato: Some(60),
@@ -1662,7 +1669,7 @@ mod tests {
         registry.register_block(crate::ast::Block::Instrument(InstrumentDef {
             name: "bass".to_string(),
             device: "dev".to_string(),
-            channel: 1,
+            channel: MidiChannel::from_one_based(1).unwrap(),
             note: None,
             gate_normal: Some(80),
             gate_staccato: Some(40),
@@ -1710,23 +1717,21 @@ mod tests {
         assert_eq!(cc_events.len(), 4);
 
         // 最初のCC: tick=0, cc=74, value=0
-        assert!(matches!(
-            cc_events[0].message,
-            MidiMessage::ControlChange {
-                channel: 1,
-                cc: 74,
-                value: 0
-            }
-        ));
+        if let MidiMessage::ControlChange { channel, cc, value } = cc_events[0].message {
+            assert_eq!(channel, MidiChannel::from_zero_based(0).unwrap());
+            assert_eq!(cc, 74);
+            assert_eq!(value, 0);
+        } else {
+            panic!("expected ControlChange");
+        }
         // 最後のCC: tick=360(16分音符*3=120*3), cc=74, value=127
-        assert!(matches!(
-            cc_events[3].message,
-            MidiMessage::ControlChange {
-                channel: 1,
-                cc: 74,
-                value: 127
-            }
-        ));
+        if let MidiMessage::ControlChange { channel, cc, value } = cc_events[3].message {
+            assert_eq!(channel, MidiChannel::from_zero_based(0).unwrap());
+            assert_eq!(cc, 74);
+            assert_eq!(value, 127);
+        } else {
+            panic!("expected ControlChange");
+        }
     }
 
     /// 時間指定方式のCCオートメーション（ポイント指定のみ）
@@ -1801,7 +1806,7 @@ mod tests {
             device: "dev".to_string(),
             instruments: vec![KitInstrument {
                 name: "bd".to_string(),
-                channel: 10,
+                channel: MidiChannel::from_one_based(10).unwrap(),
                 note: KitInstrumentNote {
                     name: NoteName::C,
                     octave: 2,
@@ -1841,14 +1846,13 @@ mod tests {
             .filter(|e| matches!(e.message, MidiMessage::ControlChange { .. }))
             .collect();
         assert_eq!(cc_events.len(), 2);
-        assert!(matches!(
-            cc_events[0].message,
-            MidiMessage::ControlChange {
-                channel: 1,
-                cc: 74,
-                value: 64
-            }
-        ));
+        if let MidiMessage::ControlChange { channel, cc, value } = cc_events[0].message {
+            assert_eq!(channel, MidiChannel::from_zero_based(0).unwrap());
+            assert_eq!(cc, 74);
+            assert_eq!(value, 64);
+        } else {
+            panic!("expected ControlChange");
+        }
     }
 
     // ---------------------------------------------------------------------
@@ -1886,7 +1890,7 @@ mod tests {
         registry.register_block(crate::ast::Block::Instrument(InstrumentDef {
             name: "lead".to_string(),
             device: "synth_a".to_string(),
-            channel: 1,
+            channel: MidiChannel::from_one_based(1).unwrap(),
             note: None,
             gate_normal: Some(80),
             gate_staccato: Some(40),
@@ -1897,7 +1901,7 @@ mod tests {
         registry.register_block(crate::ast::Block::Instrument(InstrumentDef {
             name: "pad".to_string(),
             device: "synth_b".to_string(),
-            channel: 2,
+            channel: MidiChannel::from_one_based(2).unwrap(),
             note: None,
             gate_normal: Some(80),
             gate_staccato: Some(40),
@@ -1924,26 +1928,26 @@ mod tests {
 
         let compiled = compile_clip(&clip, &clock, &registry).unwrap();
 
+        let lead_ch = MidiChannel::from_zero_based(0).unwrap();
+        let pad_ch = MidiChannel::from_zero_based(1).unwrap();
         let lead_events: Vec<_> = compiled
             .events
             .iter()
-            .filter(|e| {
-                matches!(
-                    e.message,
-                    MidiMessage::NoteOn { channel: 1, .. }
-                        | MidiMessage::NoteOff { channel: 1, .. }
-                )
+            .filter(|e| match e.message {
+                MidiMessage::NoteOn { channel, .. } | MidiMessage::NoteOff { channel, .. } => {
+                    channel == lead_ch
+                }
+                _ => false,
             })
             .collect();
         let pad_events: Vec<_> = compiled
             .events
             .iter()
-            .filter(|e| {
-                matches!(
-                    e.message,
-                    MidiMessage::NoteOn { channel: 2, .. }
-                        | MidiMessage::NoteOff { channel: 2, .. }
-                )
+            .filter(|e| match e.message {
+                MidiMessage::NoteOn { channel, .. } | MidiMessage::NoteOff { channel, .. } => {
+                    channel == pad_ch
+                }
+                _ => false,
             })
             .collect();
 
@@ -1969,7 +1973,7 @@ mod tests {
             device: "drum_device".to_string(),
             instruments: vec![KitInstrument {
                 name: "kick".to_string(),
-                channel: 10,
+                channel: MidiChannel::from_one_based(10).unwrap(),
                 note: KitInstrumentNote {
                     name: NoteName::C,
                     octave: 2,

@@ -193,7 +193,7 @@ impl PlaybackDriver {
                 let routed: Vec<(String, MidiMessage)> = scene
                     .events_at(self.current_tick)
                     .into_iter()
-                    .map(|e| (e.device.clone(), e.message.clone()))
+                    .map(|e| (e.device.clone(), e.message))
                     .collect();
                 scene.advance_all(1);
                 let scene_len = scene.scene_tick_length();
@@ -295,7 +295,7 @@ impl PlaybackDriver {
     /// evaluator to the matching sink, warning and skipping unknown devices.
     fn dispatch_all_notes_off(
         sinks: &mut MutexGuard<'_, HashMap<String, BoxedSink>>,
-        pairs: &[(String, u8)],
+        pairs: &[(String, crate::midi::channel::MidiChannel)],
     ) -> Result<(), EngineError> {
         for (device, ch) in pairs {
             let msg = MidiMessage::ControlChange {
@@ -307,7 +307,8 @@ impl PlaybackDriver {
                 Some(sink) => sink.send(&msg)?,
                 None => warn!(
                     "AllNotesOff の送出先 sink が未登録: device={} channel={}",
-                    device, ch
+                    device,
+                    ch.as_one_based()
                 ),
             }
         }
@@ -431,6 +432,7 @@ pub async fn run_driver_with_shared(
 mod tests {
     use super::*;
     use crate::engine::midi_sink::SharedMockSink;
+    use crate::midi::channel::MidiChannel;
 
     /// eval_source で DSL を評価する小ヘルパ
     async fn eval(evaluator: &Arc<Mutex<Evaluator>>, source: &str) {
@@ -439,10 +441,10 @@ mod tests {
     }
 
     /// device + instrument + clip + scene を一通り登録する DSL
-    /// channel 0 の clip `c1` を scene `s1` に登録、その後呼び出し側で `play s1` を発行する
+    /// DSL channel 1 (wire 0-based 0) の clip `c1` を scene `s1` に登録、その後呼び出し側で `play s1` を発行する
     fn setup_src() -> &'static str {
         "device dev { port test }\n\
-         instrument inst { device dev\n channel 0 }\n\
+         instrument inst { device dev\n channel 1 }\n\
          clip c1 [bars 1] { inst c }\n\
          scene s1 { c1 }\n"
     }
@@ -505,17 +507,20 @@ mod tests {
 
         driver.step_once().await.unwrap();
 
-        // CC#123 value=0 on channel 0 が送出されていること
+        // CC#123 value=0 on wire channel 0 (DSL channel 1) が送出されていること
         let sent = handle.snapshot();
+        let expected_ch = MidiChannel::from_zero_based(0).unwrap();
         let found_all_notes_off = sent.iter().any(|m| {
-            matches!(
-                m,
-                MidiMessage::ControlChange {
-                    channel: 0,
-                    cc: 123,
-                    value: 0,
-                }
-            )
+            if let MidiMessage::ControlChange {
+                channel,
+                cc: 123,
+                value: 0,
+            } = m
+            {
+                *channel == expected_ch
+            } else {
+                false
+            }
         });
         assert!(
             found_all_notes_off,
@@ -621,35 +626,40 @@ mod tests {
         let a_sent = handle_a.snapshot();
         let b_sent = handle_b.snapshot();
 
-        // synth_a には channel=1 の NoteOn のみ
+        // DSL channel 1 → wire 0 (lead/synth_a)、DSL channel 2 → wire 1 (pad/synth_b)
+        let lead_ch = MidiChannel::from_one_based(1).unwrap();
+        let pad_ch = MidiChannel::from_one_based(2).unwrap();
+        let on_with = |msgs: &[MidiMessage], ch: MidiChannel| {
+            msgs.iter().any(|m| {
+                if let MidiMessage::NoteOn { channel, .. } = m {
+                    *channel == ch
+                } else {
+                    false
+                }
+            })
+        };
+
+        // synth_a には lead の channel の NoteOn のみ
         assert!(
-            a_sent
-                .iter()
-                .any(|m| matches!(m, MidiMessage::NoteOn { channel: 1, .. })),
-            "synth_a に channel=1 の NoteOn が来ていない: {:?}",
+            on_with(&a_sent, lead_ch),
+            "synth_a に lead channel の NoteOn が来ていない: {:?}",
             a_sent
         );
         assert!(
-            !a_sent
-                .iter()
-                .any(|m| matches!(m, MidiMessage::NoteOn { channel: 2, .. })),
-            "synth_a に channel=2 の NoteOn が漏れた: {:?}",
+            !on_with(&a_sent, pad_ch),
+            "synth_a に pad channel の NoteOn が漏れた: {:?}",
             a_sent
         );
 
-        // synth_b には channel=2 の NoteOn のみ
+        // synth_b には pad の channel の NoteOn のみ
         assert!(
-            b_sent
-                .iter()
-                .any(|m| matches!(m, MidiMessage::NoteOn { channel: 2, .. })),
-            "synth_b に channel=2 の NoteOn が来ていない: {:?}",
+            on_with(&b_sent, pad_ch),
+            "synth_b に pad channel の NoteOn が来ていない: {:?}",
             b_sent
         );
         assert!(
-            !b_sent
-                .iter()
-                .any(|m| matches!(m, MidiMessage::NoteOn { channel: 1, .. })),
-            "synth_b に channel=1 の NoteOn が漏れた: {:?}",
+            !on_with(&b_sent, lead_ch),
+            "synth_b に lead channel の NoteOn が漏れた: {:?}",
             b_sent
         );
     }
@@ -689,7 +699,7 @@ mod tests {
         let a_sent = handle_a.snapshot();
         let b_sent = handle_b.snapshot();
 
-        let found_anof = |msgs: &[MidiMessage], ch: u8| {
+        let found_anof = |msgs: &[MidiMessage], ch: MidiChannel| {
             msgs.iter().any(|m| {
                 matches!(
                     m,
@@ -698,13 +708,15 @@ mod tests {
             })
         };
 
+        let lead_ch = MidiChannel::from_one_based(1).unwrap();
+        let pad_ch = MidiChannel::from_one_based(2).unwrap();
         assert!(
-            found_anof(&a_sent, 1),
-            "synth_a に AllNotesOff (ch=1) が来ていない: {:?}",
+            found_anof(&a_sent, lead_ch),
+            "synth_a に AllNotesOff (lead channel) が来ていない: {:?}",
             a_sent
         );
         assert!(
-            !found_anof(&b_sent, 2) && !found_anof(&b_sent, 1),
+            !found_anof(&b_sent, pad_ch) && !found_anof(&b_sent, lead_ch),
             "synth_b に AllNotesOff が漏れた: {:?}",
             b_sent
         );
@@ -851,7 +863,7 @@ mod tests {
         let evaluator = Arc::new(Mutex::new(Evaluator::new(120.0)));
         let src = "\
             device ghost { port pg }\n\
-            instrument inst { device ghost\n  channel 0\n}\n\
+            instrument inst { device ghost\n  channel 1\n}\n\
             clip c [bars 1] { inst c }\n\
             scene s { c }\n";
         eval(&evaluator, src).await;
