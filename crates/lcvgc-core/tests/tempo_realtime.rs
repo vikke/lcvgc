@@ -104,6 +104,11 @@ fn expected_us_for_n_noteon(bpm: f64, n: usize) -> u64 {
     (intervals * 60.0 * tick_us) as u64
 }
 
+#[cfg_attr(
+    windows,
+    ignore = "Windows のデフォルト timer resolution (15.6ms) では tick=520us が丸められて測定不能。\
+              lcvgc バイナリ側の win_timer::HighResolutionTimer で実機解決済み"
+)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn driver_interval_scales_with_tempo() {
     const TARGET: usize = 30;
