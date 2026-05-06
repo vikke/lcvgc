@@ -23,11 +23,11 @@
 
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use tokio::sync::{Mutex, MutexGuard, Notify};
 use tokio::time;
-use tracing::{error, info, warn};
+use tracing::{debug, error, info, warn};
 
 use crate::engine::clock::Clock;
 use crate::engine::error::EngineError;
@@ -433,7 +433,14 @@ pub async fn run_driver_with_shared(
     }
 
     loop {
+        // PR #57 の遅延調査用計測: interval.tick() の実 wait 時間と step_once の
+        // 所要時間を切り分けて debug ログに吐く。`RUST_LOG=lcvgc_core::engine::playback=debug`
+        // で有効化する。
+        // Diagnostic instrumentation: separately measures interval wait time
+        // and step_once duration.
+        let before_wait = Instant::now();
         interval.tick().await;
+        let waited_us = before_wait.elapsed().as_micros();
 
         // tempo が変わった場合、新しい tick duration で interval を作り直す。
         // 比較は u64 1 個なので毎 tick やってもコストは無視できる。
@@ -454,9 +461,15 @@ pub async fn run_driver_with_shared(
             // The first `tick()` after `interval::interval` fires immediately.
         }
 
+        let before_step = Instant::now();
         if let Err(e) = driver.step_once().await {
             error!("再生ドライバエラー: {}", e);
         }
+        let step_us = before_step.elapsed().as_micros();
+        debug!(
+            "tick: waited={}us step={}us (target_interval={}us)",
+            waited_us, step_us, last_dur_us
+        );
     }
 }
 
