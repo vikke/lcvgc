@@ -1,6 +1,6 @@
 [package]
 name = "lcvgc"
-version = "0.9.2"
+version = "0.9.3"
 edition = "2021"
 
 [lib]
@@ -20,7 +20,11 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 dirs = "5"
 
 [target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.59", features = ["Win32_Media"] }
+windows-sys = { version = "0.59", features = [
+  "Win32_Media",
+  "Win32_System_Threading",
+  "Win32_Foundation",
+] }
 
 [dev-dependencies]
 tokio = { version = "1", features = ["full"] }
