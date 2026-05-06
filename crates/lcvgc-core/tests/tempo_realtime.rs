@@ -34,7 +34,11 @@ fn setup_src() -> &'static str {
 
 /// 与えた BPM で driver を spawn し、SharedMockSink に NoteOn が target_count 件
 /// 届くまでの wallclock を返す。timeout_ms 経過時点で件数不足なら None。
-async fn measure_30_noteon(bpm: f64, target_count: usize, timeout_ms: u64) -> (Option<Duration>, usize) {
+async fn measure_30_noteon(
+    bpm: f64,
+    target_count: usize,
+    timeout_ms: u64,
+) -> (Option<Duration>, usize) {
     let evaluator = Arc::new(Mutex::new(Evaluator::new(bpm)));
     {
         let mut ev = evaluator.lock().await;

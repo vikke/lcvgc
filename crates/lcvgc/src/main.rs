@@ -1,4 +1,5 @@
 mod cli;
+mod win_timer;
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -144,6 +145,12 @@ async fn main() {
     let cli = Cli::parse();
 
     init_tracing(&cli.log_level);
+
+    // Windows のシステムタイマー粒度を 1ms に上げる。プロセス終了まで保持し、
+    // Drop で自動的に元に戻す。Windows 以外では no-op。
+    // Bring the Windows system timer to 1ms granularity for the entire
+    // process lifetime; restored on drop. No-op on other platforms.
+    let _hires_timer = win_timer::HighResolutionTimer::acquire();
 
     info!("lcvgc v{} 起動中...", env!("CARGO_PKG_VERSION"));
     info!("  ポート: {}", cli.port);
