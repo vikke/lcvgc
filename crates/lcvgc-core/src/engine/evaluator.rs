@@ -4,6 +4,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, RwLock};
 
 use crate::ast::playback::PlayTarget;
 use crate::ast::scene::SceneDef;
@@ -138,7 +139,15 @@ pub struct DeviceConnectionError {
 pub struct Evaluator {
     registry: Registry,
     state: StateManager,
-    clock: Clock,
+    /// テンポ・PPQ を保持する Clock。`PlaybackDriver` と共有するために
+    /// `Arc<RwLock<Clock>>` で保持する。`tempo` 評価は `write()` で更新し、
+    /// driver 側は毎 tick `read()` で `tick_duration_us` を読む。
+    ///
+    /// Clock holding tempo and PPQ. Stored as `Arc<RwLock<Clock>>` so that the
+    /// `PlaybackDriver` can observe tempo updates from `tempo` blocks. Writes
+    /// happen on `tempo` evaluation; the driver reads `tick_duration_us` on
+    /// every tick.
+    clock: Arc<RwLock<Clock>>,
     /// 変数スコープチェーン（§6.1 ブロックスコープ対応）
     /// Variable scope chain (§6.1 block scope support)
     scope: ScopeChain,
@@ -195,7 +204,7 @@ impl Evaluator {
         Self {
             registry: Registry::new(),
             state: StateManager::new(),
-            clock: Clock::new(bpm),
+            clock: Arc::new(RwLock::new(Clock::new(bpm))),
             scope: ScopeChain::new(),
             active_scene: None,
             pending_all_notes_off: Vec::new(),
@@ -368,12 +377,20 @@ impl Evaluator {
         let mut rng = rand::thread_rng();
         let instance = resolve_scene(scene_def, &mut rng);
         let mut player = ScenePlayer::new();
+        // compile_clip は `&Clock` を取るため、共有 Clock のスナップショットを
+        // ローカルに保持して借用する。compile 中の tempo 変更は反映しない
+        // (clip コンパイル単位での一貫性を優先)。
+        //
+        // Take a Clock snapshot for `compile_clip`, which expects `&Clock`.
+        // Tempo changes during compilation are deliberately ignored to keep
+        // each clip compile atomic.
+        let clock_snap = self.clock_snapshot();
         for clip_name in &instance.clips {
             let clip_def = self
                 .registry
                 .get_clip(clip_name)
                 .ok_or_else(|| EngineError::UnknownClip(clip_name.clone()))?;
-            let compiled = compile_clip(clip_def, &self.clock, &self.registry)?;
+            let compiled = compile_clip(clip_def, &clock_snap, &self.registry)?;
             // Phase 3 では scene 内の全 clip を looping=true として扱う
             // Phase 3 treats all clips in a scene as looping=true
             player.add_clip(clip_name.clone(), compiled, true);
@@ -474,8 +491,18 @@ impl Evaluator {
                 })
             }
             Block::Tempo(ref t) => {
-                self.clock.apply_tempo(t);
-                let new_bpm = self.clock.bpm();
+                // 共有 Clock を更新する。RwLock の poisoning は
+                // 構造的に発生しない (apply_tempo / bpm のいずれも
+                // panic しない) ため `expect` で十分。
+                //
+                // Updates the shared clock. Poisoning cannot happen in
+                // practice because neither `apply_tempo` nor `bpm` can
+                // panic, so `expect` suffices.
+                let new_bpm = {
+                    let mut clock = self.clock.write().expect("clock RwLock poisoned");
+                    clock.apply_tempo(t);
+                    clock.bpm()
+                };
                 self.registry.register_block(block);
                 Ok(EvalResult::TempoChanged(new_bpm))
             }
@@ -867,9 +894,29 @@ impl Evaluator {
         &self.registry
     }
 
-    /// Clock参照
-    pub fn clock(&self) -> &Clock {
-        &self.clock
+    /// 共有 Clock のハンドル (Arc clone)
+    ///
+    /// `PlaybackDriver` など、Evaluator のロックを介さずに最新のテンポ・PPQ を
+    /// 参照したい呼び出し側に渡すためのハンドル。受け取った側は `read()` /
+    /// `write()` で内部 `Clock` にアクセスする。
+    ///
+    /// Returns a cloned `Arc<RwLock<Clock>>` handle so that callers such as
+    /// `PlaybackDriver` can observe the latest tempo/PPQ without holding the
+    /// `Evaluator` lock.
+    pub fn clock_handle(&self) -> Arc<RwLock<Clock>> {
+        Arc::clone(&self.clock)
+    }
+
+    /// 現在の Clock のスナップショット (値コピー)
+    ///
+    /// `compile_clip` のようにロックを跨いで `Clock` を渡したい場面向け。
+    /// 戻り値は呼び出し時点の独立コピーで、以降の `tempo` 更新は反映されない。
+    ///
+    /// Returns an independent snapshot of the current `Clock`. Useful for code
+    /// paths like `compile_clip` that take `&Clock` by reference and should
+    /// not see subsequent tempo updates.
+    pub fn clock_snapshot(&self) -> Clock {
+        self.clock.read().expect("clock RwLock poisoned").clone()
     }
 
     /// State参照
@@ -879,7 +926,7 @@ impl Evaluator {
 
     /// 現在のBPM
     pub fn bpm(&self) -> f64 {
-        self.clock.bpm()
+        self.clock.read().expect("clock RwLock poisoned").bpm()
     }
 
     /// ScopeChain参照（§6.1 ブロックスコープ）
@@ -1262,6 +1309,56 @@ mod tests {
         let result = ev.eval_block(Block::Tempo(Tempo::Relative(10))).unwrap();
         assert_eq!(result, EvalResult::TempoChanged(130.0));
         assert!((ev.bpm() - 130.0).abs() < f64::EPSILON);
+    }
+
+    /// PR #57: `clock_handle()` で取得した Arc が tempo 評価後の最新値を返す
+    /// ことを検証する。driver 側はこの Arc を保持して毎 tick 読むため、
+    /// `apply_tempo` 後の `tick_duration_us` が反映されることが必須要件。
+    ///
+    /// PR #57: ensures the `Arc<RwLock<Clock>>` returned by `clock_handle()`
+    /// reflects the latest BPM after a `tempo` block is evaluated. The
+    /// playback driver relies on this for tempo propagation.
+    #[test]
+    fn clock_handle_reflects_tempo_change() {
+        let mut ev = Evaluator::new(120.0);
+        let handle = ev.clock_handle();
+        // 評価前
+        assert!((handle.read().unwrap().bpm() - 120.0).abs() < f64::EPSILON);
+
+        ev.eval_block(Block::Tempo(Tempo::Absolute(180))).unwrap();
+
+        // 評価後、同じ Arc から見ても新 BPM
+        assert!((handle.read().unwrap().bpm() - 180.0).abs() < f64::EPSILON);
+        // tick_duration_us も BPM が大きいほど短くなる
+        let new_dur = handle.read().unwrap().tick_duration_us();
+        let baseline = Clock::new(120.0).tick_duration_us();
+        assert!(
+            new_dur < baseline,
+            "tempo 上昇後の tick_duration_us が短くなっていない: new={}, baseline={}",
+            new_dur,
+            baseline
+        );
+    }
+
+    /// PR #57: `clock_snapshot()` は呼び出し時点の独立コピーを返し、
+    /// その後の tempo 変更には追従しない。`compile_clip` 系のように
+    /// `&Clock` を期待する API に渡すための値型 API。
+    ///
+    /// PR #57: `clock_snapshot()` returns an independent copy frozen at the
+    /// call site so that consumers expecting `&Clock` (e.g. `compile_clip`)
+    /// keep a stable view even if tempo changes mid-compile.
+    #[test]
+    fn clock_snapshot_is_independent_copy() {
+        let mut ev = Evaluator::new(120.0);
+        let snap = ev.clock_snapshot();
+        assert!((snap.bpm() - 120.0).abs() < f64::EPSILON);
+
+        ev.eval_block(Block::Tempo(Tempo::Absolute(200))).unwrap();
+
+        // snap は古い値のまま
+        assert!((snap.bpm() - 120.0).abs() < f64::EPSILON);
+        // 新しく取り直すと最新値
+        assert!((ev.clock_snapshot().bpm() - 200.0).abs() < f64::EPSILON);
     }
 
     #[test]
