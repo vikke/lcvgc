@@ -41,7 +41,7 @@ instrument bass {
 "#;
     ev.eval_source(source).unwrap();
     let inst = ev.registry().get_instrument("bass").unwrap();
-    assert_eq!(inst.channel, 3);
+    assert_eq!(inst.channel.as_one_based(), 3);
 }
 
 /// gate_normal 変数展開
@@ -118,7 +118,7 @@ instrument bass {
 "#;
     ev.eval_source(source).unwrap();
     let inst = ev.registry().get_instrument("bass").unwrap();
-    assert_eq!(inst.channel, 3);
+    assert_eq!(inst.channel.as_one_based(), 3);
     // ブロック後はグローバルスコープに戻る
     // After block, global scope is restored
     assert_eq!(ev.scope().resolve("ch"), Some("1"));
@@ -145,9 +145,9 @@ instrument lead {
 "#;
     ev.eval_source(source).unwrap();
     let bass = ev.registry().get_instrument("bass").unwrap();
-    assert_eq!(bass.channel, 1);
+    assert_eq!(bass.channel.as_one_based(), 1);
     let lead = ev.registry().get_instrument("lead").unwrap();
-    assert_eq!(lead.channel, 5);
+    assert_eq!(lead.channel.as_one_based(), 5);
 }
 
 /// 複数のフィールドを同時に変数展開
@@ -175,7 +175,7 @@ instrument lead {
     ev.eval_source(source).unwrap();
     let inst = ev.registry().get_instrument("lead").unwrap();
     assert_eq!(inst.device, "synth");
-    assert_eq!(inst.channel, 2);
+    assert_eq!(inst.channel.as_one_based(), 2);
     assert_eq!(inst.gate_normal, Some(90));
     assert_eq!(inst.gate_staccato, Some(30));
 }
@@ -246,7 +246,7 @@ kit drums {
 "#;
     ev.eval_source(source).unwrap();
     let kit = ev.registry().get_kit("drums").unwrap();
-    assert_eq!(kit.instruments[0].channel, 10);
+    assert_eq!(kit.instruments[0].channel.as_one_based(), 10);
 }
 
 /// kit の device 変数展開
@@ -296,5 +296,5 @@ fn var_expansion_via_include() {
     ev.eval_file(&main_file).unwrap();
     let inst = ev.registry().get_instrument("bass").unwrap();
     assert_eq!(inst.device, "synth");
-    assert_eq!(inst.channel, 5);
+    assert_eq!(inst.channel.as_one_based(), 5);
 }

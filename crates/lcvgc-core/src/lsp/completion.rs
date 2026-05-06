@@ -440,6 +440,7 @@ impl CompletionProvider {
 mod tests {
     use super::*;
     use crate::ast::instrument::CcMapping;
+    use crate::midi::channel::MidiChannel;
 
     #[test]
     fn test_keyword_completions_count() {
@@ -508,7 +509,7 @@ mod tests {
         let inst = InstrumentDef {
             name: "synth".to_string(),
             device: "dev".to_string(),
-            channel: 1,
+            channel: MidiChannel::from_one_based(1).unwrap(),
             note: None,
             gate_normal: None,
             gate_staccato: None,
@@ -531,7 +532,7 @@ mod tests {
         let inst = InstrumentDef {
             name: "synth".to_string(),
             device: "dev".to_string(),
-            channel: 1,
+            channel: MidiChannel::from_one_based(1).unwrap(),
             note: None,
             gate_normal: None,
             gate_staccato: None,

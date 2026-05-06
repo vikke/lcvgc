@@ -262,6 +262,7 @@ mod tests {
     use crate::ast::scene::{SceneDef, SceneEntry, ShuffleCandidate};
     use crate::ast::session::{SessionDef, SessionEntry, SessionRepeat};
     use crate::ast::tempo::Tempo;
+    use crate::midi::channel::MidiChannel;
     use crate::parser::clip_options::ClipOptions;
 
     fn make_span(start: usize, end: usize) -> Span {
@@ -404,7 +405,7 @@ mod tests {
         reg.register_block(Block::Instrument(InstrumentDef {
             name: "piano".into(),
             device: "synth".into(),
-            channel: 1,
+            channel: MidiChannel::from_one_based(1).unwrap(),
             note: None,
             gate_normal: None,
             gate_staccato: None,

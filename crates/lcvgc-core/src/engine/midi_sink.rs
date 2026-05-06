@@ -1,4 +1,5 @@
 use crate::engine::error::EngineError;
+use crate::midi::channel::MidiChannel;
 use crate::midi::message::MidiMessage;
 use crate::midi::port::PortManager;
 
@@ -15,7 +16,7 @@ pub struct MockSink {
 
 impl MidiSink for MockSink {
     fn send(&mut self, msg: &MidiMessage) -> Result<(), EngineError> {
-        self.sent.push(msg.clone());
+        self.sent.push(*msg);
         Ok(())
     }
 }
@@ -54,10 +55,7 @@ impl SharedMockSink {
 
 impl MidiSink for SharedMockSink {
     fn send(&mut self, msg: &MidiMessage) -> Result<(), EngineError> {
-        self.inner
-            .lock()
-            .expect("mock sink poisoned")
-            .push(msg.clone());
+        self.inner.lock().expect("mock sink poisoned").push(*msg);
         Ok(())
     }
 }
@@ -123,10 +121,9 @@ impl MidiSink for MidirSink {
 pub fn send_all_notes_off_all_channels(
     sink: &mut dyn MidiSink,
 ) -> Result<(), crate::engine::error::EngineError> {
-    use crate::midi::message::MidiMessage;
-    for channel in 0u8..16 {
+    for ch in 0u8..16 {
         let msg = MidiMessage::ControlChange {
-            channel,
+            channel: MidiChannel::from_zero_based(ch).expect("0..16 は範囲内"),
             cc: 123,
             value: 0,
         };
@@ -149,7 +146,7 @@ mod tests {
     fn mock_sink_send_note_on() {
         let mut sink = MockSink::default();
         let msg = MidiMessage::NoteOn {
-            channel: 0,
+            channel: MidiChannel::from_zero_based(0).unwrap(),
             note: 60,
             velocity: 100,
         };
@@ -163,17 +160,17 @@ mod tests {
         let mut sink = MockSink::default();
         let msgs = vec![
             MidiMessage::NoteOn {
-                channel: 0,
+                channel: MidiChannel::from_zero_based(0).unwrap(),
                 note: 60,
                 velocity: 100,
             },
             MidiMessage::NoteOff {
-                channel: 0,
+                channel: MidiChannel::from_zero_based(0).unwrap(),
                 note: 60,
                 velocity: 0,
             },
             MidiMessage::ControlChange {
-                channel: 1,
+                channel: MidiChannel::from_zero_based(1).unwrap(),
                 cc: 7,
                 value: 127,
             },
@@ -198,7 +195,8 @@ mod tests {
             match msg {
                 MidiMessage::ControlChange { channel, cc, value } => {
                     assert_eq!(
-                        *channel as usize, idx,
+                        channel.as_zero_based() as usize,
+                        idx,
                         "channel は 0..15 を順に網羅するはず"
                     );
                     assert_eq!(*cc, 123, "AllNotesOff の CC 番号は 123");

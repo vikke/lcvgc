@@ -240,6 +240,7 @@ mod tests {
     use crate::ast::playback::{PlayCommand, PlayTarget, RepeatSpec, StopCommand};
     use crate::ast::scale::ScaleType;
     use crate::ast::var::VarDef;
+    use crate::midi::channel::MidiChannel;
     use crate::parser::clip_options::ClipOptions;
 
     #[test]
@@ -314,7 +315,7 @@ mod tests {
         let result = reg.register_block(Block::Instrument(InstrumentDef {
             name: "piano".into(),
             device: "synth".into(),
-            channel: 1,
+            channel: MidiChannel::from_one_based(1).unwrap(),
             note: None,
             gate_normal: None,
             gate_staccato: None,
@@ -324,7 +325,7 @@ mod tests {
         }));
         assert!(result);
         let i = reg.get_instrument("piano").unwrap();
-        assert_eq!(i.channel, 1);
+        assert_eq!(i.channel, MidiChannel::from_one_based(1).unwrap());
     }
 
     #[test]

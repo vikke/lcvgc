@@ -1,5 +1,6 @@
 use crate::ast::common::NoteName;
 use crate::ast::unresolved::UnresolvedKitInstrumentVarRefs;
+use crate::midi::channel::MidiChannel;
 
 /// キット内インストゥルメントのノート指定
 /// Note specification for an instrument within a kit
@@ -20,9 +21,9 @@ pub struct KitInstrument {
     /// インストゥルメント名
     /// Instrument name
     pub name: String,
-    /// MIDIチャンネル (1-16)
-    /// MIDI channel (1-16)
-    pub channel: u8,
+    /// MIDIチャンネル
+    /// MIDI channel
+    pub channel: MidiChannel,
     /// MIDIノート指定
     /// MIDI note specification
     pub note: KitInstrumentNote,

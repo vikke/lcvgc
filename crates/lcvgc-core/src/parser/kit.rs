@@ -10,6 +10,7 @@ use nom::{
 use crate::ast::common::NoteName;
 use crate::ast::kit::{KitDef, KitInstrument, KitInstrumentNote};
 use crate::ast::unresolved::UnresolvedKitInstrumentVarRefs;
+use crate::midi::channel::MidiChannel;
 use crate::parser::common::{
     identifier, note_name, parse_u8, parse_u8_or_identifier, ws, ws1, Either,
 };
@@ -134,10 +135,19 @@ fn parse_instrument(input: &str) -> IResult<&str, KitInstrument> {
 
     for prop in props {
         match prop {
-            InstrumentProp::Channel(v) => channel = Some(v),
+            InstrumentProp::Channel(v) => {
+                // DSL の channel 値は 1-based。範囲外 (0 や 17 以上) は parse error として弾く。
+                // DSL channel value is 1-based; reject out-of-range (e.g. 0 or 17+) as parse error.
+                let ch = MidiChannel::from_one_based(v).map_err(|_| {
+                    nom::Err::Failure(nom::error::Error::new(input, nom::error::ErrorKind::Verify))
+                })?;
+                channel = Some(ch);
+            }
             InstrumentProp::ChannelRef(r) => {
                 unresolved.channel = Some(r);
-                channel = Some(0); // placeholder
+                // 変数解決前の placeholder (resolver が後段で設定)
+                // Placeholder before variable resolution (set by resolver later)
+                channel = Some(MidiChannel::from_zero_based(0).unwrap());
             }
             InstrumentProp::Note(v) => note = Some(v),
             InstrumentProp::GateNormal(v) => gate_normal = Some(v),
@@ -227,7 +237,7 @@ mod tests {
         // bd
         let bd = &kit.instruments[0];
         assert_eq!(bd.name, "bd");
-        assert_eq!(bd.channel, 10);
+        assert_eq!(bd.channel.as_one_based(), 10);
         assert_eq!(
             bd.note,
             KitInstrumentNote {
@@ -241,7 +251,7 @@ mod tests {
         // snare - minimal (channel + note only)
         let snare = &kit.instruments[1];
         assert_eq!(snare.name, "snare");
-        assert_eq!(snare.channel, 10);
+        assert_eq!(snare.channel.as_one_based(), 10);
         assert_eq!(
             snare.note,
             KitInstrumentNote {
@@ -297,7 +307,7 @@ mod tests {
         assert_eq!(kit.instruments.len(), 1);
         let kick = &kit.instruments[0];
         assert_eq!(kick.name, "kick");
-        assert_eq!(kick.channel, 1);
+        assert_eq!(kick.channel.as_one_based(), 1);
         assert_eq!(
             kick.note,
             KitInstrumentNote {
@@ -352,7 +362,7 @@ mod tests {
 
         let kick = &kit.instruments[0];
         assert_eq!(kick.name, "kick");
-        assert_eq!(kick.channel, 10);
+        assert_eq!(kick.channel.as_one_based(), 10);
         assert_eq!(
             kick.note,
             KitInstrumentNote {
@@ -363,7 +373,7 @@ mod tests {
 
         let snare = &kit.instruments[1];
         assert_eq!(snare.name, "snare");
-        assert_eq!(snare.channel, 10);
+        assert_eq!(snare.channel.as_one_based(), 10);
         assert_eq!(
             snare.note,
             KitInstrumentNote {
@@ -374,7 +384,7 @@ mod tests {
 
         let hihat = &kit.instruments[2];
         assert_eq!(hihat.name, "hihat");
-        assert_eq!(hihat.channel, 10);
+        assert_eq!(hihat.channel.as_one_based(), 10);
         assert_eq!(
             hihat.note,
             KitInstrumentNote {
@@ -439,7 +449,9 @@ mod tests {
     fn test_kit_instrument_with_channel_var_ref() {
         let input = "kit drums {\n  device td3\n  bd { channel drum_ch, note c2 }\n}";
         let (_, kit) = parse_kit(input).unwrap();
-        assert_eq!(kit.instruments[0].channel, 0); // placeholder
+        // 変数解決前の placeholder (resolver が後段で設定)
+        // Placeholder before variable resolution (set by resolver later)
+        assert_eq!(kit.instruments[0].channel.as_zero_based(), 0);
         assert_eq!(
             kit.instruments[0].unresolved.channel,
             Some("drum_ch".to_string())
@@ -459,6 +471,30 @@ mod tests {
         assert_eq!(
             kit.instruments[0].unresolved.gate_staccato,
             Some("gs_val".to_string())
+        );
+    }
+
+    /// kit 内の `channel 0` は無効。parse error として弾かれること。
+    /// `channel 0` inside a kit is invalid. Verify it is rejected as a parse error.
+    #[test]
+    fn test_kit_channel_zero_is_rejected() {
+        let input = "kit drums {\n  device td3\n  bd { channel 0, note c2 }\n}";
+        let result = parse_kit(input);
+        assert!(
+            result.is_err(),
+            "kit 内の channel 0 は parse error になるはず"
+        );
+    }
+
+    /// kit 内の `channel 17` は無効。parse error として弾かれること。
+    /// `channel 17` inside a kit is invalid. Verify it is rejected as a parse error.
+    #[test]
+    fn test_kit_channel_seventeen_is_rejected() {
+        let input = "kit drums {\n  device td3\n  bd { channel 17, note c2 }\n}";
+        let result = parse_kit(input);
+        assert!(
+            result.is_err(),
+            "kit 内の channel 17 は parse error になるはず"
         );
     }
 }

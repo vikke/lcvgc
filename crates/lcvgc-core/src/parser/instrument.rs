@@ -3,6 +3,7 @@ use nom::{bytes::complete::tag, IResult};
 use crate::ast::instrument::{CcMapping, InstrumentDef, InstrumentNote};
 use crate::ast::unresolved::UnresolvedVarRefs;
 use crate::ast::var::VarDef;
+use crate::midi::channel::MidiChannel;
 use crate::parser::common::{
     identifier, note_name, parse_u8, parse_u8_or_identifier, ws, ws1, Either,
 };
@@ -184,10 +185,19 @@ pub fn parse_instrument(input: &str) -> IResult<&str, InstrumentDef> {
         let (input, prop) = parse_property(input)?;
         match prop {
             InstrumentProperty::Device(d) => device = Some(d),
-            InstrumentProperty::Channel(c) => channel = Some(c),
+            InstrumentProperty::Channel(c) => {
+                // DSL の channel 値は 1-based。範囲外 (0 や 17 以上) は parse error として弾く。
+                // DSL channel value is 1-based; reject out-of-range (e.g. 0 or 17+) as parse error.
+                let ch = MidiChannel::from_one_based(c).map_err(|_| {
+                    nom::Err::Failure(nom::error::Error::new(rest, nom::error::ErrorKind::Verify))
+                })?;
+                channel = Some(ch);
+            }
             InstrumentProperty::ChannelRef(r) => {
                 unresolved.channel = Some(r);
-                channel = Some(0); // placeholder
+                // 変数解決前のプレースホルダ (resolver が後段で正しい値で上書きする)
+                // Placeholder before variable resolution (overwritten by resolver later)
+                channel = Some(MidiChannel::from_zero_based(0).unwrap());
             }
             InstrumentProperty::Note(n) => note = Some(n),
             InstrumentProperty::GateNormal(g) => gate_normal = Some(g),
@@ -258,7 +268,7 @@ mod tests {
         assert_eq!(rest.trim(), "");
         assert_eq!(inst.name, "bass");
         assert_eq!(inst.device, "mutant_brain");
-        assert_eq!(inst.channel, 1);
+        assert_eq!(inst.channel.as_one_based(), 1);
         assert_eq!(inst.note, None);
         assert_eq!(inst.gate_normal, Some(80));
         assert_eq!(inst.gate_staccato, Some(40));
@@ -279,7 +289,7 @@ mod tests {
         assert_eq!(rest.trim(), "");
         assert_eq!(inst.name, "synth");
         assert_eq!(inst.device, "mb");
-        assert_eq!(inst.channel, 3);
+        assert_eq!(inst.channel.as_one_based(), 3);
         assert_eq!(inst.note, None);
         assert_eq!(inst.gate_normal, None);
         assert_eq!(inst.gate_staccato, None);
@@ -298,7 +308,7 @@ mod tests {
         let (rest, inst) = parse_instrument(input).unwrap();
         assert_eq!(rest.trim(), "");
         assert_eq!(inst.name, "bd");
-        assert_eq!(inst.channel, 10);
+        assert_eq!(inst.channel.as_one_based(), 10);
         let note = inst.note.unwrap();
         assert_eq!(note.name, NoteName::C);
         assert_eq!(note.octave, 2);
@@ -317,7 +327,7 @@ mod tests {
         assert_eq!(rest.trim(), "");
         assert_eq!(inst.name, "lead");
         assert_eq!(inst.device, "mb");
-        assert_eq!(inst.channel, 2);
+        assert_eq!(inst.channel.as_one_based(), 2);
         assert_eq!(inst.gate_normal, Some(90));
         assert_eq!(inst.gate_staccato, Some(30));
         assert_eq!(inst.cc_mappings.len(), 1);
@@ -338,7 +348,7 @@ mod tests {
         assert_eq!(rest.trim(), "");
         assert_eq!(inst.name, "bass");
         assert_eq!(inst.device, "mutant_brain");
-        assert_eq!(inst.channel, 3);
+        assert_eq!(inst.channel.as_one_based(), 3);
         assert_eq!(inst.local_vars.len(), 1);
         assert_eq!(inst.local_vars[0].name, "ch");
         assert_eq!(inst.local_vars[0].value, "3");
@@ -381,7 +391,9 @@ mod tests {
         let (_, inst) = parse_instrument(input).unwrap();
         assert_eq!(inst.name, "bass");
         assert_eq!(inst.device, "mutant_brain");
-        assert_eq!(inst.channel, 0); // placeholder
+        // 変数解決前の placeholder (resolver が後段で設定)
+        // Placeholder before variable resolution (set by resolver later)
+        assert_eq!(inst.channel.as_zero_based(), 0);
         assert_eq!(inst.unresolved.channel, Some("bass_ch".to_string()));
     }
 
@@ -390,7 +402,7 @@ mod tests {
         let input = "instrument bass {\n  device dev\n  channel 1\n}";
         let (_, inst) = parse_instrument(input).unwrap();
         assert_eq!(inst.name, "bass");
-        assert_eq!(inst.channel, 1);
+        assert_eq!(inst.channel.as_one_based(), 1);
         // device "dev" は予約語でないidentifierなので通常通りパースされる
         // （device は文字列なので変数参照の区別はパーサー段階では不要）
         assert_eq!(inst.device, "dev");
@@ -415,5 +427,33 @@ mod tests {
             inst.cc_mappings[0].cc_number_ref,
             Some("cc_num".to_string())
         );
+    }
+
+    /// `channel 0` は MIDI チャンネルとして無効。parse error として弾かれること。
+    /// `channel 0` is an invalid MIDI channel. Verify that it is rejected as a parse error.
+    #[test]
+    fn test_channel_zero_is_rejected() {
+        let input = "instrument bad {\n  device mb\n  channel 0\n}";
+        let result = parse_instrument(input);
+        assert!(result.is_err(), "channel 0 は parse error になるはず");
+    }
+
+    /// `channel 17` は MIDI チャンネルとして無効。parse error として弾かれること。
+    /// `channel 17` is an invalid MIDI channel. Verify that it is rejected as a parse error.
+    #[test]
+    fn test_channel_seventeen_is_rejected() {
+        let input = "instrument bad {\n  device mb\n  channel 17\n}";
+        let result = parse_instrument(input);
+        assert!(result.is_err(), "channel 17 は parse error になるはず");
+    }
+
+    /// 境界値 `channel 16` は parse 成功し、0-based では 15 になること。
+    /// Boundary `channel 16` should parse successfully and equal 15 in 0-based form.
+    #[test]
+    fn test_channel_sixteen_boundary() {
+        let input = "instrument max {\n  device mb\n  channel 16\n}";
+        let (_, inst) = parse_instrument(input).unwrap();
+        assert_eq!(inst.channel.as_one_based(), 16);
+        assert_eq!(inst.channel.as_zero_based(), 15);
     }
 }

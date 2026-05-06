@@ -368,8 +368,8 @@ impl ScenePlayer {
     /// Collects every (device, MIDI channel) pair used by any event in any
     /// contained clip, ignoring mute state. Used to determine per-device
     /// AllNotesOff destinations on stop (Issue #49).
-    pub fn channels_in_use(&self) -> Vec<(String, u8)> {
-        let mut pairs: Vec<(String, u8)> = Vec::new();
+    pub fn channels_in_use(&self) -> Vec<(String, crate::midi::channel::MidiChannel)> {
+        let mut pairs: Vec<(String, crate::midi::channel::MidiChannel)> = Vec::new();
         for (_, p) in &self.players {
             for ev in &p.clip.events {
                 let pair = (ev.device.clone(), channel_of(&ev.message));
@@ -389,8 +389,8 @@ impl ScenePlayer {
     ///
     /// Returns the (device, channel) pairs used by the clip with the given
     /// name. Empty when the clip is not found or has no events.
-    pub fn channels_of_clip(&self, name: &str) -> Vec<(String, u8)> {
-        let mut pairs: Vec<(String, u8)> = Vec::new();
+    pub fn channels_of_clip(&self, name: &str) -> Vec<(String, crate::midi::channel::MidiChannel)> {
+        let mut pairs: Vec<(String, crate::midi::channel::MidiChannel)> = Vec::new();
         if let Some((_, p)) = self.players.iter().find(|(n, _)| n == name) {
             for ev in &p.clip.events {
                 let pair = (ev.device.clone(), channel_of(&ev.message));
@@ -414,7 +414,7 @@ impl ScenePlayer {
 /// 含まれないため到達しない。
 /// Extracts the channel number from a MidiMessage.
 /// System Real-Time messages do not carry a channel and never appear in compiled clip events.
-fn channel_of(msg: &crate::midi::message::MidiMessage) -> u8 {
+fn channel_of(msg: &crate::midi::message::MidiMessage) -> crate::midi::channel::MidiChannel {
     use crate::midi::message::MidiMessage;
     match msg {
         MidiMessage::NoteOn { channel, .. }
@@ -452,7 +452,7 @@ mod tests {
 
     fn note_on(note: u8) -> MidiMessage {
         MidiMessage::NoteOn {
-            channel: 0,
+            channel: crate::midi::channel::MidiChannel::from_zero_based(0).unwrap(),
             note,
             velocity: 100,
         }
@@ -461,7 +461,7 @@ mod tests {
     #[allow(dead_code)]
     fn note_off(note: u8) -> MidiMessage {
         MidiMessage::NoteOff {
-            channel: 0,
+            channel: crate::midi::channel::MidiChannel::from_zero_based(0).unwrap(),
             note,
             velocity: 0,
         }

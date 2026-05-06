@@ -83,7 +83,7 @@ impl<S: MidiSink> TickLoop<S> {
             .scene
             .events_at(self.current_tick)
             .into_iter()
-            .map(|ev| ev.message.clone())
+            .map(|ev| ev.message)
             .collect();
         for msg in &messages {
             self.sink.send(msg)?;
@@ -117,11 +117,12 @@ mod tests {
     use super::*;
     use crate::engine::compiler::{CompiledClip, MidiEvent};
     use crate::engine::midi_sink::MockSink;
+    use crate::midi::channel::MidiChannel;
     use crate::midi::message::MidiMessage;
 
     fn note_on(note: u8) -> MidiMessage {
         MidiMessage::NoteOn {
-            channel: 0,
+            channel: MidiChannel::from_zero_based(0).unwrap(),
             note,
             velocity: 100,
         }

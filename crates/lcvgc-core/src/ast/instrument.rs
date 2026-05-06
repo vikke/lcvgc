@@ -1,6 +1,7 @@
 use crate::ast::common::NoteName;
 use crate::ast::unresolved::UnresolvedVarRefs;
 use crate::ast::var::VarDef;
+use crate::midi::channel::MidiChannel;
 
 /// CCパラメータのエイリアスマッピング
 /// CC parameter alias mapping
@@ -39,9 +40,9 @@ pub struct InstrumentDef {
     /// 割り当てデバイス名
     /// Assigned device name
     pub device: String,
-    /// MIDIチャンネル (1-16)
-    /// MIDI channel (1-16)
-    pub channel: u8,
+    /// MIDIチャンネル
+    /// MIDI channel
+    pub channel: MidiChannel,
     /// デフォルトノート（オプション）
     /// Default note (optional)
     pub note: Option<InstrumentNote>,

@@ -154,7 +154,7 @@ pub struct Evaluator {
     /// Queue of `(device, channel)` pairs that the caller should emit
     /// AllNotesOff (CC#123 value=0) on after Stop/mute. Extended from a bare
     /// channel list to support multi-device routing (Issue #49).
-    pending_all_notes_off: Vec<(String, u8)>,
+    pending_all_notes_off: Vec<(String, crate::midi::channel::MidiChannel)>,
     /// Play/Stop 評価時に `transport = true` の device へ送出する MIDI System
     /// Real-Time メッセージ (`Start` / `Stop`) のキュー。呼び出し側（tick
     /// driver / daemon）は device 名をキーに対応する `MidiSink` を選び、
@@ -259,7 +259,9 @@ impl Evaluator {
     /// Takes the queued AllNotesOff `(device, channel)` pairs and clears the
     /// internal buffer. The caller selects the matching `MidiSink` by device
     /// name and emits CC#123 value=0 on each channel (Issue #49).
-    pub fn take_pending_all_notes_off(&mut self) -> Vec<(String, u8)> {
+    pub fn take_pending_all_notes_off(
+        &mut self,
+    ) -> Vec<(String, crate::midi::channel::MidiChannel)> {
         std::mem::take(&mut self.pending_all_notes_off)
     }
 
@@ -1115,6 +1117,7 @@ mod tests {
     use crate::ast::tempo::Tempo;
     use crate::ast::var::VarDef;
     use crate::engine::state::PlaybackState;
+    use crate::midi::channel::MidiChannel;
     use crate::parser::clip_options::ClipOptions;
 
     #[test]
@@ -1144,7 +1147,7 @@ mod tests {
             .eval_block(Block::Instrument(InstrumentDef {
                 name: "piano".into(),
                 device: "synth".into(),
-                channel: 1,
+                channel: MidiChannel::from_one_based(1).unwrap(),
                 note: None,
                 gate_normal: None,
                 gate_staccato: None,
@@ -1161,7 +1164,7 @@ mod tests {
             }
         );
         let inst = ev.registry().get_instrument("piano").unwrap();
-        assert_eq!(inst.channel, 1);
+        assert_eq!(inst.channel, MidiChannel::from_one_based(1).unwrap());
     }
 
     #[test]
@@ -1334,7 +1337,7 @@ mod tests {
         ev.eval_block(Block::Instrument(InstrumentDef {
             name: "bass".into(),
             device: "mb".into(),
-            channel: 3,
+            channel: MidiChannel::from_one_based(3).unwrap(),
             note: None,
             gate_normal: None,
             gate_staccato: None,
@@ -1684,7 +1687,10 @@ mod tests {
             .unwrap();
 
         let channels = ev.take_pending_all_notes_off();
-        assert_eq!(channels, vec![("dev".to_string(), 5)]);
+        assert_eq!(
+            channels,
+            vec![("dev".to_string(), MidiChannel::from_one_based(5).unwrap())]
+        );
         assert!(ev.active_scene().is_none());
         assert_eq!(*ev.state().state(), PlaybackState::Stopped);
     }
@@ -1704,7 +1710,7 @@ mod tests {
         .unwrap();
         assert_eq!(
             ev.take_pending_all_notes_off(),
-            vec![("dev".to_string(), 7)]
+            vec![("dev".to_string(), MidiChannel::from_one_based(7).unwrap())]
         );
         assert!(ev.active_scene().is_none());
     }
@@ -1740,7 +1746,7 @@ mod tests {
         assert!(!scene.is_muted("b"));
         assert_eq!(
             ev.take_pending_all_notes_off(),
-            vec![("dev".to_string(), 2)]
+            vec![("dev".to_string(), MidiChannel::from_one_based(2).unwrap())]
         );
         assert!(matches!(
             ev.state().state(),
@@ -1803,7 +1809,10 @@ mod tests {
 
         assert_eq!(
             ev.take_pending_all_notes_off(),
-            vec![("synth_a".to_string(), 1)],
+            vec![(
+                "synth_a".to_string(),
+                MidiChannel::from_one_based(1).unwrap()
+            )],
             "mute は該当 device/channel のみ AllNotesOff する"
         );
     }
@@ -1836,7 +1845,16 @@ mod tests {
         pairs.sort();
         assert_eq!(
             pairs,
-            vec![("synth_a".to_string(), 1), ("synth_b".to_string(), 2)],
+            vec![
+                (
+                    "synth_a".to_string(),
+                    MidiChannel::from_one_based(1).unwrap()
+                ),
+                (
+                    "synth_b".to_string(),
+                    MidiChannel::from_one_based(2).unwrap()
+                )
+            ],
         );
     }
 
@@ -2481,7 +2499,7 @@ instrument bass {
 "#;
         ev.eval_source(source).unwrap();
         let inst = ev.registry().get_instrument("bass").unwrap();
-        assert_eq!(inst.channel, 3);
+        assert_eq!(inst.channel, MidiChannel::from_one_based(3).unwrap());
     }
 
     /// gate_normal 変数展開
@@ -2538,7 +2556,7 @@ instrument bass {
 "#;
         ev.eval_source(source).unwrap();
         let inst = ev.registry().get_instrument("bass").unwrap();
-        assert_eq!(inst.channel, 3);
+        assert_eq!(inst.channel, MidiChannel::from_one_based(3).unwrap());
         // ブロック後はグローバルスコープに戻る
         // After block, global scope is restored
         assert_eq!(ev.scope().resolve("ch"), Some("1"));
@@ -2607,7 +2625,7 @@ instrument bass {
         assert!(ev.state().is_paused());
         assert_eq!(
             ev.take_pending_all_notes_off(),
-            vec![("dev".to_string(), 5)]
+            vec![("dev".to_string(), MidiChannel::from_one_based(5).unwrap())]
         );
         let scene = ev.active_scene().unwrap();
         assert!(scene.is_clip_paused("a"));
@@ -2639,7 +2657,7 @@ instrument bass {
         assert!(ev.state().is_paused());
         assert_eq!(
             ev.take_pending_all_notes_off(),
-            vec![("dev".to_string(), 7)]
+            vec![("dev".to_string(), MidiChannel::from_one_based(7).unwrap())]
         );
     }
 
@@ -2681,7 +2699,7 @@ instrument bass {
         assert!(!scene.is_clip_paused("b"));
         assert_eq!(
             ev.take_pending_all_notes_off(),
-            vec![("dev".to_string(), 2)]
+            vec![("dev".to_string(), MidiChannel::from_one_based(2).unwrap())]
         );
     }
 
