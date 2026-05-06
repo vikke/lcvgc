@@ -22,7 +22,7 @@
 //! tearing the driver down.
 
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 use std::time::Duration;
 
 use tokio::sync::{Mutex, MutexGuard, Notify};
@@ -358,7 +358,7 @@ impl PlaybackDriver {
 pub async fn run_driver(
     evaluator: Arc<Mutex<Evaluator>>,
     sinks: HashMap<String, BoxedSink>,
-    clock: Clock,
+    clock: Arc<RwLock<Clock>>,
 ) {
     let shared: SharedSinks = Arc::new(Mutex::new(sinks));
     let notify: SinksNotify = Arc::new(Notify::new());
@@ -388,7 +388,7 @@ pub async fn run_driver_with_shared(
     evaluator: Arc<Mutex<Evaluator>>,
     sinks: SharedSinks,
     notify: SinksNotify,
-    clock: Clock,
+    clock: Arc<RwLock<Clock>>,
 ) {
     // 1. sinks が空の間はブロック。spurious wake 対策で while ループにする。
     //    `notified()` は呼び出し時点で「未消化通知が無ければ Future を返す」
@@ -405,27 +405,74 @@ pub async fn run_driver_with_shared(
     }
 
     let mut driver = PlaybackDriver::with_shared_sinks(evaluator, Arc::clone(&sinks));
-    let dur_us = clock.tick_duration_us().max(1);
-    let mut interval = time::interval(Duration::from_micros(dur_us));
+
+    // 起動時の tick duration を読み取り、interval を初期化する。
+    // 以降 tempo が変わっても interval を作り直すだけで済むよう、
+    // 直近の `tick_duration_us` を保持する。
+    //
+    // Initialize the tick interval from the current clock. The latest
+    // `tick_duration_us` is cached so that subsequent tempo changes can
+    // rebuild the interval cheaply.
+    let mut last_dur_us = read_tick_duration_us(&clock);
+    let mut interval = time::interval(Duration::from_micros(last_dur_us));
     interval.set_missed_tick_behavior(time::MissedTickBehavior::Delay);
 
     {
         let map = sinks.lock().await;
+        let (bpm, ppq) = {
+            let c = clock.read().expect("clock RwLock poisoned");
+            (c.bpm(), c.ppq())
+        };
         info!(
             "再生ドライバ起動: tick duration = {} us (BPM={}, PPQ={}, devices={:?})",
-            dur_us,
-            clock.bpm(),
-            clock.ppq(),
+            last_dur_us,
+            bpm,
+            ppq,
             map.keys().collect::<Vec<_>>()
         );
     }
 
     loop {
         interval.tick().await;
+
+        // tempo が変わった場合、新しい tick duration で interval を作り直す。
+        // 比較は u64 1 個なので毎 tick やってもコストは無視できる。
+        //
+        // Rebuild the interval if tempo changed. Comparing one u64 per tick
+        // is negligible.
+        let cur_dur_us = read_tick_duration_us(&clock);
+        if cur_dur_us != last_dur_us {
+            let new_bpm = clock.read().expect("clock RwLock poisoned").bpm();
+            info!(
+                "tempo 変更検知: tick duration {} us → {} us (BPM={})",
+                last_dur_us, cur_dur_us, new_bpm
+            );
+            last_dur_us = cur_dur_us;
+            interval = time::interval(Duration::from_micros(cur_dur_us));
+            interval.set_missed_tick_behavior(time::MissedTickBehavior::Delay);
+            // 直後の `tick()` を即時通過させて step を進める。
+            // The first `tick()` after `interval::interval` fires immediately.
+        }
+
         if let Err(e) = driver.step_once().await {
             error!("再生ドライバエラー: {}", e);
         }
     }
+}
+
+/// 共有 Clock から `tick_duration_us` を読み出す小さなヘルパ
+///
+/// 0 を返さないように `max(1)` をかける。`run_driver_with_shared` の起動時と
+/// 毎 tick の比較で同じ前処理を行うため共通化した。
+///
+/// Reads `tick_duration_us` from the shared clock, clamping to 1us minimum
+/// so `Duration::from_micros(0)` cannot reach `time::interval`.
+fn read_tick_duration_us(clock: &Arc<RwLock<Clock>>) -> u64 {
+    clock
+        .read()
+        .expect("clock RwLock poisoned")
+        .tick_duration_us()
+        .max(1)
 }
 
 #[cfg(test)]
@@ -962,7 +1009,7 @@ mod tests {
         let evaluator = Arc::new(Mutex::new(Evaluator::new(120.0)));
         let shared: SharedSinks = Arc::new(Mutex::new(HashMap::new()));
         let notify: SinksNotify = Arc::new(Notify::new());
-        let clock = Clock::new(120.0);
+        let clock = Arc::new(RwLock::new(Clock::new(120.0)));
 
         // 50ms 経過しても run_driver_with_shared が抜けない（= まだ tick ループに入って
         // いない）ことを timeout の Elapsed で確認する。タイムアウト前に await が解除
@@ -984,5 +1031,94 @@ mod tests {
 
         // この間 sinks マップは空のままで誰も触っていない
         assert!(shared.lock().await.is_empty());
+    }
+
+    /// PR #57: `read_tick_duration_us` は共有 Clock の現在値を反映し、
+    /// 0 を返さないようにクランプする。
+    ///
+    /// PR #57: `read_tick_duration_us` reads the current clock value and
+    /// clamps to 1us minimum.
+    #[test]
+    fn read_tick_duration_us_reflects_clock_updates() {
+        use crate::ast::tempo::Tempo;
+        let clock = Arc::new(RwLock::new(Clock::new(120.0)));
+        let initial = read_tick_duration_us(&clock);
+        assert!(initial >= 1);
+
+        // BPM を倍にすると tick duration はおおよそ半分になる
+        clock.write().unwrap().apply_tempo(&Tempo::Absolute(240));
+        let after = read_tick_duration_us(&clock);
+        assert!(
+            after < initial,
+            "tempo 倍速化で tick duration が短くなっていない: initial={}, after={}",
+            initial,
+            after
+        );
+    }
+
+    /// PR #57: `run_driver_with_shared` 起動後に共有 Clock の BPM を変えると、
+    /// driver は新 BPM で sink にイベントを送出し続ける。回帰防止の最小確認:
+    /// tempo を変えた後も NoteOn が届くこと、および BPM 変更前後で driver が
+    /// パニックせずに動き続けること。
+    ///
+    /// PR #57: After `run_driver_with_shared` is running, mutating the shared
+    /// clock's BPM keeps the driver alive and still dispatching NoteOn.
+    /// Minimal regression guard.
+    #[tokio::test]
+    async fn run_driver_with_shared_survives_tempo_change_and_keeps_dispatching() {
+        use crate::ast::tempo::Tempo;
+
+        let evaluator = Arc::new(Mutex::new(Evaluator::new(60000.0)));
+        // 高速 BPM で setup → play まで進める。clock も同じ高速値で揃える。
+        eval(&evaluator, setup_src()).await;
+        eval(&evaluator, "play s1\n").await;
+
+        let handle = SharedMockSink::new();
+        let shared: SharedSinks = Arc::new(Mutex::new(HashMap::new()));
+        shared
+            .lock()
+            .await
+            .insert("dev".to_string(), Box::new(handle.clone()));
+        let notify: SinksNotify = Arc::new(Notify::new());
+        let clock = evaluator.lock().await.clock_handle();
+
+        // driver を spawn (高速 BPM のまま回す)
+        let driver_handle = {
+            let ev = evaluator.clone();
+            let sinks = Arc::clone(&shared);
+            let notify = Arc::clone(&notify);
+            let clk = Arc::clone(&clock);
+            tokio::spawn(async move {
+                run_driver_with_shared(ev, sinks, notify, clk).await;
+            })
+        };
+
+        // 少し回して NoteOn が届く窓を作る
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        let before = handle.snapshot().len();
+
+        // BPM を 120 (1000 倍遅) に変える。driver は次 tick 比較で新 interval に
+        // 切り替わるはず。tempo 変更時に driver が panic しないことが本テストの
+        // メイン関心事。
+        clock.write().unwrap().apply_tempo(&Tempo::Absolute(120));
+
+        // tempo 変更後も driver が生きていることを確認するため、もう少し回す
+        tokio::time::sleep(Duration::from_millis(20)).await;
+
+        // driver はまだ生きている (= JoinHandle が完了していない)
+        assert!(!driver_handle.is_finished(), "tempo 変更で driver が落ちた");
+
+        // 全体として NoteOn が 1 件以上届いている (= sink dispatch が機能した)
+        let total = handle.snapshot();
+        assert!(
+            total
+                .iter()
+                .any(|m| matches!(m, MidiMessage::NoteOn { .. })),
+            "tempo 変更を含む再生で NoteOn が一度も届いていない (before={}, total={})",
+            before,
+            total.len()
+        );
+
+        driver_handle.abort();
     }
 }
