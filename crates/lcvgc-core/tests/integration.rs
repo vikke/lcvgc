@@ -58,7 +58,7 @@ clip melody [bars 1] {
     assert_eq!(results.len(), 3);
 
     let clip = ev.registry().get_clip("melody").unwrap();
-    let compiled = compile_clip(clip, ev.clock(), ev.registry());
+    let compiled = compile_clip(clip, &ev.clock_snapshot(), ev.registry());
     assert!(compiled.is_ok());
     let compiled = compiled.unwrap();
     assert!(!compiled.events.is_empty());
@@ -84,7 +84,7 @@ clip riff [bars 1] {
     ev.eval_source(source).unwrap();
 
     let clip = ev.registry().get_clip("riff").unwrap();
-    let compiled = compile_clip(clip, ev.clock(), ev.registry()).unwrap();
+    let compiled = compile_clip(clip, &ev.clock_snapshot(), ev.registry()).unwrap();
 
     // MockSinkにMIDIメッセージを送信
     let mut sink = MockSink::default();
@@ -203,7 +203,7 @@ clip beat [bars 1] {
     assert_eq!(results.len(), 3);
 
     let clip = ev.registry().get_clip("beat").unwrap();
-    let compiled = compile_clip(clip, ev.clock(), ev.registry());
+    let compiled = compile_clip(clip, &ev.clock_snapshot(), ev.registry());
     assert!(compiled.is_ok());
 }
 
@@ -246,7 +246,7 @@ clip rep_test [bars 2] {
     ev.eval_source(source).unwrap();
 
     let clip = ev.registry().get_clip("rep_test").unwrap();
-    let compiled = compile_clip(clip, ev.clock(), ev.registry()).unwrap();
+    let compiled = compile_clip(clip, &ev.clock_snapshot(), ev.registry()).unwrap();
 
     // 3 notes * 4 reps = 12 NoteOn events
     let note_on_count = compiled
@@ -283,7 +283,7 @@ clip drum_rep [bars 1] {
     ev.eval_source(source).unwrap();
 
     let clip = ev.registry().get_clip("drum_rep").unwrap();
-    let compiled = compile_clip(clip, ev.clock(), ev.registry()).unwrap();
+    let compiled = compile_clip(clip, &ev.clock_snapshot(), ev.registry()).unwrap();
 
     // (x.x.)*4 → x.x.x.x.x.x.x.x. = 8 Normal hits
     let note_on_count = compiled
@@ -317,7 +317,7 @@ clip carry_test [bars 2] {
     ev.eval_source(source).unwrap();
 
     let clip = ev.registry().get_clip("carry_test").unwrap();
-    let compiled = compile_clip(clip, ev.clock(), ev.registry()).unwrap();
+    let compiled = compile_clip(clip, &ev.clock_snapshot(), ev.registry()).unwrap();
 
     // 2 NoteOn events, both C3 = note 48
     let note_ons: Vec<_> = compiled
@@ -511,6 +511,6 @@ clip beat_sp [bars 1] {
 
     // コンパイルも成功することを確認
     // Verify compilation also succeeds
-    let compiled = compile_clip(clip, ev.clock(), ev.registry());
+    let compiled = compile_clip(clip, &ev.clock_snapshot(), ev.registry());
     assert!(compiled.is_ok());
 }

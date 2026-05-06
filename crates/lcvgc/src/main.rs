@@ -8,7 +8,6 @@ use std::sync::Arc;
 use clap::Parser;
 use cli::Cli;
 use lcvgc::{build_midir_sink, run_device_event_receiver_with_initial};
-use lcvgc_core::engine::clock::Clock;
 use lcvgc_core::engine::config::Config;
 use lcvgc_core::engine::device_event::DeviceEvent;
 use lcvgc_core::engine::evaluator::Evaluator;
@@ -296,9 +295,15 @@ async fn main() {
         let ev = evaluator.clone();
         let sinks_for_driver = shared_sinks.clone();
         let notify_for_driver = sinks_notify.clone();
-        let clock = Clock::new(default_bpm);
+        // Evaluator 内部の共有 Clock ハンドルを driver に渡す。
+        // これで `tempo N` 評価時の BPM 変更が driver の tick interval にも
+        // 反映される (PR #57)。
+        //
+        // Pass the evaluator's shared Clock handle so `tempo N` updates
+        // propagate to the driver's tick interval (PR #57).
+        let clock_handle = evaluator.lock().await.clock_handle();
         tokio::spawn(async move {
-            run_driver_with_shared(ev, sinks_for_driver, notify_for_driver, clock).await;
+            run_driver_with_shared(ev, sinks_for_driver, notify_for_driver, clock_handle).await;
         });
     }
 
