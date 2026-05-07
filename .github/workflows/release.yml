@@ -1,0 +1,201 @@
+name: Release
+
+# main の Cargo.toml version が変わったら自動で各 arch の binary を
+# release assets としてアップロードする。タグは workflow が自動で打つ。
+#
+# Auto-release flow: when the version in `crates/lcvgc/Cargo.toml` (or
+# `lcvgc-core/Cargo.toml`) changes on main, build 3-arch binaries and
+# publish a `v<version>` GitHub Release with archive assets.
+
+on:
+  push:
+    branches: [main]
+  # Actions UI から手動で起動できるようにする。version 比較はスキップし、
+  # 現在の Cargo.toml の version をそのまま使って release を作る。
+  # 初回 release (まだ過去 commit に release が無い時) や、何らかの理由で
+  # main push 時の自動 release が走らなかった時のリカバリ用。
+  #
+  # Manual trigger from the Actions UI. Useful for the very first release
+  # or for re-running when the auto-release on main push didn't fire.
+  workflow_dispatch:
+
+permissions:
+  contents: write  # Release / tag を作成するために必要
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  # ------------------------------------------------------------------------
+  # 1. version 変化を検出する。lcvgc / lcvgc-core 両方の Cargo.toml を読み、
+  #    HEAD と HEAD~1 で diff を取る。両者の version が不一致なら fail。
+  #    変化なしなら以降の job を skip する。
+  # ------------------------------------------------------------------------
+  check_version:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.detect.outputs.version }}
+      should_release: ${{ steps.detect.outputs.should_release }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2  # HEAD~1 と diff を取るため
+
+      - id: detect
+        name: Detect version change
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          # 各 Cargo.toml の最初の version 行を取り出す小ヘルパ。
+          # `[package]` 直下の version を想定し、最初の `^version = "..."` を採用。
+          read_version() {
+            local path="$1"
+            grep -E '^version = "' "$path" | head -1 | sed -E 's/.*"(.*)"/\1/'
+          }
+          read_version_at() {
+            local rev="$1"
+            local path="$2"
+            git show "$rev:$path" 2>/dev/null | grep -E '^version = "' | head -1 | sed -E 's/.*"(.*)"/\1/'
+          }
+
+          cur_lcvgc=$(read_version crates/lcvgc/Cargo.toml)
+          cur_core=$(read_version crates/lcvgc-core/Cargo.toml)
+
+          # 整合性 assert: lcvgc と lcvgc-core の version は揃っている前提。
+          if [ "$cur_lcvgc" != "$cur_core" ]; then
+            echo "::error::lcvgc ($cur_lcvgc) と lcvgc-core ($cur_core) の version が一致しません"
+            exit 1
+          fi
+
+          # workflow_dispatch (手動起動) の場合は version 比較をスキップして
+          # 必ず release する。push 時のみ HEAD と HEAD~1 を比較する。
+          if [ "${GITHUB_EVENT_NAME}" = "workflow_dispatch" ]; then
+            echo "workflow_dispatch: 手動起動のため version 比較をスキップして release します ($cur_lcvgc)"
+            echo "version=$cur_lcvgc" >> "$GITHUB_OUTPUT"
+            echo "should_release=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # 直前 commit の version を取り出して diff。HEAD が初回 commit の場合
+          # (= HEAD~1 が無い) は強制的に release を走らせる。
+          if git rev-parse HEAD~1 >/dev/null 2>&1; then
+            prev_lcvgc=$(read_version_at HEAD~1 crates/lcvgc/Cargo.toml || echo "")
+            prev_core=$(read_version_at HEAD~1 crates/lcvgc-core/Cargo.toml || echo "")
+          else
+            prev_lcvgc=""
+            prev_core=""
+          fi
+
+          if [ "$cur_lcvgc" != "$prev_lcvgc" ] || [ "$cur_core" != "$prev_core" ]; then
+            echo "version 変化を検出: lcvgc $prev_lcvgc -> $cur_lcvgc, lcvgc-core $prev_core -> $cur_core"
+            echo "version=$cur_lcvgc" >> "$GITHUB_OUTPUT"
+            echo "should_release=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "version 変化なし: $cur_lcvgc"
+            echo "should_release=false" >> "$GITHUB_OUTPUT"
+          fi
+
+  # ------------------------------------------------------------------------
+  # 2. 各 arch で release build を行い、archive を artifact に上げる。
+  #    matrix で 3 OS / 3 target を担当。
+  # ------------------------------------------------------------------------
+  build:
+    needs: check_version
+    if: needs.check_version.outputs.should_release == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            archive: zip
+            bin_ext: ".exe"
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            archive: tar.gz
+            bin_ext: ""
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            archive: tar.gz
+            bin_ext: ""
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+
+      - name: Install ALSA dev (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libasound2-dev
+
+      - name: Build release binary
+        run: cargo build --release --target ${{ matrix.target }} --bin lcvgc
+
+      # archive 名は `lcvgc-<version>-<target>.<archive>` で統一。
+      # cargo-binstall の pkg-url パターンが `{ name }-{ version }-{ target }`
+      # を期待するため、この命名を変えると metadata 側も書き換える必要あり。
+      - name: Package archive
+        id: pkg
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="${{ needs.check_version.outputs.version }}"
+          target="${{ matrix.target }}"
+          archive_fmt="${{ matrix.archive }}"
+          bin_ext="${{ matrix.bin_ext }}"
+          pkg_dir="lcvgc-${version}-${target}"
+          mkdir "$pkg_dir"
+          cp "target/${target}/release/lcvgc${bin_ext}" "$pkg_dir/"
+          cp README.md "$pkg_dir/" 2>/dev/null || true
+          cp LICENSE "$pkg_dir/" 2>/dev/null || true
+
+          if [ "$archive_fmt" = "zip" ]; then
+            archive_name="${pkg_dir}.zip"
+            7z a "$archive_name" "$pkg_dir"
+          else
+            archive_name="${pkg_dir}.tar.gz"
+            tar -czf "$archive_name" "$pkg_dir"
+          fi
+          echo "archive_name=$archive_name" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: lcvgc-${{ matrix.target }}
+          path: ${{ steps.pkg.outputs.archive_name }}
+          if-no-files-found: error
+          retention-days: 7
+
+  # ------------------------------------------------------------------------
+  # 3. 全 arch の archive をダウンロードし、tag を打って Release を作る。
+  #    softprops/action-gh-release は tag が無ければ自動で作る。
+  # ------------------------------------------------------------------------
+  release:
+    needs: [check_version, build]
+    if: needs.check_version.outputs.should_release == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: List downloaded artifacts
+        run: ls -la artifacts/
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ needs.check_version.outputs.version }}
+          name: v${{ needs.check_version.outputs.version }}
+          generate_release_notes: true
+          files: artifacts/*
+          fail_on_unmatched_files: true

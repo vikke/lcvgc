@@ -31,3 +31,19 @@ windows-sys = { version = "0.59", features = [
 
 [dev-dependencies]
 tokio = { version = "1", features = ["full"] }
+
+# cargo-binstall のための metadata。GitHub Release に置いた archive を
+# download install するための URL pattern を指定する。
+# release.yml が `lcvgc-<version>-<target>.<archive>` 形式で archive を
+# アップロードするため、それに整合する pkg-url を書く。
+#
+# Metadata for cargo-binstall: tells the tool how to find the prebuilt
+# archive on GitHub Releases. Must stay in sync with the archive naming
+# used by .github/workflows/release.yml.
+[package.metadata.binstall]
+pkg-url = "{ repo }/releases/download/v{ version }/{ name }-{ version }-{ target }.{ archive-format }"
+pkg-fmt = "tgz"
+bin-dir = "{ name }-{ version }-{ target }/{ bin }{ binary-ext }"
+
+[package.metadata.binstall.overrides.x86_64-pc-windows-msvc]
+pkg-fmt = "zip"
