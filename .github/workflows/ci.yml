@@ -1,24 +1,49 @@
 name: CI
 
-# CI 用の build & test。release.yml が同 commit の artifact を再利用するため、
-# 各 OS の release build を target 指定で行い、archive にして upload する。
-# PR 時の artifact も `gh run download` で手元に取り出して branch の動作確認に
-# 使える。
+# CI と Release の一体化 workflow。
 #
-# Builds and tests on three OSes. Each job also produces a release archive
-# uploaded as an artifact so that release.yml can reuse it for the same SHA
-# (and PR authors can pull the binary via `gh run download`).
+# - lint:      rustfmt + clippy
+# - build-and-test: 3 OS で release build + test を行い、archive を artifact に上げる
+# - release:   build-and-test 完了後に push (= main 含む全 branch) なら走り、
+#              CI artifact を集めて固定タグ `latest` の GitHub Release を上書きする
+#
+# 1 人開発 + 「最新だけあれば良い」前提のため、release は version 別ではなく
+# `latest` 1 個固定で運用する。各 push のたびに asset が上書きされる。
+# version 別履歴が欲しくなったら `softprops/action-gh-release` を別タグでも
+# 呼び出す形に拡張する。
+#
+# Single workflow combining CI and Release. After tests pass, the release
+# job overwrites the fixed `latest` tag's GitHub Release with the freshly
+# built archives. Suited for a one-person dev loop where only the most
+# recent build matters.
 
 on:
   push:
-    branches: [main]
   pull_request:
     branches: [main]
+
+permissions:
+  contents: write  # release job が tag / release を作成・更新するのに必要
 
 env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: Install ALSA dev
+        run: sudo apt-get update && sudo apt-get install -y libasound2-dev
+      - name: Format check
+        run: cargo fmt --all -- --check
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
   build-and-test:
     needs: lint
     strategy:
@@ -59,23 +84,21 @@ jobs:
       - name: Test (workspace)
         run: cargo test --workspace --target ${{ matrix.target }}
 
-      # release.yml が同 commit の artifact を流用するため、
-      # archive 名 / artifact 名は release.yml が前提とするものに揃える。
-      # version は Cargo.toml から読む。lcvgc / lcvgc-core の不一致は
-      # release.yml 側でも assert するが、CI ではログ出すだけにする。
+      # archive 名 / pkg-dir 名は version を含めず target だけで固定する。
+      # 1 人開発 + latest 上書き運用のため、version-agnostic に統一しないと
+      # cargo binstall の bin-dir が version 違いで外れる。
       #
-      # Package the release binary into an archive so release.yml can
-      # download and attach it as-is.
+      # `pkg-dir` and archive use `lcvgc-<target>` (no version) so the
+      # cargo-binstall `bin-dir` template stays valid across upgrades.
       - name: Package release archive
         id: pkg
         shell: bash
         run: |
           set -euo pipefail
-          version=$(grep -E '^version = "' crates/lcvgc/Cargo.toml | head -1 | sed -E 's/.*"(.*)"/\1/')
           target="${{ matrix.target }}"
           archive_fmt="${{ matrix.archive }}"
           bin_ext="${{ matrix.bin_ext }}"
-          pkg_dir="lcvgc-${version}-${target}"
+          pkg_dir="lcvgc-${target}"
           mkdir "$pkg_dir"
           cp "target/${target}/release/lcvgc${bin_ext}" "$pkg_dir/"
           cp README.md "$pkg_dir/" 2>/dev/null || true
@@ -97,17 +120,60 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
-  lint:
+  # ------------------------------------------------------------------------
+  # 全 build-and-test (3 OS) が pass した上で push (PR ではない) の時だけ走る。
+  # 固定タグ `latest` の GitHub Release を毎回上書きアップロードする。
+  #
+  # Runs only on push events after all build-and-test jobs pass. Overwrites
+  # the fixed `latest` Release with the freshly built archives.
+  # ------------------------------------------------------------------------
+  release:
+    needs: build-and-test
+    if: github.event_name == 'push'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+
+      # 同 workflow run 内の build-and-test がアップロードした 3 archive を
+      # 一括 download。run id はデフォルトで current run。
+      # Downloads the archive artifacts uploaded by build-and-test in this
+      # same workflow run.
+      - name: Download archives from current run
+        uses: actions/download-artifact@v4
         with:
-          components: rustfmt, clippy
-      - uses: Swatinem/rust-cache@v2
-      - name: Install ALSA dev
-        run: sudo apt-get update && sudo apt-get install -y libasound2-dev
-      - name: Format check
-        run: cargo fmt --all -- --check
-      - name: Clippy
-        run: cargo clippy --workspace --all-targets -- -D warnings
+          path: artifacts
+          merge-multiple: true
+
+      - name: List downloaded artifacts
+        run: ls -la artifacts/
+
+      - name: Move archives to release_assets/
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p release_assets
+          find artifacts -type f \( -name '*.zip' -o -name '*.tar.gz' \) -exec cp {} release_assets/ \;
+          ls -la release_assets/
+
+      # 同名タグの release があれば asset を入れ替える。softprops/action-gh-release
+      # は同名 asset があれば置換する挙動なので、過去の asset が残らない。
+      # tag は `latest` 固定。release name にも commit SHA を含めて識別性を確保する。
+      #
+      # Overwrites the `latest` tag's release. The action replaces same-named
+      # assets, so old binaries are not retained.
+      - name: Upload to `latest` Release (overwrite)
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: latest
+          name: latest (build ${{ github.sha }})
+          body: |
+            最新 main / branch の自動 release ビルド。
+
+            - commit: ${{ github.sha }}
+            - branch: ${{ github.ref_name }}
+            - workflow run: ${{ github.run_id }}
+          files: release_assets/*
+          fail_on_unmatched_files: true
+          # 同名 release を上書き
+          # Overwrite the same-tagged release in place.
+          make_latest: true
