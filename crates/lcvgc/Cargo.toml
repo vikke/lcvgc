@@ -2,6 +2,11 @@
 name = "lcvgc"
 version = "0.9.5"
 edition = "2021"
+# cargo-binstall の `pkg-url` テンプレートで `{ repo }` を展開するため必須。
+# 未指定だと "missing key `repo`" で binstall が source build に fallback する。
+# Required so `cargo-binstall` can resolve `{ repo }` in pkg-url. Without
+# this field binstall fails to render the URL and falls back to source build.
+repository = "https://github.com/vikke/lcvgc"
 
 [lib]
 name = "lcvgc"
