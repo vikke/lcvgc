@@ -75,6 +75,12 @@ impl HighResolutionTimer {
                 );
             }
             disable_timer_resolution_throttling();
+            // 診断ログ: Windows ビルドと現在の実 timer resolution。
+            // PR #59 までの fix で API が「成功」と返っても tempo が遅い事例が出ているため、
+            // 「実際に何 ns 粒度で動いているか」「ビルド番号は IGNORE_TIMER_RESOLUTION の
+            // サポート対象 (22H2 / build 22621 以降) か」を可視化する。
+            log_windows_build_info();
+            log_current_timer_resolution();
         }
         Self { _private: () }
     }
@@ -149,6 +155,115 @@ fn disable_timer_resolution_throttling() {
 #[allow(dead_code)]
 fn disable_timer_resolution_throttling() {}
 
+/// 現在の実 timer resolution を `NtQueryTimerResolution` で取得し info ログに出す
+///
+/// `timeBeginPeriod(1)` や Power Throttling 抑止が「成功」を返しても、Windows の
+/// 実 timer resolution は他プロセスとの集約や OS 側の制約で別の値になっている事が
+/// ある。本関数は「現在 / 最小 / 最大」の 3 値 (100ns 単位) をそのまま info で出し、
+/// ユーザー側で「本当に 1ms 粒度になっているか」を確認できるようにする。
+/// 現在値が 10000 (= 1ms) を超えていたら warn を併発する。
+///
+/// Logs the actual current / minimum / maximum timer resolution returned by
+/// `NtQueryTimerResolution`. Values are in 100ns units. Warns if `current` is
+/// worse than 1ms (i.e. `current > 10_000`).
+#[cfg(windows)]
+fn log_current_timer_resolution() {
+    use windows_sys::Wdk::System::SystemInformation::NtQueryTimerResolution;
+
+    let mut maximum: u32 = 0;
+    let mut minimum: u32 = 0;
+    let mut current: u32 = 0;
+    // SAFETY: NtQueryTimerResolution は 3 つの out 引数に書き戻すだけの API で、
+    // それぞれローカル u32 のスタックに格納される。NTSTATUS が非ゼロの場合は
+    // out 引数の中身は未定義扱いとし、ログ出力もスキップする。
+    // SAFETY: NtQueryTimerResolution writes into three u32 out-params. On non-
+    // zero NTSTATUS we treat the out-params as undefined and skip the log.
+    let status = unsafe { NtQueryTimerResolution(&mut maximum, &mut minimum, &mut current) };
+    if status != 0 {
+        tracing::warn!(
+            "NtQueryTimerResolution が失敗しました (NTSTATUS=0x{:08X})",
+            status as u32
+        );
+        return;
+    }
+    // NB: ntdll の語法では maximum = 一番粗い値, minimum = 一番細かい値。
+    // 数値としては maximum >= current >= minimum となる。表示はそのまま 100ns 単位。
+    tracing::info!(
+        "現在 timer resolution: current={} ×100ns ({} us), min={} ×100ns, max={} ×100ns",
+        current,
+        current / 10,
+        minimum,
+        maximum
+    );
+    if current > 10_000 {
+        tracing::warn!(
+            "実 timer resolution が 1ms より粗い ({} us). \
+             timeBeginPeriod(1) と Power Throttling 抑止が効いていない可能性があります",
+            current / 10
+        );
+    }
+}
+
+/// 非 Windows 向け no-op
+#[cfg(not(windows))]
+#[allow(dead_code)]
+fn log_current_timer_resolution() {}
+
+/// `RtlGetVersion` で Windows ビルド情報を取得し info ログに出す
+///
+/// `PROCESS_POWER_THROTTLING_IGNORE_TIMER_RESOLUTION` は Windows 11 22H2
+/// (build 22621) 以降でしか機能しないため、それ未満の場合は warn を併発する。
+/// `GetVersionExW` は manifest に依存して古い値を返す事があるが、`RtlGetVersion`
+/// は manifest を介さず実 OS バージョンを返すためこちらを使う。
+///
+/// Logs the Windows build via `RtlGetVersion` (manifest-independent). Warns
+/// when build number is below 22621 (Windows 11 22H2), where
+/// `PROCESS_POWER_THROTTLING_IGNORE_TIMER_RESOLUTION` is not supported.
+#[cfg(windows)]
+fn log_windows_build_info() {
+    use windows_sys::Wdk::System::SystemServices::RtlGetVersion;
+    use windows_sys::Win32::System::SystemInformation::OSVERSIONINFOW;
+
+    // OSVERSIONINFOW は dwOSVersionInfoSize に自身のサイズをセットして渡す API。
+    // それ以外は RtlGetVersion 側で埋めてくれるため zeroed で初期化し size のみ書く。
+    // OSVERSIONINFOW requires the caller to set dwOSVersionInfoSize; the rest
+    // is filled in by RtlGetVersion.
+    let mut info: OSVERSIONINFOW = unsafe { core::mem::zeroed() };
+    info.dwOSVersionInfoSize = core::mem::size_of::<OSVERSIONINFOW>() as u32;
+    // SAFETY: 上で OSVERSIONINFOW をゼロ初期化しサイズフィールドを設定済み。
+    // RtlGetVersion は同構造体を書き込むだけで out 範囲は info 自身に収まる。
+    // SAFETY: `info` was zero-initialized above with the correct size set.
+    let status = unsafe { RtlGetVersion(&mut info) };
+    if status != 0 {
+        tracing::warn!(
+            "RtlGetVersion が失敗しました (NTSTATUS=0x{:08X})",
+            status as u32
+        );
+        return;
+    }
+    tracing::info!(
+        "Windows ビルド: {}.{} build={}",
+        info.dwMajorVersion,
+        info.dwMinorVersion,
+        info.dwBuildNumber
+    );
+    // 22H2 = build 22621。それ未満では IGNORE_TIMER_RESOLUTION フラグは
+    // SetProcessInformation が「成功」を返しても OS 側で無視される。
+    if info.dwBuildNumber < 22621 {
+        tracing::warn!(
+            "Windows build {} は PROCESS_POWER_THROTTLING_IGNORE_TIMER_RESOLUTION 非対応 \
+             (要 build 22621 / Windows 11 22H2 以降). \
+             バックグラウンド時 tempo が遅延する可能性があります",
+            info.dwBuildNumber
+        );
+    }
+}
+
+/// 非 Windows 向け no-op
+#[cfg(not(windows))]
+#[allow(dead_code)]
+fn log_windows_build_info() {}
+
 impl Drop for HighResolutionTimer {
     fn drop(&mut self) {
         #[cfg(windows)]
@@ -189,5 +304,26 @@ mod tests {
     #[test]
     fn disable_throttling_does_not_panic() {
         disable_timer_resolution_throttling();
+    }
+
+    /// `log_current_timer_resolution()` が panic しない事を確認する smoke test。
+    /// Windows では NtQueryTimerResolution を呼び、Linux 等では no-op。失敗時も
+    /// warn ログだけで return する設計のため panic しない。
+    ///
+    /// Smoke test: `log_current_timer_resolution()` must not panic on any
+    /// platform. Windows hits ntdll, others are no-ops.
+    #[test]
+    fn log_current_timer_resolution_does_not_panic() {
+        log_current_timer_resolution();
+    }
+
+    /// `log_windows_build_info()` が panic しない事を確認する smoke test。
+    /// Windows では RtlGetVersion を呼び、それ以外では no-op。
+    ///
+    /// Smoke test: `log_windows_build_info()` must not panic on any
+    /// platform.
+    #[test]
+    fn log_windows_build_info_does_not_panic() {
+        log_windows_build_info();
     }
 }

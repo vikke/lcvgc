@@ -470,6 +470,22 @@ pub async fn run_driver_with_shared(
             "tick: waited={}us step={}us (target_interval={}us)",
             waited_us, step_us, last_dur_us
         );
+        // 診断ログ: interval.tick() の実 wait 時間が target の 5 倍を超えたら warn。
+        // OS の timer resolution が 1ms に効いていない (15.6ms に丸められている等) と
+        // ここに引っかかる。debug を有効化しなくても気付けるようにする。
+        // u128 同士の比較で 5 倍判定。target が 0 だと意味が無いので max(1) してから比較する。
+        //
+        // Diagnostic warn: alert when actual wait exceeds target by 5x. This
+        // typically catches the "Windows timer resolution rounded to 15.6ms"
+        // failure mode without needing debug-level logs.
+        let target_us_u128 = u128::from(last_dur_us.max(1));
+        if waited_us > target_us_u128.saturating_mul(5) {
+            warn!(
+                "tick wait 異常: target={}us 実測={}us (≧5x). \
+                 OS timer resolution が要求粒度に追いついていない可能性あり",
+                last_dur_us, waited_us
+            );
+        }
     }
 }
 
