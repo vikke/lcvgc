@@ -8,16 +8,16 @@ use std::sync::Arc;
 
 use clap::Parser;
 use cli::Cli;
+use lcvgc::engine::config::Config;
+use lcvgc::engine::device_event::DeviceEvent;
+use lcvgc::engine::evaluator::Evaluator;
+use lcvgc::engine::midi_sink::MidirSink;
+use lcvgc::engine::playback::{run_driver_with_shared, BoxedSink, SharedSinks, SinksNotify};
+use lcvgc::engine::watcher::{run_hot_reload, WatcherConfig};
+use lcvgc::midi::monitor::{log_startup_ports, run_port_monitor, PortMonitorConfig};
+use lcvgc::midi::port::PortManager;
+use lcvgc::server::run_server;
 use lcvgc::{build_midir_sink, run_device_event_receiver_with_initial};
-use lcvgc_core::engine::config::Config;
-use lcvgc_core::engine::device_event::DeviceEvent;
-use lcvgc_core::engine::evaluator::Evaluator;
-use lcvgc_core::engine::midi_sink::MidirSink;
-use lcvgc_core::engine::playback::{run_driver_with_shared, BoxedSink, SharedSinks, SinksNotify};
-use lcvgc_core::engine::watcher::{run_hot_reload, WatcherConfig};
-use lcvgc_core::midi::monitor::{log_startup_ports, run_port_monitor, PortMonitorConfig};
-use lcvgc_core::midi::port::PortManager;
-use lcvgc_core::server::run_server;
 use tokio::sync::{mpsc, Mutex, Notify};
 use tracing::{error, info, warn};
 
@@ -34,7 +34,7 @@ use tracing::{error, info, warn};
 ///
 /// # Errors
 /// ポート接続に失敗した場合は `MidiError` を返す。
-fn build_default_sink(port_name: &str) -> Result<MidirSink, lcvgc_core::midi::MidiError> {
+fn build_default_sink(port_name: &str) -> Result<MidirSink, lcvgc::midi::MidiError> {
     let mut pm = PortManager::new();
     pm.connect("default", port_name)?;
     Ok(MidirSink::new(pm, "default".to_string()))

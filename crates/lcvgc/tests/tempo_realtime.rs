@@ -17,10 +17,10 @@ use std::time::{Duration, Instant};
 use tokio::sync::{Mutex, Notify};
 use tokio::time::sleep;
 
-use lcvgc_core::engine::evaluator::Evaluator;
-use lcvgc_core::engine::midi_sink::SharedMockSink;
-use lcvgc_core::engine::playback::{run_driver_with_shared, BoxedSink, SharedSinks, SinksNotify};
-use lcvgc_core::midi::message::MidiMessage;
+use lcvgc::engine::evaluator::Evaluator;
+use lcvgc::engine::midi_sink::SharedMockSink;
+use lcvgc::engine::playback::{run_driver_with_shared, BoxedSink, SharedSinks, SinksNotify};
+use lcvgc::midi::message::MidiMessage;
 
 /// 1 bar あたり 32 個の NoteOn (32 分音符) を出すループ clip を仕込む DSL。
 /// PPQ=480 / 4 拍 / 8 ticks per 32nd note なので、note 間隔 = 60 ticks。

@@ -2,14 +2,14 @@
 //!
 //! `lcvgc` バイナリ側 (main.rs) はこの receiver を購読し、`MidirSink` を
 //! 動的に構築・差し替えして `PlaybackDriver` の共有 sink マップを更新する。
-//! Evaluator 自身は MIDI ポート接続ロジックを持たないため、core から
-//! バイナリ層への一方向通知としてこの enum を介する。
+//! Evaluator 自身は MIDI ポート接続ロジックを持たないため、エンジン層から
+//! バイナリ起動経路への一方向通知としてこの enum を介する。
 //!
 //! Event emitted by `Evaluator` after evaluating a `Block::Device`.
 //! The `lcvgc` binary subscribes to the receiver, builds/swaps the
 //! corresponding `MidirSink`, and updates the `PlaybackDriver`'s shared
-//! sink map. Keeps MIDI-port plumbing out of `lcvgc-core`, flowing as a
-//! one-way notification from core to the binary.
+//! sink map. Keeps MIDI-port plumbing out of the engine modules, flowing
+//! as a one-way notification from the engine to the binary entry path.
 
 /// Device 定義の追加・更新通知 / Device definition upsert notification
 ///

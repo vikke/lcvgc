@@ -621,20 +621,9 @@ name = "lcvgc"
 version = "0.9.5"
 dependencies = [
  "clap",
- "dirs",
- "lcvgc-core",
- "tokio",
- "tracing",
- "tracing-subscriber",
- "windows-sys 0.59.0",
-]
-
-[[package]]
-name = "lcvgc-core"
-version = "0.9.5"
-dependencies = [
  "criterion",
  "ctrlc",
+ "dirs",
  "midir",
  "nom",
  "notify",
@@ -648,6 +637,7 @@ dependencies = [
  "toml",
  "tracing",
  "tracing-subscriber",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]

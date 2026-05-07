@@ -18,11 +18,11 @@ use std::time::Duration;
 use tokio::sync::{Mutex, Notify};
 use tokio::time::timeout;
 
+use lcvgc::engine::device_event::DeviceEvent;
+use lcvgc::engine::midi_sink::SharedMockSink;
+use lcvgc::engine::playback::{BoxedSink, SharedSinks, SinksNotify};
+use lcvgc::midi::message::MidiMessage;
 use lcvgc::{apply_device_event, DeviceApplyOutcome};
-use lcvgc_core::engine::device_event::DeviceEvent;
-use lcvgc_core::engine::midi_sink::SharedMockSink;
-use lcvgc_core::engine::playback::{BoxedSink, SharedSinks, SinksNotify};
-use lcvgc_core::midi::message::MidiMessage;
 
 /// 空の `SharedSinks` を生成するテスト用ヘルパ。
 /// Helper that creates an empty `SharedSinks` for tests.
@@ -211,7 +211,7 @@ async fn apply_to_existing_sink_sends_all_notes_off_to_old_sink() {
     // Confirm the sink stored in the map is the new handle by sending a probe
     // message through the boxed sink and observing it through `new_handle`.
     let probe = MidiMessage::NoteOn {
-        channel: lcvgc_core::midi::channel::MidiChannel::from_zero_based(7).unwrap(),
+        channel: lcvgc::midi::channel::MidiChannel::from_zero_based(7).unwrap(),
         note: 42,
         velocity: 99,
     };

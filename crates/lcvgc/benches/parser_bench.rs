@@ -2,10 +2,10 @@
 //! Benchmarks for the parser and evaluation engine
 
 use criterion::{black_box, criterion_group, criterion_main, Criterion};
-use lcvgc_core::engine::clock::Clock;
-use lcvgc_core::engine::compiler::compile_clip;
-use lcvgc_core::engine::evaluator::Evaluator;
-use lcvgc_core::parser::parse_source;
+use lcvgc::engine::clock::Clock;
+use lcvgc::engine::compiler::compile_clip;
+use lcvgc::engine::evaluator::Evaluator;
+use lcvgc::parser::parse_source;
 
 /// シンプルなDSLソース（tempo + device + instrument）
 /// Simple DSL source (tempo + device + instrument)
