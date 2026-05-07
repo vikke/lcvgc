@@ -32,18 +32,18 @@ windows-sys = { version = "0.59", features = [
 [dev-dependencies]
 tokio = { version = "1", features = ["full"] }
 
-# cargo-binstall のための metadata。GitHub Release に置いた archive を
-# download install するための URL pattern を指定する。
-# release.yml が `lcvgc-<version>-<target>.<archive>` 形式で archive を
-# アップロードするため、それに整合する pkg-url を書く。
+# cargo-binstall のための metadata。
+# 1 人開発フェーズでは ci.yml が固定タグ `latest` の GitHub Release を毎 push
+# で上書きする運用。バージョン非依存の URL / archive 名にしてあるので、
+# ユーザー側は `cargo binstall --git ... lcvgc --force` で常に最新が落ちる。
 #
-# Metadata for cargo-binstall: tells the tool how to find the prebuilt
-# archive on GitHub Releases. Must stay in sync with the archive naming
-# used by .github/workflows/release.yml.
+# Metadata for cargo-binstall. The CI workflow overwrites the `latest`
+# tag's GitHub Release on every push, so URLs / archive layout are kept
+# version-agnostic.
 [package.metadata.binstall]
-pkg-url = "{ repo }/releases/download/v{ version }/{ name }-{ version }-{ target }.{ archive-format }"
+pkg-url = "{ repo }/releases/download/latest/{ name }-{ target }.{ archive-format }"
 pkg-fmt = "tgz"
-bin-dir = "{ name }-{ version }-{ target }/{ bin }{ binary-ext }"
+bin-dir = "{ name }-{ target }/{ bin }{ binary-ext }"
 
 [package.metadata.binstall.overrides.x86_64-pc-windows-msvc]
 pkg-fmt = "zip"
