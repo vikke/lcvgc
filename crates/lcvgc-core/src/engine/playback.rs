@@ -22,11 +22,12 @@
 //! tearing the driver down.
 
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, RwLock};
 use std::time::{Duration, Instant};
 
+use tokio::runtime::Handle;
 use tokio::sync::{Mutex, MutexGuard, Notify};
-use tokio::time;
 use tracing::{debug, error, info, warn};
 
 use crate::engine::clock::Clock;
@@ -365,11 +366,78 @@ pub async fn run_driver(
     run_driver_with_shared(evaluator, shared, notify, clock).await;
 }
 
+/// busy wait に切り替えるしきい値
+///
+/// 残り時間がこれ以下になったら `std::thread::sleep` を諦めて `spin_loop` で
+/// 詰める。Windows の OS timer resolution が 15.6ms に丸められても、最後の
+/// 2ms 以下を spin で詰めれば想定 deadline ±数十us に収まる。値を大きくする
+/// ほど精度が上がるが CPU 消費も増える。
+///
+/// Threshold below which we switch from `thread::sleep` to busy spinning.
+/// Larger values give tighter deadline accuracy but burn more CPU.
+pub const SPIN_THRESHOLD: Duration = Duration::from_millis(2);
+
+/// 次 tick までの待ち方を表す純粋な戦略
+///
+/// `next_wait_strategy(now, deadline)` の返り値で、driver loop はこれを見て
+/// `thread::sleep` するか `spin_loop` で busy wait するかを切り替える。
+/// 単純な enum なので副作用なし、テストで網羅可能。
+///
+/// Pure decision returned by `next_wait_strategy`. The driver loop dispatches
+/// `thread::sleep` vs `spin_loop` based on this value.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum WaitStrategy {
+    /// この時間 `thread::sleep` で粗く待つ
+    /// Coarse-grained `thread::sleep` for the given duration
+    Sleep(Duration),
+    /// この時刻まで `spin_loop` で busy wait する
+    /// Spin-loop until the given instant
+    SpinUntil(Instant),
+    /// もう deadline を過ぎている (即 step すべき)
+    /// Deadline already passed; fire immediately
+    NoWait,
+}
+
+/// `now` から `deadline` までの待ち方を決める純粋関数
+///
+/// - `now >= deadline`: 既に過ぎているので `NoWait`
+/// - 残り `<= SPIN_THRESHOLD`: `SpinUntil(deadline)` で busy wait
+/// - 残り `> SPIN_THRESHOLD`: `Sleep(残り - SPIN_THRESHOLD)` で粗く待ち、
+///   次回 iteration で spin 領域に入る想定
+///
+/// # Arguments
+/// * `now` - 現在時刻
+/// * `deadline` - 次 tick の目標時刻
+///
+/// # Returns
+/// `WaitStrategy` enum
+///
+/// Pure function deciding how to wait. Sleeps coarsely up to
+/// `deadline - SPIN_THRESHOLD`, then spins for the remaining ≤ 2ms.
+fn next_wait_strategy(now: Instant, deadline: Instant) -> WaitStrategy {
+    if now >= deadline {
+        return WaitStrategy::NoWait;
+    }
+    let remaining = deadline - now;
+    if remaining <= SPIN_THRESHOLD {
+        WaitStrategy::SpinUntil(deadline)
+    } else {
+        WaitStrategy::Sleep(remaining - SPIN_THRESHOLD)
+    }
+}
+
 /// `SharedSinks` + `SinksNotify` 版の再生ドライバランナ（Issue #54）
 ///
 /// sinks が空の間は `notify.notified().await` でブロックし、receiver タスクが
 /// `notify_one()` を呼んで sink を追加した時点で目を覚まし、tick ループに入る。
 /// device の動的登録（LSP 経由など）に追従して driver を起動するためのエントリ。
+///
+/// PR #60: tick の wait に `tokio::time::interval` を使うのをやめ、`spawn_blocking`
+/// で確保した OS スレッド上で `thread::sleep` + `spin_loop` のハイブリッドに
+/// 書き換えた。Windows 11 24H2 (build 26100+) では `timeBeginPeriod(1)` を呼んでも
+/// tokio の time driver の wait が 15.6ms 粒度に丸められるケースがあるため、
+/// OS timer resolution に依存しない実装にする。step_once は async のため
+/// `Handle::block_on` で同期化して呼ぶ。
 ///
 /// # Arguments
 /// * `evaluator` - 共有 Evaluator
@@ -381,9 +449,11 @@ pub async fn run_driver(
 /// この関数自体は無限ループで `Result` を返さない。`step_once` のエラーは
 /// `error!` ログに記録した上でループを継続する。
 ///
-/// Run the playback driver with a shared sink map. Parks on `notify`
-/// while sinks are empty so external code can add the first sink later
-/// (e.g. when a `device` block is evaluated dynamically via LSP).
+/// Run the playback driver with a shared sink map. Parks on `notify` while
+/// sinks are empty. PR #60: switched the tick wait from `tokio::time::interval`
+/// to a `spawn_blocking` thread that mixes `thread::sleep` and `spin_loop`,
+/// which removes dependence on the OS timer resolution. `step_once` is async
+/// and is called via `Handle::block_on` on the blocking thread.
 pub async fn run_driver_with_shared(
     evaluator: Arc<Mutex<Evaluator>>,
     sinks: SharedSinks,
@@ -404,49 +474,119 @@ pub async fn run_driver_with_shared(
         notify.notified().await;
     }
 
-    let mut driver = PlaybackDriver::with_shared_sinks(evaluator, Arc::clone(&sinks));
-
-    // 起動時の tick duration を読み取り、interval を初期化する。
-    // 以降 tempo が変わっても interval を作り直すだけで済むよう、
-    // 直近の `tick_duration_us` を保持する。
-    //
-    // Initialize the tick interval from the current clock. The latest
-    // `tick_duration_us` is cached so that subsequent tempo changes can
-    // rebuild the interval cheaply.
-    let mut last_dur_us = read_tick_duration_us(&clock);
-    let mut interval = time::interval(Duration::from_micros(last_dur_us));
-    interval.set_missed_tick_behavior(time::MissedTickBehavior::Delay);
-
     {
         let map = sinks.lock().await;
-        let (bpm, ppq) = {
+        let (bpm, ppq, dur_us) = {
             let c = clock.read().expect("clock RwLock poisoned");
-            (c.bpm(), c.ppq())
+            (c.bpm(), c.ppq(), c.tick_duration_us().max(1))
         };
         info!(
             "再生ドライバ起動: tick duration = {} us (BPM={}, PPQ={}, devices={:?})",
-            last_dur_us,
+            dur_us,
             bpm,
             ppq,
             map.keys().collect::<Vec<_>>()
         );
     }
 
-    loop {
-        // PR #57 の遅延調査用計測: interval.tick() の実 wait 時間と step_once の
-        // 所要時間を切り分けて debug ログに吐く。`RUST_LOG=lcvgc_core::engine::playback=debug`
-        // で有効化する。
-        // Diagnostic instrumentation: separately measures interval wait time
-        // and step_once duration.
-        let before_wait = Instant::now();
-        interval.tick().await;
-        let waited_us = before_wait.elapsed().as_micros();
+    // tokio runtime ハンドルを spawn_blocking 先のスレッドに渡し、async な
+    // step_once を block_on で呼ぶ。spawn_blocking はこの async 関数を呼んだ
+    // tokio runtime のブロッキング pool を使うため、Handle::current() でその
+    // runtime ハンドルを取得しておく。
+    //
+    // Capture the current runtime handle so the blocking thread can drive
+    // the async `step_once` via `block_on`.
+    let handle = Handle::current();
+    let evaluator_for_thread = Arc::clone(&evaluator);
+    let sinks_for_thread = Arc::clone(&sinks);
+    let clock_for_thread = Arc::clone(&clock);
+    // 協調的シャットダウンフラグ。本 async 関数が drop / abort された場合に
+    // ガード経由で true がセットされ、blocking loop が次 iteration で抜ける。
+    // spawn_blocking で起こした OS スレッドは tokio から abort できないため、
+    // この明示的シグナルでスレッドリークを防ぐ。
+    //
+    // Cooperative shutdown flag. The guard sets this to true on drop, allowing
+    // the OS thread spawned via `spawn_blocking` to exit (since `spawn_blocking`
+    // tasks cannot be aborted by tokio).
+    let shutdown = Arc::new(AtomicBool::new(false));
+    let shutdown_for_thread = Arc::clone(&shutdown);
 
-        // tempo が変わった場合、新しい tick duration で interval を作り直す。
-        // 比較は u64 1 個なので毎 tick やってもコストは無視できる。
-        //
-        // Rebuild the interval if tempo changed. Comparing one u64 per tick
-        // is negligible.
+    let join = tokio::task::spawn_blocking(move || {
+        driver_blocking_loop(
+            handle,
+            evaluator_for_thread,
+            sinks_for_thread,
+            clock_for_thread,
+            shutdown_for_thread,
+        );
+    });
+
+    // この async 関数のスコープを抜ける時 (drop / abort 含む) に必ず
+    // shutdown を立てる小さなガード。spawn_blocking 側はこれを見てループを
+    // 抜ける。
+    // RAII guard that sets the shutdown flag on drop, ensuring the blocking
+    // loop terminates when the parent async task is cancelled.
+    struct ShutdownGuard(Arc<AtomicBool>);
+    impl Drop for ShutdownGuard {
+        fn drop(&mut self) {
+            self.0.store(true, Ordering::SeqCst);
+        }
+    }
+    let _guard = ShutdownGuard(Arc::clone(&shutdown));
+
+    // 通常 driver_blocking_loop は shutdown が立つまで return しない。
+    // spawn_blocking が panic した場合のみエラーログを出す。
+    // Normally the blocking loop runs until `shutdown` is set; this returns
+    // early only on panic.
+    if let Err(e) = join.await {
+        error!("driver blocking task が異常終了: {:?}", e);
+    }
+}
+
+/// blocking thread 上で回る driver の本体
+///
+/// `spawn_blocking` で確保した OS スレッド上で動作し、`Instant` ベースの累積
+/// deadline を維持しつつ `thread::sleep` + `spin_loop` のハイブリッドで wait
+/// する。step_once は async なので `Handle::block_on` で同期化して呼ぶ。
+/// tempo 変更は毎 tick 後にチェックし、変化があれば次回 deadline を新 tick
+/// duration で組み直す。
+///
+/// # Arguments
+/// * `handle` - 親 tokio runtime のハンドル (block_on 用)
+/// * `evaluator` - 共有 Evaluator
+/// * `sinks` - 共有 sink マップ
+/// * `clock` - 共有 Clock
+///
+/// Tick loop running on the blocking thread. Uses an `Instant`-based deadline
+/// schedule with `thread::sleep` + `spin_loop` for sub-millisecond accuracy
+/// independent of OS timer resolution. Calls async `step_once` via
+/// `handle.block_on`.
+fn driver_blocking_loop(
+    handle: Handle,
+    evaluator: Arc<Mutex<Evaluator>>,
+    sinks: SharedSinks,
+    clock: Arc<RwLock<Clock>>,
+    shutdown: Arc<AtomicBool>,
+) {
+    let mut driver = PlaybackDriver::with_shared_sinks(evaluator, sinks);
+
+    let mut last_dur_us = read_tick_duration_us(&clock);
+    // 累積 deadline。最初の tick は「即 fire」したいので now を起点にする。
+    // Cumulative deadline. Start from now so the first tick fires immediately.
+    let mut next_deadline = Instant::now();
+
+    loop {
+        // 協調的シャットダウン: 親 async 関数が drop / abort された場合に
+        // フラグが立つので、ループの先頭で必ずチェックする。
+        // Cooperative shutdown: bail out at the top of each iteration if the
+        // parent async task signaled cancellation.
+        if shutdown.load(Ordering::SeqCst) {
+            debug!("driver blocking loop: shutdown 検知につき終了");
+            return;
+        }
+
+        // tempo 変更検知 (deadline 計算前に行う)
+        // Detect tempo change before computing the next deadline.
         let cur_dur_us = read_tick_duration_us(&clock);
         if cur_dur_us != last_dur_us {
             let new_bpm = clock.read().expect("clock RwLock poisoned").bpm();
@@ -455,14 +595,30 @@ pub async fn run_driver_with_shared(
                 last_dur_us, cur_dur_us, new_bpm
             );
             last_dur_us = cur_dur_us;
-            interval = time::interval(Duration::from_micros(cur_dur_us));
-            interval.set_missed_tick_behavior(time::MissedTickBehavior::Delay);
-            // 直後の `tick()` を即時通過させて step を進める。
-            // The first `tick()` after `interval::interval` fires immediately.
+            // tempo 変更後は次 deadline を「今から新 tick duration」で振り直す。
+            // 既に予約済みの古い deadline が新 tempo に対して妥当かは保証できない。
+            // After tempo change, recompute the next deadline from now.
+            next_deadline = Instant::now();
         }
 
+        // 現在 deadline まで wait
+        // Wait until the current deadline.
+        let before_wait = Instant::now();
+        wait_until(next_deadline, &shutdown);
+        let waited_us = before_wait.elapsed().as_micros();
+        // wait_until 中に shutdown が立ったら、step を実行せずに上に戻って
+        // ループ先頭の早期 return に拾わせる。
+        // If shutdown was triggered during wait, skip step and exit on next
+        // iteration via the early return at the loop top.
+        if shutdown.load(Ordering::SeqCst) {
+            continue;
+        }
+
+        // step_once (async) を block_on で同期実行
+        // Drive the async step on this blocking thread.
         let before_step = Instant::now();
-        if let Err(e) = driver.step_once().await {
+        let step_result = handle.block_on(driver.step_once());
+        if let Err(e) = step_result {
             error!("再生ドライバエラー: {}", e);
         }
         let step_us = before_step.elapsed().as_micros();
@@ -470,14 +626,16 @@ pub async fn run_driver_with_shared(
             "tick: waited={}us step={}us (target_interval={}us)",
             waited_us, step_us, last_dur_us
         );
-        // 診断ログ: interval.tick() の実 wait 時間が target の 5 倍を超えたら warn。
-        // OS の timer resolution が 1ms に効いていない (15.6ms に丸められている等) と
-        // ここに引っかかる。debug を有効化しなくても気付けるようにする。
-        // u128 同士の比較で 5 倍判定。target が 0 だと意味が無いので max(1) してから比較する。
-        //
-        // Diagnostic warn: alert when actual wait exceeds target by 5x. This
-        // typically catches the "Windows timer resolution rounded to 15.6ms"
-        // failure mode without needing debug-level logs.
+
+        // 次 tick の deadline を加算。step_once 中の経過時間も含めて累積し、
+        // 全体としての BPM 精度を保つ (interval が遅れた分は次 tick で取り戻す)。
+        // Advance the deadline by one tick. Drift from a slow step_once is
+        // absorbed by `wait_until`'s `NoWait` path on the next iteration.
+        next_deadline += Duration::from_micros(last_dur_us);
+
+        // 診断 warn: 実 wait が target の 5 倍を超えていたら異常。
+        // PR #60 の busy/sleep 化後はほぼ出ないはずだが、回帰検知用に残す。
+        // Diagnostic warn (kept as a regression check after PR #60).
         let target_us_u128 = u128::from(last_dur_us.max(1));
         if waited_us > target_us_u128.saturating_mul(5) {
             warn!(
@@ -485,6 +643,57 @@ pub async fn run_driver_with_shared(
                  OS timer resolution が要求粒度に追いついていない可能性あり",
                 last_dur_us, waited_us
             );
+        }
+    }
+}
+
+/// `wait_until` 内の `thread::sleep` 1 回あたりの上限
+///
+/// shutdown 検知のため sleep を細切れにする。長すぎると shutdown 反応が遅れ、
+/// 短すぎるとオーバヘッドが増える。50ms にしておくと、driver 停止時の遅延は
+/// 最大 50ms 程度。
+///
+/// Maximum duration of a single `thread::sleep` slice in `wait_until`. Keeps
+/// shutdown latency bounded.
+const SLEEP_SLICE_CAP: Duration = Duration::from_millis(50);
+
+/// 指定 deadline まで sleep + spin で待つ
+///
+/// `next_wait_strategy` の戦略を見て、`Sleep` ならその時間 `thread::sleep`、
+/// `SpinUntil` なら `spin_loop` で busy wait、`NoWait` なら即 return。
+/// sleep 直後に「目覚めが早すぎた / 遅すぎた」場合に備え、while ループで
+/// 残時間を再評価する。
+///
+/// shutdown フラグが渡されており、sleep / spin の合間に true になったら
+/// 即 return する (driver_blocking_loop から協調的に止められる)。
+///
+/// # Arguments
+/// * `deadline` - この時刻まで待つ
+/// * `shutdown` - 協調的シャットダウンフラグ。true なら即 return
+///
+/// Wait until `deadline` using the sleep/spin hybrid. Sleeps are sliced by
+/// `SLEEP_SLICE_CAP` so that the shutdown flag is checked frequently.
+fn wait_until(deadline: Instant, shutdown: &AtomicBool) {
+    loop {
+        if shutdown.load(Ordering::SeqCst) {
+            return;
+        }
+        let now = Instant::now();
+        match next_wait_strategy(now, deadline) {
+            WaitStrategy::NoWait => return,
+            WaitStrategy::Sleep(d) => {
+                let slice = d.min(SLEEP_SLICE_CAP);
+                std::thread::sleep(slice);
+            }
+            WaitStrategy::SpinUntil(target) => {
+                while Instant::now() < target {
+                    if shutdown.load(Ordering::SeqCst) {
+                        return;
+                    }
+                    std::hint::spin_loop();
+                }
+                return;
+            }
         }
     }
 }
@@ -1149,5 +1358,73 @@ mod tests {
         );
 
         driver_handle.abort();
+    }
+
+    // =========================================================================
+    // PR #60: WaitStrategy / next_wait_strategy の単体テスト
+    // PR #60: Unit tests for WaitStrategy / next_wait_strategy
+    // =========================================================================
+
+    /// `now` が `deadline` を既に過ぎていれば `NoWait` を返す。
+    /// 同時刻ちょうども `NoWait` 扱いとする (この瞬間に step すべき)。
+    ///
+    /// When `now >= deadline`, the strategy is `NoWait`: it is already
+    /// time (or past time) to fire the next tick.
+    #[test]
+    fn next_wait_strategy_no_wait_when_deadline_passed() {
+        let now = Instant::now();
+        // deadline ≦ now の場合は全て NoWait
+        let past = now - Duration::from_micros(100);
+        assert!(matches!(
+            next_wait_strategy(now, past),
+            WaitStrategy::NoWait
+        ));
+        assert!(matches!(next_wait_strategy(now, now), WaitStrategy::NoWait));
+    }
+
+    /// 残り時間が `SPIN_THRESHOLD` (= 2ms) 以下なら `SpinUntil(deadline)` を返す。
+    /// 上限ぎりぎり (2ms ちょうど) も spin 側に倒し、busy wait 範囲を広めに取る。
+    ///
+    /// When the remaining time is at most `SPIN_THRESHOLD`, busy-wait via
+    /// `SpinUntil(deadline)` to maximize precision.
+    #[test]
+    fn next_wait_strategy_spins_when_within_threshold() {
+        let now = Instant::now();
+        // 残り 1us → spin
+        let near = now + Duration::from_micros(1);
+        match next_wait_strategy(now, near) {
+            WaitStrategy::SpinUntil(t) => assert_eq!(t, near),
+            other => panic!("expected SpinUntil, got {:?}", other),
+        }
+        // 残り 2ms ちょうど → spin (境界は spin 側)
+        let edge = now + SPIN_THRESHOLD;
+        match next_wait_strategy(now, edge) {
+            WaitStrategy::SpinUntil(t) => assert_eq!(t, edge),
+            other => panic!("expected SpinUntil at threshold, got {:?}", other),
+        }
+    }
+
+    /// 残り時間が `SPIN_THRESHOLD` を超えるなら `Sleep(残り - SPIN_THRESHOLD)` を返す。
+    /// sleep 後に SPIN_THRESHOLD 以下の領域に入る想定で、その後 spin に切り替わる。
+    ///
+    /// Beyond the threshold, sleep for `remaining - SPIN_THRESHOLD` so the
+    /// next iteration will be inside the spin region.
+    #[test]
+    fn next_wait_strategy_sleeps_minus_threshold_when_over() {
+        let now = Instant::now();
+        // 残り 10ms → Sleep(10ms - 2ms) = Sleep(8ms)
+        let far = now + Duration::from_millis(10);
+        match next_wait_strategy(now, far) {
+            WaitStrategy::Sleep(d) => {
+                assert_eq!(d, Duration::from_millis(10) - SPIN_THRESHOLD);
+            }
+            other => panic!("expected Sleep, got {:?}", other),
+        }
+        // 残り 2ms + 1us → 1us だけ sleep
+        let just_over = now + SPIN_THRESHOLD + Duration::from_micros(1);
+        match next_wait_strategy(now, just_over) {
+            WaitStrategy::Sleep(d) => assert_eq!(d, Duration::from_micros(1)),
+            other => panic!("expected Sleep just over threshold, got {:?}", other),
+        }
     }
 }
