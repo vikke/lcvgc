@@ -1,26 +1,26 @@
 name: Release
 
-# main の Cargo.toml version が変わったら自動で各 arch の binary を
-# release assets としてアップロードする。タグは workflow が自動で打つ。
+# main の Cargo.toml version が変わったら、CI run が同 commit で作った
+# archive artifact を流用して GitHub Release を作る。
+# 重複 build を避けるため build job 自体は持たない (PR #63)。
 #
-# Auto-release flow: when the version in `crates/lcvgc/Cargo.toml` (or
-# `lcvgc-core/Cargo.toml`) changes on main, build 3-arch binaries and
-# publish a `v<version>` GitHub Release with archive assets.
+# Reuses the archive artifacts produced by ci.yml at the same commit SHA
+# (PR #63), eliminating the duplicate release build.
 
 on:
   push:
     branches: [main]
   # Actions UI から手動で起動できるようにする。version 比較はスキップし、
   # 現在の Cargo.toml の version をそのまま使って release を作る。
-  # 初回 release (まだ過去 commit に release が無い時) や、何らかの理由で
-  # main push 時の自動 release が走らなかった時のリカバリ用。
+  # 初回 release や、何らかの理由で auto-release が走らなかった時のリカバリ用。
   #
-  # Manual trigger from the Actions UI. Useful for the very first release
-  # or for re-running when the auto-release on main push didn't fire.
+  # Manual trigger from the Actions UI. Used for the very first release
+  # or as a recovery path if the auto-release didn't fire.
   workflow_dispatch:
 
 permissions:
   contents: write  # Release / tag を作成するために必要
+  actions: read    # dawidd6/action-download-artifact が CI run を query するのに必要
 
 env:
   CARGO_TERM_COLOR: always
@@ -97,99 +97,51 @@ jobs:
           fi
 
   # ------------------------------------------------------------------------
-  # 2. 各 arch で release build を行い、archive を artifact に上げる。
-  #    matrix で 3 OS / 3 target を担当。
-  # ------------------------------------------------------------------------
-  build:
-    needs: check_version
-    if: needs.check_version.outputs.should_release == 'true'
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - os: windows-latest
-            target: x86_64-pc-windows-msvc
-            archive: zip
-            bin_ext: ".exe"
-          - os: ubuntu-latest
-            target: x86_64-unknown-linux-gnu
-            archive: tar.gz
-            bin_ext: ""
-          - os: macos-latest
-            target: aarch64-apple-darwin
-            archive: tar.gz
-            bin_ext: ""
-    runs-on: ${{ matrix.os }}
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: ${{ matrix.target }}
-
-      - uses: Swatinem/rust-cache@v2
-        with:
-          key: ${{ matrix.target }}
-
-      - name: Install ALSA dev (Linux)
-        if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y libasound2-dev
-
-      - name: Build release binary
-        run: cargo build --release --target ${{ matrix.target }} --bin lcvgc
-
-      # archive 名は `lcvgc-<version>-<target>.<archive>` で統一。
-      # cargo-binstall の pkg-url パターンが `{ name }-{ version }-{ target }`
-      # を期待するため、この命名を変えると metadata 側も書き換える必要あり。
-      - name: Package archive
-        id: pkg
-        shell: bash
-        run: |
-          set -euo pipefail
-          version="${{ needs.check_version.outputs.version }}"
-          target="${{ matrix.target }}"
-          archive_fmt="${{ matrix.archive }}"
-          bin_ext="${{ matrix.bin_ext }}"
-          pkg_dir="lcvgc-${version}-${target}"
-          mkdir "$pkg_dir"
-          cp "target/${target}/release/lcvgc${bin_ext}" "$pkg_dir/"
-          cp README.md "$pkg_dir/" 2>/dev/null || true
-          cp LICENSE "$pkg_dir/" 2>/dev/null || true
-
-          if [ "$archive_fmt" = "zip" ]; then
-            archive_name="${pkg_dir}.zip"
-            7z a "$archive_name" "$pkg_dir"
-          else
-            archive_name="${pkg_dir}.tar.gz"
-            tar -czf "$archive_name" "$pkg_dir"
-          fi
-          echo "archive_name=$archive_name" >> "$GITHUB_OUTPUT"
-
-      - uses: actions/upload-artifact@v4
-        with:
-          name: lcvgc-${{ matrix.target }}
-          path: ${{ steps.pkg.outputs.archive_name }}
-          if-no-files-found: error
-          retention-days: 7
-
-  # ------------------------------------------------------------------------
-  # 3. 全 arch の archive をダウンロードし、tag を打って Release を作る。
-  #    softprops/action-gh-release は tag が無ければ自動で作る。
+  # 2. CI run の artifact を流用して release を作る。
+  #    dawidd6/action-download-artifact で同 commit SHA の CI run を見つけ、
+  #    各 arch の archive を download し、softprops/action-gh-release で
+  #    v<version> タグの GitHub Release に attach する。
   # ------------------------------------------------------------------------
   release:
-    needs: [check_version, build]
+    needs: check_version
     if: needs.check_version.outputs.should_release == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
-      - uses: actions/download-artifact@v4
+      # 同 commit SHA の CI run から各 arch の archive artifact を一括 download。
+      # CI が完走していないとここで失敗するので、CI 通過済みの commit でのみ
+      # release が成立する保証になる。
+      #
+      # Downloads all archive artifacts produced by the CI run on the same
+      # commit. Fails if CI has not finished, ensuring releases come from
+      # commits that passed CI.
+      - name: Download CI artifacts
+        uses: dawidd6/action-download-artifact@v6
         with:
+          workflow: ci.yml
+          commit: ${{ github.sha }}
           path: artifacts
-          merge-multiple: true
+          # 命名: ci.yml の matrix が "lcvgc-<target>" で upload している
+          # ので、それに整合する prefix で取る。
+          # Matches the artifact names ci.yml uses (`lcvgc-<target>`).
+          name: lcvgc-
+          name_is_regexp: true
+          if_no_artifact_found: fail
+          # CI run が同 SHA で複数あった場合 (re-run 含む) は最新成功 run。
+          # Pick the latest successful CI run for the SHA.
+          workflow_conclusion: success
 
-      - name: List downloaded artifacts
-        run: ls -la artifacts/
+      - name: Flatten artifacts (one zip / tgz per dir)
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p release_assets
+          # download-artifact は各 artifact をサブディレクトリに展開するため、
+          # 中の archive を release_assets/ 直下に集める。
+          # Flatten subdirectory layout produced by download-artifact.
+          find artifacts -type f \( -name '*.zip' -o -name '*.tar.gz' \) -exec cp {} release_assets/ \;
+          ls -la release_assets/
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
@@ -197,5 +149,5 @@ jobs:
           tag_name: v${{ needs.check_version.outputs.version }}
           name: v${{ needs.check_version.outputs.version }}
           generate_release_notes: true
-          files: artifacts/*
+          files: release_assets/*
           fail_on_unmatched_files: true

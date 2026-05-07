@@ -1,5 +1,14 @@
 name: CI
 
+# CI 用の build & test。release.yml が同 commit の artifact を再利用するため、
+# 各 OS の release build を target 指定で行い、archive にして upload する。
+# PR 時の artifact も `gh run download` で手元に取り出して branch の動作確認に
+# 使える。
+#
+# Builds and tests on three OSes. Each job also produces a release archive
+# uploaded as an artifact so that release.yml can reuse it for the same SHA
+# (and PR authors can pull the binary via `gh run download`).
+
 on:
   push:
     branches: [main]
@@ -13,20 +22,80 @@ jobs:
   build-and-test:
     needs: lint
     strategy:
+      fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            archive: tar.gz
+            bin_ext: ""
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            archive: tar.gz
+            bin_ext: ""
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            archive: zip
+            bin_ext: ".exe"
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
+
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
       - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+
       - name: Install ALSA dev (Linux)
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y libasound2-dev
-      - name: Build
-        run: cargo build --workspace --release
-      - name: Test
-        run: cargo test --workspace
+
+      - name: Build (workspace, release)
+        run: cargo build --workspace --release --target ${{ matrix.target }}
+
+      - name: Test (workspace)
+        run: cargo test --workspace --target ${{ matrix.target }}
+
+      # release.yml が同 commit の artifact を流用するため、
+      # archive 名 / artifact 名は release.yml が前提とするものに揃える。
+      # version は Cargo.toml から読む。lcvgc / lcvgc-core の不一致は
+      # release.yml 側でも assert するが、CI ではログ出すだけにする。
+      #
+      # Package the release binary into an archive so release.yml can
+      # download and attach it as-is.
+      - name: Package release archive
+        id: pkg
+        shell: bash
+        run: |
+          set -euo pipefail
+          version=$(grep -E '^version = "' crates/lcvgc/Cargo.toml | head -1 | sed -E 's/.*"(.*)"/\1/')
+          target="${{ matrix.target }}"
+          archive_fmt="${{ matrix.archive }}"
+          bin_ext="${{ matrix.bin_ext }}"
+          pkg_dir="lcvgc-${version}-${target}"
+          mkdir "$pkg_dir"
+          cp "target/${target}/release/lcvgc${bin_ext}" "$pkg_dir/"
+          cp README.md "$pkg_dir/" 2>/dev/null || true
+          cp LICENSE "$pkg_dir/" 2>/dev/null || true
+
+          if [ "$archive_fmt" = "zip" ]; then
+            archive_name="${pkg_dir}.zip"
+            7z a "$archive_name" "$pkg_dir"
+          else
+            archive_name="${pkg_dir}.tar.gz"
+            tar -czf "$archive_name" "$pkg_dir"
+          fi
+          echo "archive_name=$archive_name" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: lcvgc-${{ matrix.target }}
+          path: ${{ steps.pkg.outputs.archive_name }}
+          if-no-files-found: error
+          retention-days: 14
 
   lint:
     runs-on: ubuntu-latest
