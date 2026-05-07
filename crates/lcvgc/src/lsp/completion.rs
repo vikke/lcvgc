@@ -206,12 +206,12 @@ impl CompletionProvider {
     ///
     /// `device foo { port |` 位置で `lcvgc` プロセスが認識している MIDI 出力
     /// ポート一覧を補完候補に出すための純粋関数。`ports` には呼び出し側で
-    /// `lcvgc_core::midi::port::list_ports()` の結果を渡す（環境依存の I/O は
+    /// `lcvgc::midi::port::list_ports()` の結果を渡す（環境依存の I/O は
     /// 呼び出し側で吸収）。
     ///
     /// Pure helper that turns a slice of MIDI port names into completion items
     /// for the `device foo { port |` position. Callers are expected to pass in
-    /// the result of `lcvgc_core::midi::port::list_ports()` so this function can
+    /// the result of `lcvgc::midi::port::list_ports()` so this function can
     /// stay free of environment-dependent I/O.
     ///
     /// # Arguments

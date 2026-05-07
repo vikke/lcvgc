@@ -1,25 +1,49 @@
-//! `lcvgc` バイナリの内部 API を結合テストから利用可能にするためのライブラリ層。
+//! `lcvgc` クレートのライブラリ層。
 //!
-//! main.rs から `device` の動的登録に関するロジック (`apply_device_event`、
-//! `run_device_event_receiver_with_initial`) を切り出し、`MidirSink` 構築を
-//! sink builder closure として注入できる形にしておくことで、`MockSink` ベースの
-//! テストが書ける。
+//! 旧 `lcvgc-core` の各モジュール（`ast` / `engine` / `lsp` / `midi` /
+//! `parser` / `server` / `error`）に加え、main.rs から切り出した device 動的
+//! 登録ロジック (`apply_device_event`、`run_device_event_receiver_with_initial`)
+//! をホストする。`MidirSink` 構築は sink builder closure として注入できるため、
+//! `MockSink` ベースの結合テストから同じコードを駆動できる。
 //!
-//! Library layer that exposes binary internals to integration tests. Hosts the
-//! dynamic-device registration handlers (`apply_device_event`,
-//! `run_device_event_receiver_with_initial`) with the `MidirSink` build step
-//! abstracted as a sink-builder closure, so tests can drive the same code with
-//! `MockSink`.
+//! Library layer of the `lcvgc` crate. Hosts the modules previously living in
+//! `lcvgc-core` (`ast` / `engine` / `lsp` / `midi` / `parser` / `server` /
+//! `error`) plus the dynamic-device registration handlers carved out of
+//! main.rs (`apply_device_event`, `run_device_event_receiver_with_initial`).
+//! The `MidirSink` build step is abstracted as a sink-builder closure so
+//! integration tests can drive the same code with `MockSink`.
+
+/// 抽象構文木定義モジュール
+/// Abstract syntax tree definition module
+pub mod ast;
+/// 評価エンジンモジュール（コンパイラ・評価器・クロック等）
+/// Evaluation engine module (compiler, evaluator, clock, etc.)
+pub mod engine;
+/// パースエラー定義モジュール
+/// Parse error definition module
+pub mod error;
+/// LSP機能モジュール（補完・ホバー・診断・定義ジャンプ・シンボル）
+/// LSP feature module (completion, hover, diagnostics, go-to-definition, symbols)
+pub mod lsp;
+/// MIDI入出力モジュール
+/// MIDI I/O module
+pub mod midi;
+/// DSLパーサーモジュール
+/// DSL parser module
+pub mod parser;
+/// TCPサーバーモジュール
+/// TCP server module
+pub mod server;
 
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use lcvgc_core::engine::device_event::DeviceEvent;
-use lcvgc_core::engine::evaluator::Evaluator;
-use lcvgc_core::engine::midi_sink::{send_all_notes_off_all_channels, MidirSink};
-use lcvgc_core::engine::playback::{BoxedSink, SharedSinks, SinksNotify};
-use lcvgc_core::midi::port::PortManager;
-use lcvgc_core::midi::MidiError;
+use crate::engine::device_event::DeviceEvent;
+use crate::engine::evaluator::Evaluator;
+use crate::engine::midi_sink::{send_all_notes_off_all_channels, MidirSink};
+use crate::engine::playback::{BoxedSink, SharedSinks, SinksNotify};
+use crate::midi::port::PortManager;
+use crate::midi::MidiError;
 use tokio::sync::{mpsc, Mutex};
 use tracing::{info, warn};
 

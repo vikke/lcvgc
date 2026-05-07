@@ -1,8 +1,8 @@
 //! 変数展開メカニズム（§6）の E2E テスト
 //! End-to-end tests for the variable expansion mechanism (§6)
 
-use lcvgc_core::engine::error::EngineError;
-use lcvgc_core::engine::evaluator::Evaluator;
+use lcvgc::engine::error::EngineError;
+use lcvgc::engine::evaluator::Evaluator;
 
 /// device 変数展開: `var dev = mutant_brain` → `device dev`
 /// Device variable expansion

@@ -17,11 +17,11 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex as StdMutex};
 use std::time::Duration;
 
+use lcvgc::engine::device_event::DeviceEvent;
+use lcvgc::engine::evaluator::Evaluator;
+use lcvgc::engine::midi_sink::SharedMockSink;
+use lcvgc::engine::playback::{BoxedSink, SharedSinks, SinksNotify};
 use lcvgc::run_device_event_receiver_with_initial;
-use lcvgc_core::engine::device_event::DeviceEvent;
-use lcvgc_core::engine::evaluator::Evaluator;
-use lcvgc_core::engine::midi_sink::SharedMockSink;
-use lcvgc_core::engine::playback::{BoxedSink, SharedSinks, SinksNotify};
 use tokio::sync::mpsc;
 use tokio::sync::Mutex as TokioMutex;
 use tokio::sync::Notify;
