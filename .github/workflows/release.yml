@@ -10,6 +10,14 @@ name: Release
 on:
   push:
     branches: [main]
+  # Actions UI から手動で起動できるようにする。version 比較はスキップし、
+  # 現在の Cargo.toml の version をそのまま使って release を作る。
+  # 初回 release (まだ過去 commit に release が無い時) や、何らかの理由で
+  # main push 時の自動 release が走らなかった時のリカバリ用。
+  #
+  # Manual trigger from the Actions UI. Useful for the very first release
+  # or for re-running when the auto-release on main push didn't fire.
+  workflow_dispatch:
 
 permissions:
   contents: write  # Release / tag を作成するために必要
@@ -58,6 +66,15 @@ jobs:
           if [ "$cur_lcvgc" != "$cur_core" ]; then
             echo "::error::lcvgc ($cur_lcvgc) と lcvgc-core ($cur_core) の version が一致しません"
             exit 1
+          fi
+
+          # workflow_dispatch (手動起動) の場合は version 比較をスキップして
+          # 必ず release する。push 時のみ HEAD と HEAD~1 を比較する。
+          if [ "${GITHUB_EVENT_NAME}" = "workflow_dispatch" ]; then
+            echo "workflow_dispatch: 手動起動のため version 比較をスキップして release します ($cur_lcvgc)"
+            echo "version=$cur_lcvgc" >> "$GITHUB_OUTPUT"
+            echo "should_release=true" >> "$GITHUB_OUTPUT"
+            exit 0
           fi
 
           # 直前 commit の version を取り出して diff。HEAD が初回 commit の場合
