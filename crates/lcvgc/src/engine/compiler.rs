@@ -43,6 +43,28 @@ impl MidiEvent {
     }
 }
 
+/// ドラム確率行で抽選対象となる 1 ステップ分のイベント群
+///
+/// `event_indices` には対応する NoteOn / NoteOff のような「同じ抽選結果を共有
+/// すべき MIDI イベント」の `CompiledClip.events` 上の index を保持する。
+/// ループ毎の再抽選時に、`probability` (0-100) を使って roll し、外れた場合は
+/// これら index のイベントを丸ごと mute する。
+///
+/// A single step's worth of MIDI events that share one probability roll.
+/// `event_indices` lists indices into `CompiledClip.events` for events
+/// (typically a NoteOn/NoteOff pair) that must be triggered or muted together.
+/// On every loop boundary the player rolls a new probability against
+/// `probability` (0-100) and masks these indices out when the roll fails.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DrumProbabilityGroup {
+    /// この group に属する MIDI イベントの `events` 配列上の index 群
+    /// Indices into `events` that belong to this group.
+    pub event_indices: Vec<usize>,
+    /// 0-100 の発音確率（100 = 必ず発音、0 = 発音しない）
+    /// Firing probability in 0-100 (100 = always, 0 = never).
+    pub probability: u8,
+}
+
 /// コンパイル済みクリップ
 /// Compiled clip containing MIDI events and metadata
 #[derive(Debug, Clone)]
@@ -54,6 +76,10 @@ pub struct CompiledClip {
     /// コンパイル時の警告メッセージ（bars超過など）
     /// Warning messages generated during compilation (e.g., bars overflow)
     pub warnings: Vec<String>,
+    /// ドラム発音率行から生成された抽選グループ。空ならば確率ベースの抽選は無し。
+    /// Probability groups produced from drum probability rows; empty means no
+    /// per-loop probability gating is required.
+    pub drum_mask_groups: Vec<DrumProbabilityGroup>,
 }
 
 /// クリップ定義をtickベースMIDIイベント列にコンパイルする
@@ -62,8 +88,11 @@ pub fn compile_clip(
     clock: &Clock,
     registry: &Registry,
 ) -> Result<CompiledClip, EngineError> {
-    let mut events = match &clip.body {
-        ClipBody::Pitched(body) => compile_pitched(body, clock, registry, clip.options.bars)?,
+    let (mut events, mut drum_mask_groups) = match &clip.body {
+        ClipBody::Pitched(body) => (
+            compile_pitched(body, clock, registry, clip.options.bars)?,
+            Vec::new(),
+        ),
         ClipBody::Drum(body) => compile_drum(body, clock, registry)?,
     };
 
@@ -82,8 +111,29 @@ pub fn compile_clip(
                 clip.name, bars, overflow_count
             ));
         }
-        // 超過イベントを切り捨て
+        // 超過イベントを切り捨て、対応する drum_mask_groups も整理する
+        // Drop overflow events and prune the matching probability group entries
+        // so that the remaining indices stay consistent.
+        let kept_indices: Vec<bool> = events.iter().map(|e| e.tick < max_ticks).collect();
+        let mut old_to_new: Vec<Option<usize>> = Vec::with_capacity(events.len());
+        let mut new_idx: usize = 0;
+        for keep in &kept_indices {
+            if *keep {
+                old_to_new.push(Some(new_idx));
+                new_idx += 1;
+            } else {
+                old_to_new.push(None);
+            }
+        }
         events.retain(|e| e.tick < max_ticks);
+        for group in drum_mask_groups.iter_mut() {
+            group.event_indices = group
+                .event_indices
+                .iter()
+                .filter_map(|i| old_to_new.get(*i).copied().flatten())
+                .collect();
+        }
+        drum_mask_groups.retain(|g| !g.event_indices.is_empty());
         max_ticks
     } else {
         // bars未指定: イベントの最大tick + 1（最低でも0）
@@ -91,18 +141,39 @@ pub fn compile_clip(
     };
 
     // tick順にソート（同一tickではNoteOnをNoteOffより先に）
-    events.sort_by(|a, b| {
-        a.tick.cmp(&b.tick).then_with(|| {
-            let a_priority = event_sort_priority(&a.message);
-            let b_priority = event_sort_priority(&b.message);
+    // ソートに伴うインデックス変動を drum_mask_groups にも反映するため、
+    // 一時的に元 index を持たせてソートし、permutation を再構築する。
+    //
+    // Sort tick-ascending (NoteOn before NoteOff at the same tick). Because
+    // the sort permutes events, also rebuild `drum_mask_groups.event_indices`
+    // through the permutation so probability groups still point at the right
+    // events afterwards.
+    let mut indexed: Vec<(usize, MidiEvent)> = events.into_iter().enumerate().collect();
+    indexed.sort_by(|a, b| {
+        a.1.tick.cmp(&b.1.tick).then_with(|| {
+            let a_priority = event_sort_priority(&a.1.message);
+            let b_priority = event_sort_priority(&b.1.message);
             a_priority.cmp(&b_priority)
         })
     });
+    let mut old_to_sorted: Vec<usize> = vec![0; indexed.len()];
+    let mut sorted_events: Vec<MidiEvent> = Vec::with_capacity(indexed.len());
+    for (sorted_idx, (old_idx, ev)) in indexed.into_iter().enumerate() {
+        old_to_sorted[old_idx] = sorted_idx;
+        sorted_events.push(ev);
+    }
+    for group in drum_mask_groups.iter_mut() {
+        for idx in group.event_indices.iter_mut() {
+            *idx = old_to_sorted[*idx];
+        }
+        group.event_indices.sort_unstable();
+    }
 
     Ok(CompiledClip {
-        events,
+        events: sorted_events,
         total_ticks,
         warnings,
+        drum_mask_groups,
     })
 }
 
@@ -525,11 +596,19 @@ fn compile_cc_automations(
 }
 
 /// ドラムクリップのコンパイル
+///
+/// 戻り値の `Vec<DrumProbabilityGroup>` は probability 行が指定されており、
+/// かつ 100% 未満の確率を持つステップだけを抽選対象として保持する。
+/// 100% (= `.`) と確率行未指定のステップは抽選不要なので group には含めない。
+///
+/// Returns the MIDI events together with a list of probability groups derived
+/// from probability rows. Steps without a probability row, or those marked
+/// `.` (100%), are not gated and therefore omitted from the returned groups.
 fn compile_drum(
     body: &crate::ast::clip::DrumClipBody,
     clock: &Clock,
     registry: &Registry,
-) -> Result<Vec<MidiEvent>, EngineError> {
+) -> Result<(Vec<MidiEvent>, Vec<DrumProbabilityGroup>), EngineError> {
     let kit = registry
         .get_kit(&body.kit)
         .ok_or_else(|| EngineError::UnknownKit(body.kit.clone()))?;
@@ -538,6 +617,7 @@ fn compile_drum(
     let ticks_per_step = clock.duration_to_ticks(body.resolution, false);
 
     let mut events = Vec::new();
+    let mut groups: Vec<DrumProbabilityGroup> = Vec::new();
 
     for row in &body.rows {
         let kit_inst = kit
@@ -563,6 +643,11 @@ fn compile_drum(
             let tick = i as u64 * ticks_per_step;
             let gate_ticks = apply_min_gate_off(ticks_per_step, gate_percent, clock);
 
+            // 同一ステップの NoteOn / NoteOff は同じ抽選結果を共有させるため、
+            // 後で group に登録する index を覚えておく。
+            // Capture the indices of this step's NoteOn/NoteOff so they share
+            // a probability roll if the row has a probability mask.
+            let note_on_idx = events.len();
             events.push(MidiEvent::new(
                 tick,
                 MidiMessage::NoteOn {
@@ -572,6 +657,7 @@ fn compile_drum(
                 },
                 &device,
             ));
+            let note_off_idx = events.len();
             events.push(MidiEvent::new(
                 tick + gate_ticks,
                 MidiMessage::NoteOff {
@@ -581,13 +667,26 @@ fn compile_drum(
                 },
                 &device,
             ));
+
+            if let Some(probs) = &row.probability {
+                if let Some(p) = probs.get(i).copied() {
+                    // `.` は 100 として扱われるため抽選不要。0-99 のみを group 化する。
+                    // `.` is encoded as 100 and never gated; only 0-99 needs a group.
+                    if p < 100 {
+                        groups.push(DrumProbabilityGroup {
+                            event_indices: vec![note_on_idx, note_off_idx],
+                            probability: p,
+                        });
+                    }
+                }
+            }
         }
     }
 
     // ドラムクリップのCCオートメーションコンパイル
     let cc_events = compile_cc_automations(&body.cc_automations, clock, registry)?;
     events.extend(cc_events);
-    Ok(events)
+    Ok((events, groups))
 }
 
 #[cfg(test)]
@@ -1009,6 +1108,109 @@ mod tests {
             .iter()
             .find(|e| matches!(e.message, MidiMessage::NoteOn { velocity: 40, .. }));
         assert!(ghost_on.is_some());
+    }
+
+    /// 確率行を含むドラムクリップは drum_mask_groups を生成する
+    /// Drum clips with a probability row produce drum_mask_groups.
+    #[test]
+    fn compile_drum_builds_probability_groups() {
+        let mut registry = Registry::default();
+        registry.register_block(crate::ast::Block::Kit(KitDef {
+            name: "kit".to_string(),
+            device: "dev".to_string(),
+            instruments: vec![KitInstrument {
+                name: "hh".to_string(),
+                channel: MidiChannel::from_one_based(10).unwrap(),
+                note: KitInstrumentNote {
+                    name: NoteName::Fs,
+                    octave: 2,
+                },
+                gate_normal: Some(50),
+                gate_staccato: None,
+                unresolved: Default::default(),
+            }],
+        }));
+
+        let clock = Clock::new(120.0);
+        let clip = ClipDef {
+            name: "drums".to_string(),
+            options: ClipOptions::default(),
+            body: ClipBody::Drum(crate::ast::clip::DrumClipBody {
+                kit: "kit".to_string(),
+                resolution: 16,
+                rows: vec![crate::ast::clip_drum::DrumRow {
+                    instrument: "hh".to_string(),
+                    // step0: `.` (=100), step1: `5` (=50), step2: `0` (=0), step3: `9` (=90)
+                    hits: vec![
+                        HitSymbol::Normal,
+                        HitSymbol::Normal,
+                        HitSymbol::Normal,
+                        HitSymbol::Normal,
+                    ],
+                    probability: Some(vec![100, 50, 0, 90]),
+                }],
+                cc_automations: vec![],
+            }),
+        };
+
+        let compiled = compile_clip(&clip, &clock, &registry).unwrap();
+        // 4 hits → 8 events (NoteOn + NoteOff each)
+        assert_eq!(compiled.events.len(), 8);
+        // 100% step is excluded, so 3 groups
+        assert_eq!(compiled.drum_mask_groups.len(), 3);
+
+        let probs: Vec<u8> = compiled
+            .drum_mask_groups
+            .iter()
+            .map(|g| g.probability)
+            .collect();
+        assert_eq!(probs, vec![50, 0, 90]);
+
+        // Each group must reference exactly two events (NoteOn + NoteOff)
+        for g in &compiled.drum_mask_groups {
+            assert_eq!(g.event_indices.len(), 2);
+        }
+    }
+
+    /// probability 行が無いドラムクリップは drum_mask_groups が空のまま
+    /// Drum clips without a probability row produce no probability groups.
+    #[test]
+    fn compile_drum_no_probability_no_groups() {
+        let mut registry = Registry::default();
+        registry.register_block(crate::ast::Block::Kit(KitDef {
+            name: "kit".to_string(),
+            device: "dev".to_string(),
+            instruments: vec![KitInstrument {
+                name: "bd".to_string(),
+                channel: MidiChannel::from_one_based(10).unwrap(),
+                note: KitInstrumentNote {
+                    name: NoteName::C,
+                    octave: 2,
+                },
+                gate_normal: Some(50),
+                gate_staccato: None,
+                unresolved: Default::default(),
+            }],
+        }));
+
+        let clock = Clock::new(120.0);
+        let clip = ClipDef {
+            name: "drums".to_string(),
+            options: ClipOptions::default(),
+            body: ClipBody::Drum(crate::ast::clip::DrumClipBody {
+                kit: "kit".to_string(),
+                resolution: 16,
+                rows: vec![crate::ast::clip_drum::DrumRow {
+                    instrument: "bd".to_string(),
+                    hits: vec![HitSymbol::Normal, HitSymbol::Normal],
+                    probability: None,
+                }],
+                cc_automations: vec![],
+            }),
+        };
+
+        let compiled = compile_clip(&clip, &clock, &registry).unwrap();
+        assert!(compiled.drum_mask_groups.is_empty());
     }
 
     #[test]

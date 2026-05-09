@@ -1,4 +1,7 @@
 use crate::engine::compiler::{CompiledClip, MidiEvent};
+use crate::midi::probability::should_trigger;
+use rand::Rng;
+use std::collections::HashSet;
 
 /// 2つの u64 の最大公約数
 /// Greatest common divisor of two u64 values.
@@ -45,18 +48,80 @@ pub struct ClipPlayer {
     /// `current_tick` unchanged and `events_at()` returns an empty Vec.
     /// Unlike mute, the phase (position within the loop) is frozen.
     paused: bool,
+    /// 当該ループ周期で確率抽選により mute されている events index 集合。
+    /// ループ境界をまたぐ毎に再抽選で更新される。
+    ///
+    /// Set of event indices that lost the probability roll for the current
+    /// loop iteration. Refreshed every time the player crosses a loop
+    /// boundary so each loop produces a fresh drum variation.
+    masked_events: HashSet<usize>,
 }
 
 impl ClipPlayer {
     /// 新しいClipPlayerを生成する
+    ///
+    /// 生成時に最初のループ周期分の確率抽選も同時に実行する。
+    /// ドラム発音率行が無い場合は抽選自体が空となり、副作用は無い。
+    ///
+    /// Creates a new ClipPlayer and immediately rolls the drum probability
+    /// mask for the first loop iteration. Clips without probability rows
+    /// roll an empty mask, which is a no-op.
     pub fn new(clip: CompiledClip, looping: bool) -> Self {
-        Self {
+        let mut player = Self {
             clip,
             pending_clip: None,
             current_tick: 0,
             looping,
             muted: false,
             paused: false,
+            masked_events: HashSet::new(),
+        };
+        player.reroll_drum_mask(&mut rand::thread_rng());
+        player
+    }
+
+    /// テスト用: 任意の RNG を渡して ClipPlayer を生成する
+    /// Test helper: build a ClipPlayer with a caller-supplied RNG.
+    #[cfg(test)]
+    pub fn new_with_rng<R: Rng>(clip: CompiledClip, looping: bool, rng: &mut R) -> Self {
+        let mut player = Self {
+            clip,
+            pending_clip: None,
+            current_tick: 0,
+            looping,
+            muted: false,
+            paused: false,
+            masked_events: HashSet::new(),
+        };
+        player.reroll_drum_mask(rng);
+        player
+    }
+
+    /// 現在の確率抽選マスク（テストおよび内省用）
+    /// Snapshot of currently masked event indices (for tests / introspection).
+    pub fn masked_event_indices(&self) -> &HashSet<usize> {
+        &self.masked_events
+    }
+
+    /// ドラム発音率行に基づき event mask を再抽選する。
+    ///
+    /// `drum_mask_groups` が空ならば即 return し、ループ境界での実行コストは
+    /// HashSet 1 つの clear のみとなる。各 group につき `should_trigger` を 1 回
+    /// 引いて、外れた group の event indices を全て masked_events に積む。
+    ///
+    /// Rerolls the probability mask for every drum group. Cheap when no
+    /// probability rows are present (just a HashSet clear).
+    pub fn reroll_drum_mask<R: Rng>(&mut self, rng: &mut R) {
+        self.masked_events.clear();
+        if self.clip.drum_mask_groups.is_empty() {
+            return;
+        }
+        for group in &self.clip.drum_mask_groups {
+            if !should_trigger(Some(group.probability), rng) {
+                for idx in &group.event_indices {
+                    self.masked_events.insert(*idx);
+                }
+            }
         }
     }
 
@@ -107,6 +172,10 @@ impl ClipPlayer {
     /// ループ時はtotal_ticksでmodした実効tickで検索する。
     /// 非ループ時はtotal_ticksを超えたら空を返す。
     /// muted または paused の場合は空 Vec を返す。
+    /// 確率抽選で当該ループに mask されている event index は除外する。
+    ///
+    /// Returns events at the given tick. Skips events whose index lost the
+    /// probability roll for the current loop iteration.
     pub fn events_at(&self, tick: u64) -> Vec<&MidiEvent> {
         if self.muted || self.paused {
             return Vec::new();
@@ -118,7 +187,9 @@ impl ClipPlayer {
         self.clip
             .events
             .iter()
-            .filter(|e| e.tick == effective)
+            .enumerate()
+            .filter(|(idx, e)| e.tick == effective && !self.masked_events.contains(idx))
+            .map(|(_, e)| e)
             .collect()
     }
 
@@ -130,8 +201,14 @@ impl ClipPlayer {
     /// tickを進める。ループ頭到達時にpending_clipがあれば差し替える。
     /// paused 状態では tick を進めない（位相凍結、§10.4）。
     ///
-    /// Advance tick. If pending_clip exists and loop boundary is reached, swap it in.
-    /// While paused, the tick is frozen (phase preservation, §10.4).
+    /// ループ境界をまたいだ場合、ドラム発音率行に基づく確率抽選を再実行し
+    /// 次ループ周期の mask を更新する。`pending_clip` が swap された場合も、
+    /// swap 後の clip の確率行に対して即時抽選する。
+    ///
+    /// Advance tick. If `pending_clip` exists and the loop boundary is
+    /// crossed, swap it in. Whenever the loop boundary is crossed (with or
+    /// without a pending swap), reroll the drum probability mask so each
+    /// loop produces a fresh variation.
     pub fn advance(&mut self, ticks: u64) {
         if self.paused {
             return;
@@ -139,16 +216,19 @@ impl ClipPlayer {
         let old_tick = self.current_tick;
         self.current_tick += ticks;
 
-        // ループ頭検出: pending_clipがあり、ループ境界をまたいだら差し替え
-        // Detect loop boundary: swap pending_clip when crossing loop boundary
-        if self.looping && self.pending_clip.is_some() && self.clip.total_ticks > 0 {
+        if self.looping && self.clip.total_ticks > 0 {
             let old_loop = old_tick / self.clip.total_ticks;
             let new_loop = self.current_tick / self.clip.total_ticks;
             if new_loop > old_loop {
-                self.clip = self.pending_clip.take().unwrap();
-                // ループ頭からの相対位置を維持
-                // Maintain relative position from loop start
-                self.current_tick %= self.clip.total_ticks;
+                if self.pending_clip.is_some() {
+                    self.clip = self.pending_clip.take().unwrap();
+                    // ループ頭からの相対位置を維持
+                    // Maintain relative position from loop start
+                    self.current_tick %= self.clip.total_ticks;
+                }
+                // 新しいループ周期に入ったので確率抽選を再実行する
+                // Entered a new loop iteration → reroll the probability mask
+                self.reroll_drum_mask(&mut rand::thread_rng());
             }
         }
     }
@@ -447,6 +527,7 @@ mod tests {
                 .collect(),
             total_ticks,
             warnings: vec![],
+            drum_mask_groups: vec![],
         }
     }
 
@@ -1016,5 +1097,110 @@ mod tests {
         // resume 後は tick 0 のままイベントが取れる
         // After resume, events at tick 0 still apply
         assert_eq!(scene.events_at(0).len(), 2);
+    }
+
+    // --- ドラム発音率 (probability) テスト ---
+
+    use crate::engine::compiler::DrumProbabilityGroup;
+    use rand::rngs::StdRng;
+    use rand::SeedableRng;
+
+    /// テスト用: probability group 付きの CompiledClip を作る
+    /// Test helper: build a CompiledClip with drum probability groups attached.
+    fn make_clip_with_groups(
+        events: Vec<(u64, MidiMessage)>,
+        total_ticks: u64,
+        groups: Vec<DrumProbabilityGroup>,
+    ) -> CompiledClip {
+        CompiledClip {
+            events: events
+                .into_iter()
+                .map(|(tick, message)| MidiEvent::new(tick, message, ""))
+                .collect(),
+            total_ticks,
+            warnings: vec![],
+            drum_mask_groups: groups,
+        }
+    }
+
+    /// probability 0 の group は最初のループから常に mask される
+    /// A group with probability=0 must be masked from the very first loop.
+    #[test]
+    fn drum_mask_zero_probability_always_muted() {
+        let clip = make_clip_with_groups(
+            vec![(0, note_on(60)), (60, note_off(60))],
+            480,
+            vec![DrumProbabilityGroup {
+                event_indices: vec![0, 1],
+                probability: 0,
+            }],
+        );
+        let mut rng = StdRng::seed_from_u64(1);
+        let player = ClipPlayer::new_with_rng(clip, true, &mut rng);
+        assert!(player.events_at(0).is_empty());
+        assert!(player.events_at(60).is_empty());
+    }
+
+    /// probability 100 を group に含めるのは仕様上は無いが、保険として常に発音
+    /// Even if a 100% group sneaks in, it must always trigger.
+    #[test]
+    fn drum_mask_full_probability_always_triggers() {
+        let clip = make_clip_with_groups(
+            vec![(0, note_on(60))],
+            480,
+            vec![DrumProbabilityGroup {
+                event_indices: vec![0],
+                probability: 100,
+            }],
+        );
+        let mut rng = StdRng::seed_from_u64(1);
+        let player = ClipPlayer::new_with_rng(clip, true, &mut rng);
+        assert_eq!(player.events_at(0).len(), 1);
+    }
+
+    /// ループ境界をまたぐ毎に mask が再抽選されることを検証
+    /// Mask must be rerolled every time the player crosses a loop boundary.
+    #[test]
+    fn drum_mask_reroll_changes_per_loop() {
+        // probability=50 の group を 64 個並べ、二回のループで mask 集合が変化する
+        // 確率は天文学的に低い (2^-64)。複数 group ならば rerolled の証拠となる。
+        // 64 groups at 50% — observing the *same* mask twice in a row is
+        // 2^-64. So if the two loops produce different masks, we know the
+        // reroll path actually fired.
+        let mut events = Vec::new();
+        let mut groups = Vec::new();
+        for i in 0..64u64 {
+            let tick = i * 4;
+            events.push((tick, note_on(60)));
+            groups.push(DrumProbabilityGroup {
+                event_indices: vec![i as usize],
+                probability: 50,
+            });
+        }
+        let clip = make_clip_with_groups(events, 480, groups);
+        let mut rng = StdRng::seed_from_u64(7);
+        let mut player = ClipPlayer::new_with_rng(clip, true, &mut rng);
+
+        let first_mask = player.masked_event_indices().clone();
+        // ループ境界を跨ぐ
+        player.advance(480);
+        let second_mask = player.masked_event_indices().clone();
+
+        assert_ne!(
+            first_mask, second_mask,
+            "mask must be rerolled at loop boundary"
+        );
+    }
+
+    /// drum_mask_groups が空ならループ越境しても masked_events は常に空
+    /// With no probability groups, masked_events stays empty across loops.
+    #[test]
+    fn drum_mask_no_groups_no_op() {
+        let clip = make_clip(vec![(0, note_on(60))], 480);
+        let mut rng = StdRng::seed_from_u64(7);
+        let mut player = ClipPlayer::new_with_rng(clip, true, &mut rng);
+        assert!(player.masked_event_indices().is_empty());
+        player.advance(480);
+        assert!(player.masked_event_indices().is_empty());
     }
 }
