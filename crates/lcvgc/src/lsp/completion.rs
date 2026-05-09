@@ -392,6 +392,30 @@ impl CompletionProvider {
         .collect()
     }
 
+    /// アルペジオ第2引数（音価）の補完候補を返す
+    ///
+    /// 主要な音価（4分音符 / 8分音符 / 16分音符 / 32分音符）の数値だけを並べる。
+    /// 列挙していない音価（2, 64 など）も実際にはパース可能だが、補完候補としては
+    /// 主要なものに絞ることでユーザーの選択コストを下げる。
+    ///
+    /// # Returns
+    /// 主要音価の一覧（4, 8, 16, 32）
+    pub fn arpeggio_resolution_completions() -> Vec<CompletionItem> {
+        [
+            ("4", "4分音符間隔"),
+            ("8", "8分音符間隔"),
+            ("16", "16分音符間隔"),
+            ("32", "32分音符間隔"),
+        ]
+        .iter()
+        .map(|(res, detail)| CompletionItem {
+            label: res.to_string(),
+            detail: Some(detail.to_string()),
+            kind: CompletionKind::Keyword,
+        })
+        .collect()
+    }
+
     /// インクルードパスの補完候補を返す（.cvg/.lcvgc ファイル）
     /// Returns completion candidates for include paths (.cvg/.lcvgc files)
     ///
