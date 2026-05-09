@@ -1262,6 +1262,37 @@ scene breakdown {
 }
 ```
 
+### 8.6 Initial Mute (`mute` Prefix)
+
+Prefixing a clip line inside a scene with `mute` causes the **clip to be loaded in a muted state** when the scene becomes active. The tick advances in sync with the other clips, so a later `unmute <clip>` lets it rejoin instantly with the phase preserved.
+
+```
+scene verse {
+  drums_a
+  mute bass_a                // bass_a starts muted in verse
+  lead_a
+}
+
+scene chorus {
+  drums_a
+  bass_a                     // chorus starts with it unmuted
+  lead_a
+}
+```
+
+- The `mute` prefix can be **combined** with shuffle candidates and probabilities:
+
+  ```
+  scene breakdown {
+    mute drums_a | drums_poly  // whichever is picked is loaded muted
+    mute lead_a 7              // 70% probability candidate, but starts muted
+  }
+  ```
+
+- Dynamic toggling is still done with the top-level `mute <clip>` / `unmute <clip>` (§10.3.2).
+- An `unmute` prefix is **not supported** (the default is unmuted).
+- Switching to another scene **re-initializes** the mute state from the new scene's `mute` prefix declarations. Mute state changes made dynamically while the previous scene was active are not carried over.
+
 ---
 
 ## 9. Session Definition (session)
@@ -1385,6 +1416,7 @@ unmute drums_a
 - Clip names not present in active_scene are **no-ops** (`MutedNoop { reason }` / `UnmutedNoop { reason }`)
 - The LSP raises a Warning up front when the target clip is undefined
 - `unmute` is idempotent — running it on a clip that is not muted simply returns `Unmuted`
+- To declare an **initial mute state** on the scene definition side, see §8.6 "Initial Mute (`mute` Prefix)". The roles are split: top-level `mute <clip>` is **dynamic runtime toggling**, while the in-scene `mute` prefix is the **initial state at scene activation**.
 
 ### 10.4 Playback Control Semantics (stop / pause / mute)
 
