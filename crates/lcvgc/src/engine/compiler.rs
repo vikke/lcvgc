@@ -114,16 +114,18 @@ pub fn compile_clip(
     clock: &Clock,
     registry: &Registry,
 ) -> Result<CompiledClip, EngineError> {
-    let (mut events, mut drum_mask_groups, mut random_choice_groups) = match &clip.body {
-        ClipBody::Pitched(body) => {
-            let (evts, randoms) = compile_pitched(body, clock, registry, clip.options.bars)?;
-            (evts, Vec::new(), randoms)
-        }
-        ClipBody::Drum(body) => {
-            let (evts, drums) = compile_drum(body, clock, registry)?;
-            (evts, drums, Vec::new())
-        }
-    };
+    let (mut events, mut drum_mask_groups, mut random_choice_groups, logical_end_ticks) =
+        match &clip.body {
+            ClipBody::Pitched(body) => {
+                let (evts, randoms, end) =
+                    compile_pitched(body, clock, registry, clip.options.bars)?;
+                (evts, Vec::new(), randoms, end)
+            }
+            ClipBody::Drum(body) => {
+                let (evts, drums, end) = compile_drum(body, clock, registry)?;
+                (evts, drums, Vec::new(), end)
+            }
+        };
 
     let mut warnings = Vec::new();
 
@@ -176,8 +178,14 @@ pub fn compile_clip(
         random_choice_groups.retain(|g| g.candidates.len() >= 2);
         max_ticks
     } else {
-        // bars未指定: イベントの最大tick + 1（最低でも0）
-        events.iter().map(|e| e.tick + 1).max().unwrap_or(0)
+        // bars 未指定: 各ラインの論理終了 tick（音価ベース）の最大値を採用する。
+        // gate 比率による NoteOff 早期化に依存しないため、scene 内で他 clip と
+        // 小節長が揃いやすい。
+        //
+        // No `bars`: use the musical end tick (each line's `current_tick` after
+        // its last element). This is independent of gate ratio so clips align
+        // by musical bar length within a scene.
+        logical_end_ticks
     };
 
     // tick順にソート（同一tickではNoteOnをNoteOffより先に）
@@ -241,16 +249,27 @@ fn event_sort_priority(msg: &MidiMessage) -> u8 {
 }
 
 /// ピッチドクリップのコンパイル
+///
+/// 戻り値の `u64` は **論理終了 tick**（各 line の `current_tick` 終端の最大値）。
+/// これは「最後のノートの音価が終わる位置」を意味し、gate 比率による NoteOff
+/// 早期化の影響を受けない。bars 未指定時の `total_ticks` 算出に使われる。
+///
+/// The returned `u64` is the musical end tick (max of each line's final
+/// `current_tick`). It represents where the last note's musical duration
+/// ends, independent of gate-driven NoteOff shortening, and is consumed by
+/// `compile_clip` to compute `total_ticks` when `bars` is omitted.
 fn compile_pitched(
     body: &PitchedClipBody,
     clock: &Clock,
     registry: &Registry,
     bars: Option<u32>,
-) -> Result<(Vec<MidiEvent>, Vec<RandomChoiceGroup>), EngineError> {
+) -> Result<(Vec<MidiEvent>, Vec<RandomChoiceGroup>, u64), EngineError> {
     let mut events = Vec::new();
     let mut random_choice_groups: Vec<RandomChoiceGroup> = Vec::new();
+    let mut logical_end_ticks: u64 = 0;
     for line in &body.lines {
-        let (line_events, line_groups) = compile_pitched_line(line, clock, registry, bars)?;
+        let (line_events, line_groups, line_end) =
+            compile_pitched_line(line, clock, registry, bars)?;
         // line ごとに index は 0 開始のため、結合時に既存 events 長を offset として加算する
         // Each line indexes from 0, so add the running events length as offset on merge.
         let offset = events.len();
@@ -263,22 +282,29 @@ fn compile_pitched(
             random_choice_groups.push(group);
         }
         events.extend(line_events);
+        if line_end > logical_end_ticks {
+            logical_end_ticks = line_end;
+        }
     }
     // CCオートメーションのコンパイル
     let cc_events = compile_cc_automations(&body.cc_automations, clock, registry)?;
     events.extend(cc_events);
-    Ok((events, random_choice_groups))
+    Ok((events, random_choice_groups, logical_end_ticks))
 }
 
 /// ピッチドライン1行のコンパイル
 ///
 /// Compiles a single pitched line into MIDI events.
+/// 戻り値の `u64` はラインの論理終了 tick（最後の要素を処理した直後の `current_tick`）。
+///
+/// The returned `u64` is the line's musical end tick — `current_tick` after the
+/// last element has been compiled.
 fn compile_pitched_line(
     line: &PitchedLine,
     clock: &Clock,
     registry: &Registry,
     bars: Option<u32>,
-) -> Result<(Vec<MidiEvent>, Vec<RandomChoiceGroup>), EngineError> {
+) -> Result<(Vec<MidiEvent>, Vec<RandomChoiceGroup>, u64), EngineError> {
     let inst = registry
         .get_instrument(&line.instrument)
         .ok_or_else(|| EngineError::UnknownInstrument(line.instrument.clone()))?;
@@ -307,7 +333,7 @@ fn compile_pitched_line(
         bars,
     )?;
 
-    Ok((events, random_choice_groups))
+    Ok((events, random_choice_groups, current_tick))
 }
 
 /// ピッチド要素列をMIDIイベントにコンパイルする（再帰対応）。
@@ -808,15 +834,18 @@ fn compile_cc_automations(
 /// 戻り値の `Vec<DrumProbabilityGroup>` は probability 行が指定されており、
 /// かつ 100% 未満の確率を持つステップだけを抽選対象として保持する。
 /// 100% (= `.`) と確率行未指定のステップは抽選不要なので group には含めない。
+/// `u64` は **論理終了 tick** で、最長 row の文字数 × `ticks_per_step` を返す。
+/// gate 比率による NoteOff 早期化の影響を受けず、bars 未指定 clip の `total_ticks`
+/// を決定するために使われる。
 ///
-/// Returns the MIDI events together with a list of probability groups derived
-/// from probability rows. Steps without a probability row, or those marked
-/// `.` (100%), are not gated and therefore omitted from the returned groups.
+/// Returns the MIDI events, probability groups (steps with sub-100% odds),
+/// and the musical end tick (= longest row length × `ticks_per_step`),
+/// independent of gate-driven NoteOff shortening.
 fn compile_drum(
     body: &crate::ast::clip::DrumClipBody,
     clock: &Clock,
     registry: &Registry,
-) -> Result<(Vec<MidiEvent>, Vec<DrumProbabilityGroup>), EngineError> {
+) -> Result<(Vec<MidiEvent>, Vec<DrumProbabilityGroup>, u64), EngineError> {
     let kit = registry
         .get_kit(&body.kit)
         .ok_or_else(|| EngineError::UnknownKit(body.kit.clone()))?;
@@ -826,6 +855,11 @@ fn compile_drum(
 
     let mut events = Vec::new();
     let mut groups: Vec<DrumProbabilityGroup> = Vec::new();
+    // 最長 row の文字数 × ticks_per_step を論理終了 tick とする。
+    // 行が無いクリップは 0 を返す（既存挙動を踏襲）。
+    // The longest row's step count × ticks_per_step is the musical end tick.
+    let max_steps = body.rows.iter().map(|r| r.hits.len()).max().unwrap_or(0) as u64;
+    let logical_end_ticks = max_steps * ticks_per_step;
 
     for row in &body.rows {
         let kit_inst = kit
@@ -894,7 +928,7 @@ fn compile_drum(
     // ドラムクリップのCCオートメーションコンパイル
     let cc_events = compile_cc_automations(&body.cc_automations, clock, registry)?;
     events.extend(cc_events);
-    Ok((events, groups))
+    Ok((events, groups, logical_end_ticks))
 }
 
 #[cfg(test)]
@@ -1141,6 +1175,75 @@ mod tests {
         // bars超過時にワーニングが生成される
         assert_eq!(compiled.warnings.len(), 1);
         assert!(compiled.warnings[0].contains("超過"));
+    }
+
+    /// bars 未指定の clip では、total_ticks は最後のノートの **音価終了 tick**
+    /// (gate 早期化を含まない) であるべき。
+    /// gate 80% で NoteOff が早期化されても total_ticks は影響を受けない。
+    ///
+    /// When `bars` is unspecified, `total_ticks` must equal the last note's
+    /// musical-duration end (not the last NoteOff tick + 1). This way a clip
+    /// of `c:4:4 d e f` (= one bar) ends at exactly 1920 ticks regardless of
+    /// gate ratio (which only affects NoteOff position, not musical length).
+    #[test]
+    fn bars_unspecified_total_ticks_is_logical_end() {
+        let registry = make_registry_with_bass();
+        let clock = Clock::new(120.0);
+        // 4分音符 × 4 = 1920 ticks (= 1 小節 @120BPM/PPQ480)
+        let clip = make_pitched_clip(
+            "test",
+            None,
+            vec![PitchedLine {
+                instrument: "bass".to_string(),
+                elements: vec![
+                    single_note(NoteName::C, Some(4), Some(4), false),
+                    single_note(NoteName::D, None, None, false),
+                    single_note(NoteName::E, None, None, false),
+                    single_note(NoteName::F, None, None, false),
+                ],
+            }],
+        );
+
+        let compiled = compile_clip(&clip, &clock, &registry).unwrap();
+        // gate 80% でも total_ticks は音価ベース = 1920 であるべき
+        assert_eq!(
+            compiled.total_ticks, 1920,
+            "total_ticks should be musical duration end (1920), not gate-affected NoteOff+1"
+        );
+    }
+
+    /// bars 未指定 + 複数 line（ポリリズム想定）では、各 line の最終音価終了の最大値を採用する。
+    /// With multiple lines and no bars, total_ticks must be the max of each
+    /// line's musical end.
+    #[test]
+    fn bars_unspecified_multi_line_takes_max_logical_end() {
+        let registry = make_registry_with_bass();
+        let clock = Clock::new(120.0);
+        // line1: 4分音符1個 = 480 ticks
+        // line2: 4分音符4個 = 1920 ticks
+        // → total_ticks = 1920
+        let clip = make_pitched_clip(
+            "test",
+            None,
+            vec![
+                PitchedLine {
+                    instrument: "bass".to_string(),
+                    elements: vec![single_note(NoteName::C, Some(4), Some(4), false)],
+                },
+                PitchedLine {
+                    instrument: "bass".to_string(),
+                    elements: vec![
+                        single_note(NoteName::E, Some(4), Some(4), false),
+                        single_note(NoteName::G, None, None, false),
+                        single_note(NoteName::B, None, None, false),
+                        single_note(NoteName::D, None, None, false),
+                    ],
+                },
+            ],
+        );
+
+        let compiled = compile_clip(&clip, &clock, &registry).unwrap();
+        assert_eq!(compiled.total_ticks, 1920);
     }
 
     #[test]
