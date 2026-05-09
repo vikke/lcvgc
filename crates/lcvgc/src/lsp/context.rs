@@ -1,6 +1,9 @@
 use super::completion::{CompletionItem, CompletionKind, CompletionProvider};
+use crate::ast::common::NoteName;
+use crate::ast::scale::ScaleType;
 use crate::engine::registry::Registry;
 use crate::midi::port::list_ports;
+use crate::parser::scale::parse_scale;
 
 /// カーソル位置のコンテキスト
 #[derive(Debug, PartialEq)]
@@ -26,8 +29,15 @@ pub enum CompletionContext {
     KitBody,
     /// kit 内 "device " の後: デバイス名を提案
     KitAfterDevice,
-    /// clip ブロック内の行頭（pitched）: 楽器名を提案
-    PitchedClipBody,
+    /// clip ブロック内の行頭（pitched）: 楽器名 + スケール構成音 / 半音階を提案
+    ///
+    /// `scale` は clip-local `[scale ROOT TYPE]` を最優先で解決し、
+    /// 無ければ呼び出し側で `Registry::scale()`（トップレベル `scale`）に
+    /// フォールバックさせる。`None` の場合は半音階17音のみ。
+    PitchedClipBody {
+        /// clip ローカルの `[scale ...]` で確定した (ルート音, スケール種)
+        scale: Option<(NoteName, ScaleType)>,
+    },
     /// clip ブロック内の行頭（drum）: use/resolution + kit楽器名
     DrumClipBody,
     /// clip 内 "use " の後: キット名を提案
@@ -449,7 +459,8 @@ fn determine_clip_context(
         if clip_has_use(source, brace_pos, cursor_offset) {
             return CompletionContext::DrumClipBody;
         }
-        return CompletionContext::PitchedClipBody;
+        let scale = extract_clip_local_scale(source, brace_pos);
+        return CompletionContext::PitchedClipBody { scale };
     }
     if trimmed.starts_with("use ") {
         return CompletionContext::ClipAfterUse;
@@ -460,8 +471,43 @@ fn determine_clip_context(
     if clip_has_use(source, brace_pos, cursor_offset) {
         CompletionContext::DrumClipBody
     } else {
-        CompletionContext::PitchedClipBody
+        let scale = extract_clip_local_scale(source, brace_pos);
+        CompletionContext::PitchedClipBody { scale }
     }
+}
+
+/// clip オープニング行から `[scale ROOT TYPE]` を抽出する
+///
+/// `clip name [bars 1] [scale c minor] {` の `{` 位置 `brace_pos` を受け取り、
+/// その手前の `[ ... ]` ブロックを順に走査して `scale` オプションを探す。
+/// 複数 `[scale ...]` が書かれた場合は **最後の指定** を優先する
+/// (DSL 的にも後勝ち)。パースに失敗 / 未指定なら `None`。
+///
+/// # Arguments
+/// * `source` - ソース全体
+/// * `brace_pos` - clip ブロックの `{` の位置
+///
+/// # Returns
+/// 解決した `(NoteName, ScaleType)` または `None`
+fn extract_clip_local_scale(source: &str, brace_pos: usize) -> Option<(NoteName, ScaleType)> {
+    let header = source[..brace_pos].trim_end();
+    // ヘッダ末尾から `[ ... ]` を順に取り出し、`scale ROOT TYPE` を後勝ちで採用
+    let mut found: Option<(NoteName, ScaleType)> = None;
+    let mut rest = header;
+    while let Some(open) = rest.find('[') {
+        let after_open = &rest[open + 1..];
+        let close_rel = after_open.find(']')?;
+        let inner = after_open[..close_rel].trim();
+        if let Some(args) = inner.strip_prefix("scale ") {
+            // `parse_scale` は "scale ..." 全体を期待するので prefix を再構築
+            let candidate = format!("scale {}", args.trim());
+            if let Ok((_, sd)) = parse_scale(&candidate) {
+                found = Some((sd.root, sd.scale_type));
+            }
+        }
+        rest = &after_open[close_rel + 1..];
+    }
+    found
 }
 
 /// scene ブロック内のコンテキストを判定する
@@ -541,19 +587,38 @@ pub fn build_completion_items(ctx: &CompletionContext, registry: &Registry) -> V
             CompletionProvider::identifier_completions(&registry.device_names(), "device")
         }
 
-        CompletionContext::PitchedClipBody => {
+        CompletionContext::PitchedClipBody { scale } => {
+            // 1) instrument 名（先頭）
             let mut items = CompletionProvider::identifier_completions(
                 &registry.instrument_names(),
                 "instrument",
             );
-            items.extend(CompletionProvider::note_completions());
-            // ダイアトニックコード（scale設定がある場合）
-            if let Some(scale) = registry.scale() {
-                items.extend(CompletionProvider::diatonic_completions(
-                    scale.root,
-                    scale.scale_type,
-                ));
+
+            // 2) スケール解決: clip-local > registry (top-level)
+            //    - clip-local `[scale ...]` が最優先
+            //    - 無ければトップレベル `scale` にフォールバック
+            //    - 両方無ければ None（半音階17音だけ出す）
+            let resolved_scale: Option<(NoteName, ScaleType)> =
+                scale.or_else(|| registry.scale().map(|s| (s.root, s.scale_type)));
+
+            if let Some((root, scale_type)) = resolved_scale {
+                // 2a) スケール構成音 7 音 (sortText "0_..." で先頭優先)
+                items.extend(CompletionProvider::scale_note_completions(root, scale_type));
+                // 2b) ダイアトニックコード
+                items.extend(CompletionProvider::diatonic_completions(root, scale_type));
             }
+
+            // 3) 半音階 17 音（借用音用フォールバック）
+            //    scale が解決できているときは sortText "9_..." を付けて末尾に並べる
+            //    解決できていないときは従来通り sortText 無しで挿入
+            let mut chromatic = CompletionProvider::note_completions();
+            if resolved_scale.is_some() {
+                for (i, item) in chromatic.iter_mut().enumerate() {
+                    item.sort_text = Some(format!("9_{i:02}"));
+                }
+            }
+            items.extend(chromatic);
+
             items
         }
 
@@ -569,6 +634,7 @@ pub fn build_completion_items(ctx: &CompletionContext, registry: &Registry) -> V
                             inst.channel.as_one_based()
                         )),
                         kind: CompletionKind::Identifier,
+                        sort_text: None,
                     });
                 }
             }
@@ -955,10 +1021,47 @@ mod tests {
 
     #[test]
     fn ctx_pitched_clip_body() {
+        // bars だけの clip は scale 未確定 → None
         let src = "clip bass_a [bars 1] {\n  ";
         assert_eq!(
             determine_completion_context(src, src.len()),
-            CompletionContext::PitchedClipBody
+            CompletionContext::PitchedClipBody { scale: None }
+        );
+    }
+
+    /// clip-local `[scale c major]` が `PitchedClipBody` に伝搬する
+    #[test]
+    fn ctx_pitched_clip_body_with_clip_local_scale_c_major() {
+        let src = "clip x [scale c major] {\n  ";
+        assert_eq!(
+            determine_completion_context(src, src.len()),
+            CompletionContext::PitchedClipBody {
+                scale: Some((NoteName::C, ScaleType::Major))
+            }
+        );
+    }
+
+    /// clip-local `[bars N] [scale d minor]` 順でも scale が拾える (後勝ち)
+    #[test]
+    fn ctx_pitched_clip_body_with_bars_then_scale_d_minor() {
+        let src = "clip x [bars 8] [scale d minor] {\n  ";
+        assert_eq!(
+            determine_completion_context(src, src.len()),
+            CompletionContext::PitchedClipBody {
+                scale: Some((NoteName::D, ScaleType::Minor))
+            }
+        );
+    }
+
+    /// 同じ clip ヘッダに複数 `[scale ...]` がある場合は後勝ち
+    #[test]
+    fn ctx_pitched_clip_body_last_scale_wins() {
+        let src = "clip x [scale c major] [scale a minor] {\n  ";
+        assert_eq!(
+            determine_completion_context(src, src.len()),
+            CompletionContext::PitchedClipBody {
+                scale: Some((NoteName::A, ScaleType::Minor))
+            }
         );
     }
 
@@ -1221,6 +1324,119 @@ mod tests {
         assert!(labels.contains(&"8"));
         assert!(labels.contains(&"16"));
         assert!(labels.contains(&"32"));
+    }
+
+    /// PitchedClipBody (clip-local scale) の補完候補にスケール構成音と
+    /// ダイアトニックコードが含まれ、半音階フォールバックは sortText で末尾に並ぶ
+    #[test]
+    fn build_pitched_clip_body_with_clip_local_scale_includes_scale_notes_and_diatonic() {
+        let ctx = CompletionContext::PitchedClipBody {
+            scale: Some((NoteName::C, ScaleType::Major)),
+        };
+        let registry = Registry::new();
+        let items = build_completion_items(&ctx, &registry);
+
+        // c major 構成音 (sortText "0_*") が7つ
+        let scale_notes: Vec<&str> = items
+            .iter()
+            .filter(|i| i.sort_text.as_deref().is_some_and(|s| s.starts_with("0_")))
+            .map(|i| i.label.as_str())
+            .collect();
+        assert_eq!(scale_notes, vec!["c", "d", "e", "f", "g", "a", "b"]);
+
+        // ダイアトニックコード (ChordName) が7つ
+        let chords: Vec<&str> = items
+            .iter()
+            .filter(|i| i.kind == CompletionKind::ChordName)
+            .map(|i| i.label.as_str())
+            .collect();
+        assert_eq!(
+            chords.len(),
+            7,
+            "diatonic chords expected 7, got {chords:?}"
+        );
+
+        // 半音階17音は sortText "9_*" 付きでフォールバック
+        let chromatic_count = items
+            .iter()
+            .filter(|i| i.sort_text.as_deref().is_some_and(|s| s.starts_with("9_")))
+            .count();
+        assert_eq!(chromatic_count, 17);
+    }
+
+    /// clip-local scale が無い場合は registry (top-level scale) にフォールバックする
+    #[test]
+    fn build_pitched_clip_body_falls_back_to_registry_scale() {
+        use crate::ast::scale::ScaleDef;
+        use crate::ast::Block;
+
+        let ctx = CompletionContext::PitchedClipBody { scale: None };
+        let mut registry = Registry::new();
+        registry.register_block(Block::Scale(ScaleDef {
+            root: NoteName::A,
+            scale_type: ScaleType::Minor,
+        }));
+        let items = build_completion_items(&ctx, &registry);
+
+        // a minor 構成音: a b c d e f g
+        let scale_notes: Vec<&str> = items
+            .iter()
+            .filter(|i| i.sort_text.as_deref().is_some_and(|s| s.starts_with("0_")))
+            .map(|i| i.label.as_str())
+            .collect();
+        assert_eq!(scale_notes, vec!["a", "b", "c", "d", "e", "f", "g"]);
+    }
+
+    /// scale が両方無い場合は半音階17音のみで sortText も付かない
+    #[test]
+    fn build_pitched_clip_body_without_any_scale_uses_chromatic_only() {
+        let ctx = CompletionContext::PitchedClipBody { scale: None };
+        let registry = Registry::new();
+        let items = build_completion_items(&ctx, &registry);
+
+        // ChordName / "0_*" sortText は無い
+        assert!(items.iter().all(|i| i.kind != CompletionKind::ChordName));
+        assert!(items.iter().all(|i| i
+            .sort_text
+            .as_deref()
+            .map(|s| !s.starts_with("0_"))
+            .unwrap_or(true)));
+
+        // NoteName が17件揃う (sort_text なし)
+        let chromatic: Vec<&str> = items
+            .iter()
+            .filter(|i| i.kind == CompletionKind::NoteName)
+            .map(|i| i.label.as_str())
+            .collect();
+        assert_eq!(chromatic.len(), 17);
+        for item in items.iter().filter(|i| i.kind == CompletionKind::NoteName) {
+            assert!(item.sort_text.is_none());
+        }
+    }
+
+    /// clip-local scale は registry の top-level scale を上書きする
+    #[test]
+    fn build_pitched_clip_body_clip_local_scale_overrides_registry() {
+        use crate::ast::scale::ScaleDef;
+        use crate::ast::Block;
+
+        let ctx = CompletionContext::PitchedClipBody {
+            scale: Some((NoteName::C, ScaleType::Major)),
+        };
+        let mut registry = Registry::new();
+        registry.register_block(Block::Scale(ScaleDef {
+            root: NoteName::C,
+            scale_type: ScaleType::Minor,
+        }));
+        let items = build_completion_items(&ctx, &registry);
+
+        // clip-local の c major が反映されている (eb ではなく e が出る)
+        let scale_notes: Vec<&str> = items
+            .iter()
+            .filter(|i| i.sort_text.as_deref().is_some_and(|s| s.starts_with("0_")))
+            .map(|i| i.label.as_str())
+            .collect();
+        assert_eq!(scale_notes, vec!["c", "d", "e", "f", "g", "a", "b"]);
     }
 
     #[test]

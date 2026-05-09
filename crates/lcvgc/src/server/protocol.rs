@@ -121,6 +121,11 @@ pub struct LspCompletionItem {
     pub detail: Option<String>,
     /// 補完種別 (e.g. "Keyword", "Snippet") / Completion kind
     pub kind: String,
+    /// LSP `sortText`: nvim-cmp 等のクライアントで候補順を制御する文字列。
+    /// 省略時はクライアント側で `label` をソートキーにフォールバックする。
+    /// scale 構成音 ("0_..") を半音階 ("9_..") より前に並べる用途で使う。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sort_text: Option<String>,
 }
 
 /// LSPホバー情報
@@ -560,6 +565,7 @@ mod tests {
                 label: "tempo".to_string(),
                 detail: None,
                 kind: "Keyword".to_string(),
+                sort_text: None,
             }],
         };
         let resp = Response::lsp(result);
@@ -567,6 +573,24 @@ mod tests {
         assert!(json.contains("\"success\":true"));
         assert!(json.contains("\"lsp\""));
         assert!(json.contains("\"tempo\""));
+        // sort_text が None なら `skip_serializing_if` で出力されない
+        assert!(!json.contains("\"sort_text\""));
+    }
+
+    /// sort_text が Some のときは JSON に "sort_text" フィールドが出る
+    #[test]
+    fn serialize_lsp_completion_response_with_sort_text() {
+        let result = LspResult::Completion {
+            items: vec![LspCompletionItem {
+                label: "c".to_string(),
+                detail: Some("in-scale note (c major)".to_string()),
+                kind: "NoteName".to_string(),
+                sort_text: Some("0_0".to_string()),
+            }],
+        };
+        let resp = Response::lsp(result);
+        let json = serde_json::to_string(&resp).unwrap();
+        assert!(json.contains("\"sort_text\":\"0_0\""));
     }
 
     #[test]

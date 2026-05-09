@@ -21,6 +21,9 @@ pub struct CompletionItem {
     pub detail: Option<String>,
     /// 補完候補の種別
     pub kind: CompletionKind,
+    /// LSP `sortText` に使う文字列（省略時はクライアント側で label をフォールバック）。
+    /// scale 構成音 ("0_..") のように先頭優先したい候補で使用する。
+    pub sort_text: Option<String>,
 }
 
 /// 補完候補の種別
@@ -44,6 +47,93 @@ pub enum CompletionKind {
 ///
 /// 各コンテキストに応じた補完候補リストを生成する静的メソッド群。
 pub struct CompletionProvider;
+
+/// `NoteName` を DSL で使う小文字表記 (c, c#, eb, ...) に変換する
+///
+/// note 補完候補の `label` は DSL 入力に直接使われるため、
+/// シャープ/フラット表記もそのまま小文字で返す。
+fn note_name_lowercase(note: NoteName) -> &'static str {
+    match note {
+        NoteName::C => "c",
+        NoteName::Cs => "c#",
+        NoteName::Db => "db",
+        NoteName::D => "d",
+        NoteName::Ds => "d#",
+        NoteName::Eb => "eb",
+        NoteName::E => "e",
+        NoteName::F => "f",
+        NoteName::Fs => "f#",
+        NoteName::Gb => "gb",
+        NoteName::G => "g",
+        NoteName::Gs => "g#",
+        NoteName::Ab => "ab",
+        NoteName::A => "a",
+        NoteName::As => "a#",
+        NoteName::Bb => "bb",
+        NoteName::B => "b",
+    }
+}
+
+/// scale 構成音補完の `detail` 用にルート音表記を返す
+fn scale_root_label(note: NoteName) -> &'static str {
+    note_name_lowercase(note)
+}
+
+/// 半音数 (0..12) を補完ラベルに変換する。`prefer_flat=true` で
+/// シャープではなくフラット表記 (eb, ab, bb 等) を採用する。
+fn semitone_to_label(semitone: u8, prefer_flat: bool) -> &'static str {
+    match (semitone % 12, prefer_flat) {
+        (0, _) => "c",
+        (1, false) => "c#",
+        (1, true) => "db",
+        (2, _) => "d",
+        (3, false) => "d#",
+        (3, true) => "eb",
+        (4, _) => "e",
+        (5, _) => "f",
+        (6, false) => "f#",
+        (6, true) => "gb",
+        (7, _) => "g",
+        (8, false) => "g#",
+        (8, true) => "ab",
+        (9, _) => "a",
+        (10, false) => "a#",
+        (10, true) => "bb",
+        (11, _) => "b",
+        _ => unreachable!(),
+    }
+}
+
+/// 補完ラベル生成時にフラット表記を優先するスケール種か判定する
+///
+/// マイナー系・モードのうちフラットが多いものは `eb` `ab` `bb` のような
+/// 表記を返したい。Major / Lydian / Mixolydian は sharp 系として扱う。
+fn scale_prefers_flat(scale_type: ScaleType) -> bool {
+    match scale_type {
+        ScaleType::Major | ScaleType::Lydian | ScaleType::Mixolydian => false,
+        ScaleType::Minor
+        | ScaleType::HarmonicMinor
+        | ScaleType::MelodicMinor
+        | ScaleType::Dorian
+        | ScaleType::Phrygian
+        | ScaleType::Locrian => true,
+    }
+}
+
+/// scale 構成音補完の `detail` 用にスケールタイプの表記を返す
+fn scale_type_label(scale_type: ScaleType) -> &'static str {
+    match scale_type {
+        ScaleType::Major => "major",
+        ScaleType::Minor => "minor",
+        ScaleType::HarmonicMinor => "harmonic_minor",
+        ScaleType::MelodicMinor => "melodic_minor",
+        ScaleType::Dorian => "dorian",
+        ScaleType::Phrygian => "phrygian",
+        ScaleType::Lydian => "lydian",
+        ScaleType::Mixolydian => "mixolydian",
+        ScaleType::Locrian => "locrian",
+    }
+}
 
 impl CompletionProvider {
     /// トップレベルのブロックキーワード補完候補を返す
@@ -74,6 +164,7 @@ impl CompletionProvider {
             label: kw.to_string(),
             detail: None,
             kind: CompletionKind::Keyword,
+            sort_text: None,
         })
         .collect()
     }
@@ -92,6 +183,7 @@ impl CompletionProvider {
             label: n.to_string(),
             detail: None,
             kind: CompletionKind::NoteName,
+            sort_text: None,
         })
         .collect()
     }
@@ -115,6 +207,7 @@ impl CompletionProvider {
             label: name.to_string(),
             detail: Some(format!("CC {}", cc)),
             kind: CompletionKind::CcAlias,
+            sort_text: None,
         })
         .collect()
     }
@@ -134,6 +227,7 @@ impl CompletionProvider {
                 label: m.alias.clone(),
                 detail: Some(format!("CC {}", m.cc_number)),
                 kind: CompletionKind::CcAlias,
+                sort_text: None,
             })
             .collect()
     }
@@ -155,6 +249,7 @@ impl CompletionProvider {
                 label: name.clone(),
                 detail: Some(kind_label.to_string()),
                 kind: CompletionKind::Identifier,
+                sort_text: None,
             })
             .collect()
     }
@@ -176,6 +271,7 @@ impl CompletionProvider {
                 label: chord.label,
                 detail: Some(chord.detail),
                 kind: CompletionKind::ChordName,
+                sort_text: None,
             })
             .collect()
     }
@@ -190,6 +286,7 @@ impl CompletionProvider {
                 label: "port".to_string(),
                 detail: Some("MIDIポート名".to_string()),
                 kind: CompletionKind::Keyword,
+                sort_text: None,
             },
             CompletionItem {
                 label: "transport".to_string(),
@@ -198,6 +295,7 @@ impl CompletionProvider {
                         .to_string(),
                 ),
                 kind: CompletionKind::Keyword,
+                sort_text: None,
             },
         ]
     }
@@ -227,6 +325,7 @@ impl CompletionProvider {
                 label: name.clone(),
                 detail: Some("MIDI port".to_string()),
                 kind: CompletionKind::Identifier,
+                sort_text: None,
             })
             .collect()
     }
@@ -250,6 +349,7 @@ impl CompletionProvider {
             label: kw.to_string(),
             detail: Some(detail.to_string()),
             kind: CompletionKind::Keyword,
+            sort_text: None,
         })
         .collect()
     }
@@ -263,6 +363,7 @@ impl CompletionProvider {
             label: "device".to_string(),
             detail: Some("MIDIデバイス参照".to_string()),
             kind: CompletionKind::Keyword,
+            sort_text: None,
         }]
     }
 
@@ -281,6 +382,7 @@ impl CompletionProvider {
             label: kw.to_string(),
             detail: Some(detail.to_string()),
             kind: CompletionKind::Keyword,
+            sort_text: None,
         })
         .collect()
     }
@@ -295,11 +397,13 @@ impl CompletionProvider {
                 label: "use".to_string(),
                 detail: Some("ドラムキット参照".to_string()),
                 kind: CompletionKind::Keyword,
+                sort_text: None,
             },
             CompletionItem {
                 label: "resolution".to_string(),
                 detail: Some("ステップ解像度 (例: 16)".to_string()),
                 kind: CompletionKind::Keyword,
+                sort_text: None,
             },
         ]
     }
@@ -313,6 +417,7 @@ impl CompletionProvider {
             label: "tempo".to_string(),
             detail: Some("テンポ変化 (絶対値 or +N)".to_string()),
             kind: CompletionKind::Keyword,
+            sort_text: None,
         }]
     }
 
@@ -326,11 +431,13 @@ impl CompletionProvider {
                 label: "repeat".to_string(),
                 detail: Some("繰り返し回数".to_string()),
                 kind: CompletionKind::Keyword,
+                sort_text: None,
             },
             CompletionItem {
                 label: "loop".to_string(),
                 detail: Some("無限ループ".to_string()),
                 kind: CompletionKind::Keyword,
+                sort_text: None,
             },
         ]
     }
@@ -356,6 +463,7 @@ impl CompletionProvider {
             label: name.to_string(),
             detail: Some(detail.to_string()),
             kind: CompletionKind::Keyword,
+            sort_text: None,
         })
         .collect()
     }
@@ -369,6 +477,7 @@ impl CompletionProvider {
             label: "session".to_string(),
             detail: Some("セッション再生".to_string()),
             kind: CompletionKind::Keyword,
+            sort_text: None,
         }]
     }
 
@@ -388,6 +497,7 @@ impl CompletionProvider {
             label: dir.to_string(),
             detail: Some(detail.to_string()),
             kind: CompletionKind::Keyword,
+            sort_text: None,
         })
         .collect()
     }
@@ -412,8 +522,51 @@ impl CompletionProvider {
             label: res.to_string(),
             detail: Some(detail.to_string()),
             kind: CompletionKind::Keyword,
+            sort_text: None,
         })
         .collect()
+    }
+
+    /// スケール構成音7音の補完候補を返す（先頭優先 sortText 付き）
+    /// Returns 7 in-scale note completions with top-priority sortText.
+    ///
+    /// `[scale c major]` のように clip ローカル / トップレベルのスケールが
+    /// 解決されたときに、ノート補完で構成音を最上位に並べるためのヘルパ。
+    /// sortText は `"0_<index>"` 形式で、半音階17音 (`"9_..."`) より上に来る。
+    ///
+    /// Helper that lifts in-scale notes to the top of pitched-clip completions
+    /// when a scale (clip-local or top-level) is resolved. Each item carries a
+    /// `sort_text` like `"0_<index>"` so they precede the chromatic 17-note
+    /// fallback (which uses `"9_..."`).
+    ///
+    /// # Arguments
+    /// * `root` - スケールのルート音 / Scale root note
+    /// * `scale_type` - スケールタイプ / Scale type (Major, Minor, ...)
+    ///
+    /// # Returns
+    /// スケール構成音 7 件の補完候補（昇順、ルート始まり）。
+    pub fn scale_note_completions(root: NoteName, scale_type: ScaleType) -> Vec<CompletionItem> {
+        let intervals = diatonic::scale_intervals(scale_type);
+        let root_semi = diatonic::note_to_semitone(root);
+        let detail = format!(
+            "in-scale note ({} {})",
+            scale_root_label(root),
+            scale_type_label(scale_type)
+        );
+        let prefer_flat = scale_prefers_flat(scale_type);
+        intervals
+            .iter()
+            .enumerate()
+            .map(|(i, semi)| {
+                let semitone = (root_semi + *semi) % 12;
+                CompletionItem {
+                    label: semitone_to_label(semitone, prefer_flat).to_string(),
+                    detail: Some(detail.clone()),
+                    kind: CompletionKind::NoteName,
+                    sort_text: Some(format!("0_{i}")),
+                }
+            })
+            .collect()
     }
 
     /// インクルードパスの補完候補を返す（.cvg/.lcvgc ファイル）
@@ -437,6 +590,7 @@ impl CompletionProvider {
                                     label: name.to_string(),
                                     detail: Some("include file".to_string()),
                                     kind: CompletionKind::Identifier,
+                                    sort_text: None,
                                 });
                             }
                         }
@@ -450,6 +604,7 @@ impl CompletionProvider {
                                 label: format!("{}/", name),
                                 detail: Some("directory".to_string()),
                                 kind: CompletionKind::Identifier,
+                                sort_text: None,
                             });
                         }
                     }
@@ -571,6 +726,60 @@ mod tests {
     fn test_diatonic_completions_c_major() {
         let items = CompletionProvider::diatonic_completions(NoteName::C, ScaleType::Major);
         assert_eq!(items.len(), 7);
+    }
+
+    /// scale 構成音補完: c major は c d e f g a b の7件を返す
+    #[test]
+    fn scale_note_completions_c_major_returns_7_in_order() {
+        let items = CompletionProvider::scale_note_completions(NoteName::C, ScaleType::Major);
+        let labels: Vec<&str> = items.iter().map(|i| i.label.as_str()).collect();
+        assert_eq!(labels, vec!["c", "d", "e", "f", "g", "a", "b"]);
+    }
+
+    /// scale 構成音補完: c minor は c d eb f g ab bb の7件
+    #[test]
+    fn scale_note_completions_c_minor_returns_natural_minor() {
+        let items = CompletionProvider::scale_note_completions(NoteName::C, ScaleType::Minor);
+        let labels: Vec<&str> = items.iter().map(|i| i.label.as_str()).collect();
+        assert_eq!(labels, vec!["c", "d", "eb", "f", "g", "ab", "bb"]);
+    }
+
+    /// scale 構成音補完: sortText が "0_<index>" 形式で先頭ソート用
+    #[test]
+    fn scale_note_completions_sort_text_prefixed_for_top_priority() {
+        let items = CompletionProvider::scale_note_completions(NoteName::C, ScaleType::Major);
+        for (i, item) in items.iter().enumerate() {
+            let st = item.sort_text.as_deref().expect("sort_text must be set");
+            assert!(
+                st.starts_with("0_"),
+                "expected '0_' prefix to keep scale notes on top, got {st}"
+            );
+            // 7音以内でも安定ソートできるように index を付与
+            assert!(
+                st.contains(&format!("{i}")),
+                "sort_text {st} should contain index {i}"
+            );
+        }
+    }
+
+    /// scale 構成音補完: kind は NoteName
+    #[test]
+    fn scale_note_completions_kind_is_note_name() {
+        let items = CompletionProvider::scale_note_completions(NoteName::C, ScaleType::Major);
+        for item in &items {
+            assert_eq!(item.kind, CompletionKind::NoteName);
+        }
+    }
+
+    /// scale 構成音補完: detail にスケール情報が入る
+    #[test]
+    fn scale_note_completions_detail_mentions_scale() {
+        let items = CompletionProvider::scale_note_completions(NoteName::C, ScaleType::Major);
+        let detail = items[0].detail.as_deref().unwrap_or("");
+        assert!(
+            detail.to_lowercase().contains("scale"),
+            "expected 'scale' in detail, got {detail}"
+        );
     }
 
     #[test]
