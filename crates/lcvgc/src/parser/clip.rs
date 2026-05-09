@@ -157,12 +157,34 @@ fn parse_pitched_body(mut input: &str) -> IResult<&str, PitchedClipBody> {
             // Try note event (single note or chord name)
             if let Ok((r, note)) = parse_note_event(current) {
                 let (r, art) = parse_articulation(r)?;
-                // コード名に対するアルペジオを確認
-                // Check for arpeggio on chord names
+                // コード名に対するアルペジオを確認し、ChordName の arpeggio フィールドに格納する。
+                // 単音 (`Single`) や休符 (`Rest`) には arp は付かない（パーサーは消費するだけ）。
+                //
+                // Detect a trailing `arp(...)` and attach it to ChordName. Single
+                // notes and rests cannot carry an arpeggio; the parser just
+                // consumes the syntax for them (existing behavior).
                 let (r, _) = ws(r)?;
-                if let Some((r2, _arp)) = parse_arpeggio(r) {
+                if let Some((r2, arp)) = parse_arpeggio(r) {
+                    let note_with_arp = match note {
+                        crate::ast::clip_note::NoteEvent::ChordName {
+                            root,
+                            suffix,
+                            octave,
+                            duration,
+                            dotted,
+                            arpeggio: _,
+                        } => crate::ast::clip_note::NoteEvent::ChordName {
+                            root,
+                            suffix,
+                            octave,
+                            duration,
+                            dotted,
+                            arpeggio: Some(arp),
+                        },
+                        other => other,
+                    };
                     current = r2;
-                    elements.push(PitchedElement::Note(note, art));
+                    elements.push(PitchedElement::Note(note_with_arp, art));
                     continue;
                 }
                 elements.push(PitchedElement::Note(note, art));
@@ -532,6 +554,70 @@ mod tests {
                     other => panic!("expected chord name, got {:?}", other),
                 }
             }
+            _ => panic!("expected pitched"),
+        }
+    }
+
+    /// `cm arp(random, 4)` のような ChordName + arp が、ChordName.arpeggio に
+    /// 正しく取り込まれることを検証する。
+    /// `cm arp(random, 4)` should be parsed with arpeggio attached to ChordName.
+    #[test]
+    fn test_pitched_chord_name_with_arpeggio() {
+        let input = r#"clip arp_clip [bars 1] {
+  bass cm arp(random, 4)
+}"#;
+        let (rest, clip) = parse_clip(input).unwrap();
+        assert_eq!(rest, "");
+        match &clip.body {
+            ClipBody::Pitched(body) => {
+                assert_eq!(body.lines[0].elements.len(), 1);
+                match &body.lines[0].elements[0] {
+                    PitchedElement::Note(
+                        NoteEvent::ChordName {
+                            root,
+                            suffix,
+                            arpeggio,
+                            ..
+                        },
+                        _,
+                    ) => {
+                        assert_eq!(*root, NoteName::C);
+                        assert_eq!(*suffix, ChordSuffix::Min);
+                        let arp = arpeggio.expect("arpeggio should be Some");
+                        assert_eq!(
+                            arp.direction,
+                            crate::parser::clip_arpeggio::ArpeggioDirection::Random
+                        );
+                        assert_eq!(arp.resolution, Some(4));
+                    }
+                    other => panic!("expected chord name, got {:?}", other),
+                }
+            }
+            _ => panic!("expected pitched"),
+        }
+    }
+
+    /// 第2引数省略 `cm arp(up)` でも ChordName.arpeggio に取り込まれること。
+    /// `cm arp(up)` (no resolution) is also captured into ChordName.
+    #[test]
+    fn test_pitched_chord_name_with_arpeggio_no_resolution() {
+        let input = r#"clip arp_clip [bars 1] {
+  bass cm:4:8 arp(up)
+}"#;
+        let (rest, clip) = parse_clip(input).unwrap();
+        assert_eq!(rest, "");
+        match &clip.body {
+            ClipBody::Pitched(body) => match &body.lines[0].elements[0] {
+                PitchedElement::Note(NoteEvent::ChordName { arpeggio, .. }, _) => {
+                    let arp = arpeggio.expect("arpeggio should be Some");
+                    assert_eq!(
+                        arp.direction,
+                        crate::parser::clip_arpeggio::ArpeggioDirection::Up
+                    );
+                    assert_eq!(arp.resolution, None);
+                }
+                other => panic!("expected chord name, got {:?}", other),
+            },
             _ => panic!("expected pitched"),
         }
     }

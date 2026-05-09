@@ -153,6 +153,7 @@ pub fn parse_note_event(input: &str) -> IResult<&str, NoteEvent> {
                 octave,
                 duration,
                 dotted,
+                arpeggio: None,
             },
         )),
         None => Ok((
@@ -252,6 +253,7 @@ mod tests {
                     octave: Some(4),
                     duration: Some(2),
                     dotted: false,
+                    arpeggio: None,
                 }
             ))
         );
@@ -269,6 +271,7 @@ mod tests {
                     octave: None,
                     duration: None,
                     dotted: false,
+                    arpeggio: None,
                 }
             ))
         );
@@ -286,6 +289,7 @@ mod tests {
                     octave: None,
                     duration: Some(2),
                     dotted: false,
+                    arpeggio: None,
                 }
             ))
         );
@@ -299,6 +303,7 @@ mod tests {
             octave: Some(4),
             duration: Some(2),
             dotted: false,
+            arpeggio: None,
         };
         assert_eq!(parse_note_event("cMaj7:4:2"), Ok(("", expected.clone())));
         assert_eq!(parse_note_event("cM7:4:2"), Ok(("", expected)));
@@ -316,6 +321,7 @@ mod tests {
                     octave: Some(4),
                     duration: Some(2),
                     dotted: false,
+                    arpeggio: None,
                 }
             ))
         );
@@ -329,6 +335,7 @@ mod tests {
             octave: Some(3),
             duration: Some(2),
             dotted: false,
+            arpeggio: None,
         };
         // M7#5 と Maj7#5 は同じ AugMaj7
         assert_eq!(parse_note_event("ebM7#5:3:2"), Ok(("", expected.clone())));
@@ -397,6 +404,7 @@ mod tests {
                     octave: Some(3),
                     duration: Some(4),
                     dotted: false,
+                    arpeggio: None,
                 }
             ))
         );
@@ -420,6 +428,7 @@ mod tests {
                     octave: None,
                     duration: None,
                     dotted: false,
+                    arpeggio: None,
                 }
             ))
         );

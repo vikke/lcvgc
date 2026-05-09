@@ -925,7 +925,7 @@ clip chords_mixed [bars 2] {
 
 ### 7.12 Arpeggio
 
-Append `arp(direction)` or `arp(direction, note_resolution)` after a chord. The second argument is optional.
+Append `arp(direction)` or `arp(direction, note_resolution)` after a chord. The second argument is optional. **The chord can be either a ChordBracket (`[c eb g]`) or a chord name (`cm`, `cm7`, etc.)**; for chord names the chord tones are expanded and arpeggiated.
 
 ```
 clip arp_a [bars 1] {
@@ -946,6 +946,10 @@ clip arp_d [bars 2] {
 
 clip arp_e [bars 1] {
   keys [c:4 eb:4 g:4]:8 arp(up)               // Resolution omitted → falls back to the chord's :8 as per-note length
+}
+
+clip arp_f [bars 1] {
+  keys cm arp(random, 4)                      // Chord name `cm` → tones [c eb g] arpeggiated randomly at quarter-note intervals
 }
 ```
 

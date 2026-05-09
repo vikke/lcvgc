@@ -1,6 +1,7 @@
 use super::span_parser::{Span, SpanError, SpannedBlock};
 /// 診断プロバイダ（パースエラー＋未定義参照）
 use crate::ast::clip::{ClipBody, PitchedElement};
+use crate::ast::clip_note::NoteEvent;
 use crate::ast::scene::SceneEntry;
 use crate::ast::Block;
 use crate::engine::registry::Registry;
@@ -255,16 +256,18 @@ impl DiagnosticProvider {
 
     /// アルペジオの音価未指定エラーを検出する。
     ///
-    /// `[..]:D arp(dir, N)` の `D` と `N` の双方が明示記述されていない場合、
-    /// コンパイラは carry-over duration をフォールバックするものの、ユーザー意図が
-    /// 曖昧になりやすいため LSP では明示エラーとして検出する。
-    /// 検査対象は ChordBracket のトップレベル要素のみ（Repetition 内部は不検査）。
+    /// `[..]:D arp(dir, N)` または `cm:O:D arp(dir, N)` の `D` と `N` の双方が
+    /// 明示記述されていない場合、コンパイラは carry-over duration をフォール
+    /// バックするものの、ユーザー意図が曖昧になりやすいため LSP では明示エラー
+    /// として検出する。検査対象は ChordBracket / ChordName のトップレベル要素のみ
+    /// （Repetition 内部は不検査）。
     ///
     /// Detect arpeggio specifications missing both per-step duration sources.
+    /// Applied to top-level `PitchedElement::ChordBracket` and to top-level
+    /// `PitchedElement::Note(NoteEvent::ChordName, _)`.
     /// When neither the chord-side `:D` nor `arp(_, N)` is supplied at the
     /// source level, surface a clear LSP error even though the compiler can
-    /// silently carry over a previous duration. Only top-level
-    /// `PitchedElement::ChordBracket` is inspected (no Repetition descent).
+    /// silently carry over a previous duration.
     ///
     /// # 引数 / Arguments
     /// * `blocks` - スパン付きブロックのスライス / Slice of spanned blocks
@@ -279,6 +282,7 @@ impl DiagnosticProvider {
                 if let ClipBody::Pitched(body) = &clip.body {
                     for line in &body.lines {
                         for element in &line.elements {
+                            // ChordBracket
                             if let PitchedElement::ChordBracket {
                                 duration,
                                 arpeggio: Some(arp),
@@ -290,6 +294,27 @@ impl DiagnosticProvider {
                                         span: sb.span,
                                         message: format!(
                                             "clip '{}': arp の音価が未指定です。`[..]:D` または `arp(dir, N)` のいずれかで音価を指定してください",
+                                            clip.name
+                                        ),
+                                        severity: DiagnosticSeverity::Error,
+                                    });
+                                }
+                            }
+                            // ChordName + arpeggio
+                            if let PitchedElement::Note(
+                                NoteEvent::ChordName {
+                                    duration,
+                                    arpeggio: Some(arp),
+                                    ..
+                                },
+                                _,
+                            ) = element
+                            {
+                                if duration.is_none() && arp.resolution.is_none() {
+                                    diagnostics.push(Diagnostic {
+                                        span: sb.span,
+                                        message: format!(
+                                            "clip '{}': arp の音価が未指定です。コード名側の `:D` または `arp(dir, N)` のいずれかで音価を指定してください",
                                             clip.name
                                         ),
                                         severity: DiagnosticSeverity::Error,
@@ -869,6 +894,90 @@ mod tests {
     #[test]
     fn chord_bracket_without_arpeggio_no_diagnostic() {
         let block = make_chord_clip_block("chord_clip", None, None);
+        let blocks = vec![spanned(block)];
+        let diags = DiagnosticProvider::arpeggio_missing_duration_diagnostics(&blocks);
+        assert!(diags.is_empty());
+    }
+
+    // --- ChordName + arp 診断テスト ---
+
+    use crate::ast::clip_note::ChordSuffix;
+
+    /// テスト用に1つの ChordName(arp) を持つ clip block を作る。
+    fn make_chord_name_clip_block(
+        name: &str,
+        chord_duration: Option<u16>,
+        arp: Option<Arpeggio>,
+    ) -> Block {
+        Block::Clip(ClipDef {
+            name: name.into(),
+            options: ClipOptions::default(),
+            body: ClipBody::Pitched(PitchedClipBody {
+                lines: vec![PitchedLine {
+                    instrument: "bass".into(),
+                    elements: vec![PitchedElement::Note(
+                        NoteEvent::ChordName {
+                            root: NoteName::C,
+                            suffix: ChordSuffix::Min,
+                            octave: Some(4),
+                            duration: chord_duration,
+                            dotted: false,
+                            arpeggio: arp,
+                        },
+                        Articulation::Normal,
+                    )],
+                }],
+                cc_automations: vec![],
+            }),
+        })
+    }
+
+    /// ChordName で両方なしの場合は Error 診断を1件出す。
+    #[test]
+    fn chord_name_arpeggio_missing_duration_emits_error() {
+        let block = make_chord_name_clip_block(
+            "cn_clip",
+            None,
+            Some(Arpeggio {
+                direction: ArpeggioDirection::Up,
+                resolution: None,
+            }),
+        );
+        let blocks = vec![spanned(block)];
+        let diags = DiagnosticProvider::arpeggio_missing_duration_diagnostics(&blocks);
+        assert_eq!(diags.len(), 1);
+        assert_eq!(diags[0].severity, DiagnosticSeverity::Error);
+        assert!(diags[0].message.contains("cn_clip"));
+        assert!(diags[0].message.contains("音価"));
+    }
+
+    /// ChordName で resolution 指定があれば診断は出ない。
+    #[test]
+    fn chord_name_arpeggio_with_resolution_no_diagnostic() {
+        let block = make_chord_name_clip_block(
+            "cn_clip",
+            None,
+            Some(Arpeggio {
+                direction: ArpeggioDirection::Up,
+                resolution: Some(8),
+            }),
+        );
+        let blocks = vec![spanned(block)];
+        let diags = DiagnosticProvider::arpeggio_missing_duration_diagnostics(&blocks);
+        assert!(diags.is_empty());
+    }
+
+    /// ChordName で duration 指定があれば診断は出ない。
+    #[test]
+    fn chord_name_arpeggio_with_duration_no_diagnostic() {
+        let block = make_chord_name_clip_block(
+            "cn_clip",
+            Some(8),
+            Some(Arpeggio {
+                direction: ArpeggioDirection::Up,
+                resolution: None,
+            }),
+        );
         let blocks = vec![spanned(block)];
         let diags = DiagnosticProvider::arpeggio_missing_duration_diagnostics(&blocks);
         assert!(diags.is_empty());

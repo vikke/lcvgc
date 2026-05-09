@@ -1,4 +1,5 @@
 use crate::ast::common::NoteName;
+use crate::parser::clip_arpeggio::Arpeggio;
 
 /// コードサフィックス（和音の種類）
 /// Chord suffix (chord quality)
@@ -104,6 +105,9 @@ pub enum NoteEvent {
         /// 付点の有無
         /// Whether the note is dotted
         dotted: bool,
+        /// アルペジオ指定（オプション）。`Some` のときコード構成音をシーケンスとして発音する。
+        /// Optional arpeggio specification. When `Some`, chord tones are sequenced one at a time.
+        arpeggio: Option<Arpeggio>,
     },
     /// 休符
     /// Rest
