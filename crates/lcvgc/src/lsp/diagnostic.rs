@@ -1,6 +1,6 @@
 use super::span_parser::{Span, SpanError, SpannedBlock};
 /// 診断プロバイダ（パースエラー＋未定義参照）
-use crate::ast::clip::ClipBody;
+use crate::ast::clip::{ClipBody, PitchedElement};
 use crate::ast::scene::SceneEntry;
 use crate::ast::Block;
 use crate::engine::registry::Registry;
@@ -247,6 +247,57 @@ impl DiagnosticProvider {
                         ),
                         severity: DiagnosticSeverity::Error,
                     });
+                }
+            }
+        }
+        diagnostics
+    }
+
+    /// アルペジオの音価未指定エラーを検出する。
+    ///
+    /// `[..]:D arp(dir, N)` の `D` と `N` の双方が明示記述されていない場合、
+    /// コンパイラは carry-over duration をフォールバックするものの、ユーザー意図が
+    /// 曖昧になりやすいため LSP では明示エラーとして検出する。
+    /// 検査対象は ChordBracket のトップレベル要素のみ（Repetition 内部は不検査）。
+    ///
+    /// Detect arpeggio specifications missing both per-step duration sources.
+    /// When neither the chord-side `:D` nor `arp(_, N)` is supplied at the
+    /// source level, surface a clear LSP error even though the compiler can
+    /// silently carry over a previous duration. Only top-level
+    /// `PitchedElement::ChordBracket` is inspected (no Repetition descent).
+    ///
+    /// # 引数 / Arguments
+    /// * `blocks` - スパン付きブロックのスライス / Slice of spanned blocks
+    ///
+    /// # 戻り値 / Returns
+    /// duration / resolution の双方が省略された arp を含む clip に対する
+    /// Error 診断のリスト。
+    pub fn arpeggio_missing_duration_diagnostics(blocks: &[SpannedBlock]) -> Vec<Diagnostic> {
+        let mut diagnostics = Vec::new();
+        for sb in blocks {
+            if let Block::Clip(clip) = &sb.block {
+                if let ClipBody::Pitched(body) = &clip.body {
+                    for line in &body.lines {
+                        for element in &line.elements {
+                            if let PitchedElement::ChordBracket {
+                                duration,
+                                arpeggio: Some(arp),
+                                ..
+                            } = element
+                            {
+                                if duration.is_none() && arp.resolution.is_none() {
+                                    diagnostics.push(Diagnostic {
+                                        span: sb.span,
+                                        message: format!(
+                                            "clip '{}': arp の音価が未指定です。`[..]:D` または `arp(dir, N)` のいずれかで音価を指定してください",
+                                            clip.name
+                                        ),
+                                        severity: DiagnosticSeverity::Error,
+                                    });
+                                }
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -729,6 +780,97 @@ mod tests {
             },
         );
         let diags = DiagnosticProvider::device_connection_diagnostics(&blocks, &errors);
+        assert!(diags.is_empty());
+    }
+
+    // --- arpeggio_missing_duration_diagnostics テスト ---
+
+    use crate::ast::common::NoteName;
+    use crate::parser::clip_arpeggio::{Arpeggio, ArpeggioDirection};
+    use crate::parser::clip_articulation::Articulation;
+
+    /// テスト用に1つの `PitchedElement::ChordBracket` を持つ clip block を作る。
+    fn make_chord_clip_block(
+        name: &str,
+        chord_duration: Option<u16>,
+        arp: Option<Arpeggio>,
+    ) -> Block {
+        Block::Clip(ClipDef {
+            name: name.into(),
+            options: ClipOptions::default(),
+            body: ClipBody::Pitched(PitchedClipBody {
+                lines: vec![PitchedLine {
+                    instrument: "bass".into(),
+                    elements: vec![PitchedElement::ChordBracket {
+                        notes: vec![(NoteName::C, Some(4)), (NoteName::E, None)],
+                        duration: chord_duration,
+                        dotted: false,
+                        articulation: Articulation::Normal,
+                        arpeggio: arp,
+                    }],
+                }],
+                cc_automations: vec![],
+            }),
+        })
+    }
+
+    /// 両方なしの場合は Error 診断を1件出す。
+    #[test]
+    fn arpeggio_missing_duration_emits_error() {
+        let block = make_chord_clip_block(
+            "arp_clip",
+            None,
+            Some(Arpeggio {
+                direction: ArpeggioDirection::Up,
+                resolution: None,
+            }),
+        );
+        let blocks = vec![spanned(block)];
+        let diags = DiagnosticProvider::arpeggio_missing_duration_diagnostics(&blocks);
+        assert_eq!(diags.len(), 1);
+        assert_eq!(diags[0].severity, DiagnosticSeverity::Error);
+        assert!(diags[0].message.contains("arp_clip"));
+        assert!(diags[0].message.contains("音価"));
+    }
+
+    /// resolution が指定されていれば診断は出ない。
+    #[test]
+    fn arpeggio_with_resolution_no_diagnostic() {
+        let block = make_chord_clip_block(
+            "arp_clip",
+            None,
+            Some(Arpeggio {
+                direction: ArpeggioDirection::Up,
+                resolution: Some(16),
+            }),
+        );
+        let blocks = vec![spanned(block)];
+        let diags = DiagnosticProvider::arpeggio_missing_duration_diagnostics(&blocks);
+        assert!(diags.is_empty());
+    }
+
+    /// 和音 duration が指定されていれば診断は出ない。
+    #[test]
+    fn arpeggio_with_chord_duration_no_diagnostic() {
+        let block = make_chord_clip_block(
+            "arp_clip",
+            Some(8),
+            Some(Arpeggio {
+                direction: ArpeggioDirection::Up,
+                resolution: None,
+            }),
+        );
+        let blocks = vec![spanned(block)];
+        let diags = DiagnosticProvider::arpeggio_missing_duration_diagnostics(&blocks);
+        assert!(diags.is_empty());
+    }
+
+    /// arpeggio 自体が無い ChordBracket は診断対象外。
+    #[test]
+    fn chord_bracket_without_arpeggio_no_diagnostic() {
+        let block = make_chord_clip_block("chord_clip", None, None);
+        let blocks = vec![spanned(block)];
+        let diags = DiagnosticProvider::arpeggio_missing_duration_diagnostics(&blocks);
         assert!(diags.is_empty());
     }
 }

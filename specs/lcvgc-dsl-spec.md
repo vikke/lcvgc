@@ -925,7 +925,7 @@ clip chords_mixed [bars 2] {
 
 ### 7.12 Arpeggio
 
-Append `arp(direction, note_resolution)` after a chord.
+Append `arp(direction)` or `arp(direction, note_resolution)` after a chord. The second argument is optional.
 
 ```
 clip arp_a [bars 1] {
@@ -941,12 +941,28 @@ clip arp_c [bars 1] {
 }
 
 clip arp_d [bars 2] {
-  keys cm7:4:1 arp(updown, 16)             // Up then down
+  keys cm7:4:1 arp(updown, 16)                // Up then down
+}
+
+clip arp_e [bars 1] {
+  keys [c:4 eb:4 g:4]:8 arp(up)               // Resolution omitted → falls back to the chord's :8 as per-note length
 }
 ```
 
 - Direction: `up`, `down`, `updown`, `random`
-- Note resolution: `4`, `8`, `16`, etc. (interval between each note onset)
+- Note resolution: `4`, `8`, `16`, etc. (per-note onset length). Optional.
+
+#### Per-note length resolution
+
+| `arp` 2nd arg | Chord `[..]:D` | Per-note length |
+|---|---|---|
+| Specified | Specified | **`arp`'s 2nd arg wins** (the chord's `:D` is ignored) |
+| Specified | Omitted | `arp`'s 2nd arg |
+| Omitted | Specified | The chord's `:D` |
+| Omitted | Omitted | LSP error (per-note length cannot be determined) |
+
+- `random` reshuffles the order on every loop iteration.
+- `updown` is a ping-pong that does not repeat the endpoints (e.g. `[c e g]` → `c, e, g, e`).
 
 ### 7.13 Drums (Step Sequencer Notation)
 
