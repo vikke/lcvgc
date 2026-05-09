@@ -136,6 +136,7 @@ mod tests {
                 .collect(),
             total_ticks,
             warnings: vec![],
+            drum_mask_groups: vec![],
         }
     }
 
