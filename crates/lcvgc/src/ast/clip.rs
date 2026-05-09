@@ -52,6 +52,24 @@ pub struct PitchedLine {
     /// ライン内の要素リスト
     /// List of elements in the line
     pub elements: Vec<PitchedElement>,
+    /// 並列レイヤーの開始行か。
+    /// `true` のとき、このラインから新しいレイヤー (carry-over リセット、
+    /// `current_tick` を 0 にリセット) として扱われる。
+    /// `false` のとき、直前の同 instrument ラインからの連結として扱われる。
+    /// 並列レイヤーが切り替わるトリガー:
+    ///   - 別 instrument のライン
+    ///   - `---` (3 文字の独立行) セパレータ
+    ///   - クリップ本体の最初のライン
+    ///
+    /// Whether this line starts a new parallel layer.
+    /// When `true`, this line begins a fresh layer (carry-over reset,
+    /// `current_tick` reset to 0). When `false`, the line is merged onto the
+    /// preceding same-instrument line, inheriting its carry-over state.
+    /// New layers are started by:
+    ///   - a different instrument
+    ///   - a `---` divider line (exactly three hyphens, on its own line)
+    ///   - the first line in the clip body
+    pub is_layer_start: bool,
 }
 
 /// ドラムクリップの本体

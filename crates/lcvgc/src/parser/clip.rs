@@ -58,6 +58,13 @@ pub fn parse_clip(input: &str) -> IResult<&str, ClipDef> {
 fn parse_pitched_body(mut input: &str) -> IResult<&str, PitchedClipBody> {
     let mut lines: Vec<PitchedLine> = Vec::new();
     let mut cc_automations = Vec::new();
+    // 直前に `---` セパレータがあったかどうか。
+    // `true` のとき、次に作成される PitchedLine は強制的に新レイヤー
+    // (`is_layer_start = true`) として扱う。
+    //
+    // Whether the previous token was a `---` divider. When `true`, the next
+    // line forced into a new layer regardless of instrument continuity.
+    let mut force_layer_start = false;
 
     loop {
         let (rest, _) = ws(input)?;
@@ -67,6 +74,16 @@ fn parse_pitched_body(mut input: &str) -> IResult<&str, PitchedClipBody> {
         // Check for closing brace
         if input.starts_with('}') {
             break;
+        }
+
+        // `---` レイヤー分離行 (ハイフン3文字、前後空白可、独立行) を消費する。
+        // 次に作成される PitchedLine は新レイヤー扱いになる。
+        //
+        // Consume a `---` divider line. The next PitchedLine becomes a fresh layer.
+        if let Some(rest) = consume_dash_divider(input) {
+            force_layer_start = true;
+            input = rest;
+            continue;
         }
 
         // CCオートメーションを試行（instrument.paramパターン）
@@ -110,20 +127,53 @@ fn parse_pitched_body(mut input: &str) -> IResult<&str, PitchedClipBody> {
                 break;
             }
 
-            // 同一または別の楽器による改行を確認（この行の終端）
-            // Check for newline with same or different instrument (end of this line)
+            // 同一または別の楽器、 `resolution` キーワード、 CC 行による改行を確認
+            // (この行の終端)。
+            // 別の楽器行 (例: `lead c:5:4` の次行 `bass c:3:4`) の判定は、
+            // 次の identifier がそれ単独では note としてパースできない (= note 表記
+            // でない) ことで行う。 単音 `c d eb` などは parse_note_event で識別子
+            // として消費される側で、 ここでは「楽器名らしき長めの識別子」を
+            // 検出して新行に切り替える。
+            //
+            // Detect end-of-line by peeking the next identifier.
+            //   - same instrument name → break (existing behavior)
+            //   - `resolution` keyword → break (existing behavior)
+            //   - identifier followed by `.` → CC line, break (existing behavior)
+            //   - identifier that does NOT parse as a note token → another
+            //     instrument line, break (new behavior)
             if let Ok((_, next_ident)) = identifier(current) {
-                // 次の識別子が同じ楽器名または既知のキーワードの場合、
-                // 新しい行の開始の可能性がある
-                // If the next identifier is the same instrument name or a known keyword,
-                // it might be a new line
                 if next_ident == inst_name || next_ident == "resolution" {
                     break;
                 }
-                // CC行のように見えるか確認（ドットを含むか）
-                // Check if it looks like a CC line (has dot)
                 let after_ident = &current[next_ident.len()..];
                 if after_ident.starts_with('.') {
+                    break;
+                }
+                // 識別子が note としてパース可能 (`c:3:8`, `eb`, `cm7:4:1` 等) なら
+                // この line 内の要素として続行。 そうでなければ別楽器の新行とみなす。
+                // 注意: `parse_note_event` は `bass` のような楽器名でも先頭の `b`
+                // のみを音名として消費して成功してしまう。 そのため、
+                // パース後の残り文字が「ノート要素として完結」したことも確認する
+                // 必要がある。 楽器名と note の境界は、 note の直後が空白 / 改行 /
+                // `}` / EOF / アーティキュレーション (`'` `g`) / アルペジオ (`(`) /
+                // 付点 (`.`) のいずれかであることで判別する。
+                //
+                // The identifier may be a partial note prefix of an instrument
+                // name (e.g. `bass` parses as note `b` with leftover `ass`).
+                // Treat the token as a real note only when the parser leaves
+                // a clean separator after it.
+                let note_token_ok = match parse_note_event(current) {
+                    Ok((after, _)) => {
+                        let next_ch = after.chars().next();
+                        matches!(
+                            next_ch,
+                            None | Some(' ' | '\t' | '\r' | '\n' | '}' | '\'' | '(' | '.')
+                        ) || after.starts_with("g")
+                            && after.chars().nth(1).is_some_and(|c| c.is_ascii_digit())
+                    }
+                    Err(_) => false,
+                };
+                if !note_token_ok {
                     break;
                 }
             }
@@ -198,10 +248,28 @@ fn parse_pitched_body(mut input: &str) -> IResult<&str, PitchedClipBody> {
         }
 
         if !elements.is_empty() {
+            // is_layer_start を判定する:
+            //   - 直前に `---` があれば強制 true
+            //   - 最初のラインなら true
+            //   - 直前のラインと instrument が異なれば true
+            //   - それ以外 (同 instrument の連続) は false → 連結
+            //
+            // Determine is_layer_start:
+            //   - forced true if a `---` divider preceded this line
+            //   - true for the first line in the body
+            //   - true when the instrument differs from the previous line
+            //   - otherwise false (consecutive same-instrument line → merged)
+            let is_layer_start = force_layer_start
+                || lines
+                    .last()
+                    .map(|prev| prev.instrument != inst_name)
+                    .unwrap_or(true);
             lines.push(PitchedLine {
                 instrument: inst_name.to_string(),
                 elements,
+                is_layer_start,
             });
+            force_layer_start = false;
         }
 
         input = current;
@@ -214,6 +282,49 @@ fn parse_pitched_body(mut input: &str) -> IResult<&str, PitchedClipBody> {
             cc_automations,
         },
     ))
+}
+
+/// `---` レイヤー分離行を消費する。
+///
+/// 入力先頭がちょうど 3 文字のハイフン (`---`) で始まり、その後ろが
+/// 空白のみで改行 / EOF / `}` に到達する場合のみマッチし、消費後の残り入力を返す。
+/// マッチしなければ `None`。
+///
+/// 仕様:
+///   - ハイフンは厳密に 3 文字 (`----` のような 4 文字以上はマッチしない)
+///   - 前後の空白 (タブ含む) は許容
+///   - 行末は `\n` `\r\n` `\r` または EOF / `}` (clip body 終端)
+///
+/// Consume a `---` layer divider line. Matches only when the input starts
+/// with exactly three hyphens, optionally surrounded by horizontal whitespace,
+/// and terminated by a newline / EOF / closing brace. Returns the remaining
+/// input if matched, or `None` otherwise.
+pub(crate) fn consume_dash_divider(input: &str) -> Option<&str> {
+    // 行頭の水平方向空白をスキップ
+    // Skip leading horizontal whitespace
+    let trimmed = input.trim_start_matches([' ', '\t']);
+    let after_dashes = trimmed.strip_prefix("---")?;
+    // 直後に追加のハイフンが続く場合 (`----` 等) はセパレータとして扱わない
+    // Reject 4+ hyphens
+    if after_dashes.starts_with('-') {
+        return None;
+    }
+    // ハイフン後の水平方向空白をスキップ
+    // Skip trailing horizontal whitespace
+    let after_ws = after_dashes.trim_start_matches([' ', '\t']);
+    // 行末確認: 改行 / EOF / `}` (clip body の終端)
+    // Verify line end
+    if let Some(rest) = after_ws.strip_prefix("\r\n") {
+        Some(rest)
+    } else if let Some(rest) = after_ws.strip_prefix('\n') {
+        Some(rest)
+    } else if let Some(rest) = after_ws.strip_prefix('\r') {
+        Some(rest)
+    } else if after_ws.is_empty() || after_ws.starts_with('}') {
+        Some(after_ws)
+    } else {
+        None
+    }
 }
 
 /// Parse a chord bracket: `[note1 note2 ...]:dur`
@@ -299,6 +410,13 @@ fn parse_drum_body(input: &str) -> IResult<&str, DrumClipBody> {
 
         if current.starts_with('}') || current.is_empty() {
             break;
+        }
+
+        // `---` レイヤー分離行を消費する (drum body では現状 no-op、将来拡張用に予約)。
+        // Consume `---` divider (no-op in drum body; reserved for future layer support).
+        if let Some(rest) = consume_dash_divider(current) {
+            current = rest;
+            continue;
         }
 
         // CCオートメーションを試行（タイム形式を先に試行）

@@ -267,13 +267,32 @@ fn compile_pitched(
     let mut events = Vec::new();
     let mut random_choice_groups: Vec<RandomChoiceGroup> = Vec::new();
     let mut logical_end_ticks: u64 = 0;
-    for line in &body.lines {
-        let (line_events, line_groups, line_end) =
-            compile_pitched_line(line, clock, registry, bars)?;
-        // line ごとに index は 0 開始のため、結合時に既存 events 長を offset として加算する
-        // Each line indexes from 0, so add the running events length as offset on merge.
+
+    // 連続する PitchedLine を「レイヤー」単位にグルーピングしてコンパイルする。
+    // `is_layer_start = true` のラインから次の `is_layer_start = true` の手前までが
+    // 1 つのレイヤー。 1 レイヤー内は単一の CarryOverState と current_tick を共有
+    // して時系列に連結される。レイヤー境界では tick / carry-over が 0 リセット。
+    //
+    // Group consecutive PitchedLines into layers. A layer spans from one
+    // `is_layer_start = true` line up to (but not including) the next
+    // `is_layer_start = true`. Within a layer, a single CarryOverState and
+    // current_tick is threaded across all lines, producing a merged timeline.
+    // At each layer boundary the tick and carry-over are reset to 0.
+    let mut i = 0;
+    while i < body.lines.len() {
+        // レイヤー範囲を決定: i から次の is_layer_start まで
+        // Find the layer range: from i to the next is_layer_start
+        let layer_start = i;
+        let mut layer_end = i + 1;
+        while layer_end < body.lines.len() && !body.lines[layer_end].is_layer_start {
+            layer_end += 1;
+        }
+
+        let (layer_events, layer_groups, layer_logical_end) =
+            compile_pitched_layer(&body.lines[layer_start..layer_end], clock, registry, bars)?;
+
         let offset = events.len();
-        for mut group in line_groups {
+        for mut group in layer_groups {
             for cand in group.candidates.iter_mut() {
                 for idx in cand.iter_mut() {
                     *idx += offset;
@@ -281,33 +300,44 @@ fn compile_pitched(
             }
             random_choice_groups.push(group);
         }
-        events.extend(line_events);
-        if line_end > logical_end_ticks {
-            logical_end_ticks = line_end;
+        events.extend(layer_events);
+        if layer_logical_end > logical_end_ticks {
+            logical_end_ticks = layer_logical_end;
         }
+
+        i = layer_end;
     }
+
     // CCオートメーションのコンパイル
     let cc_events = compile_cc_automations(&body.cc_automations, clock, registry)?;
     events.extend(cc_events);
     Ok((events, random_choice_groups, logical_end_ticks))
 }
 
-/// ピッチドライン1行のコンパイル
+/// 1 つのレイヤー (連続する同 instrument の PitchedLine 群) をコンパイルする。
+/// レイヤー内では `CarryOverState` と `current_tick` を共有し、各 line を時系列に
+/// 連結する。
 ///
-/// Compiles a single pitched line into MIDI events.
-/// 戻り値の `u64` はラインの論理終了 tick（最後の要素を処理した直後の `current_tick`）。
-///
-/// The returned `u64` is the line's musical end tick — `current_tick` after the
-/// last element has been compiled.
-fn compile_pitched_line(
-    line: &PitchedLine,
+/// Compile a single layer: a slice of PitchedLines that share a CarryOverState
+/// and a continuously advancing `current_tick`. The first line in the slice
+/// must have `is_layer_start = true`; subsequent lines merge onto the same
+/// timeline.
+fn compile_pitched_layer(
+    layer_lines: &[PitchedLine],
     clock: &Clock,
     registry: &Registry,
     bars: Option<u32>,
 ) -> Result<(Vec<MidiEvent>, Vec<RandomChoiceGroup>, u64), EngineError> {
+    debug_assert!(
+        !layer_lines.is_empty(),
+        "compile_pitched_layer requires at least one line"
+    );
+
+    // レイヤー内の全行は同じ instrument のはず (parser 側でその不変条件を保証)
+    // All lines within a layer share the same instrument (parser invariant).
     let inst = registry
-        .get_instrument(&line.instrument)
-        .ok_or_else(|| EngineError::UnknownInstrument(line.instrument.clone()))?;
+        .get_instrument(&layer_lines[0].instrument)
+        .ok_or_else(|| EngineError::UnknownInstrument(layer_lines[0].instrument.clone()))?;
 
     let channel = inst.channel;
     let gate_normal = inst.gate_normal.unwrap_or(80);
@@ -319,19 +349,21 @@ fn compile_pitched_line(
     let mut current_tick: u64 = 0;
     let mut carry = CarryOverState::new();
 
-    compile_elements(
-        &line.elements,
-        clock,
-        channel,
-        &device,
-        gate_normal,
-        gate_staccato,
-        &mut current_tick,
-        &mut carry,
-        &mut events,
-        &mut random_choice_groups,
-        bars,
-    )?;
+    for line in layer_lines {
+        compile_elements(
+            &line.elements,
+            clock,
+            channel,
+            &device,
+            gate_normal,
+            gate_staccato,
+            &mut current_tick,
+            &mut carry,
+            &mut events,
+            &mut random_choice_groups,
+            bars,
+        )?;
+    }
 
     Ok((events, random_choice_groups, current_tick))
 }
@@ -1060,6 +1092,7 @@ mod tests {
             vec![PitchedLine {
                 instrument: "bass".to_string(),
                 elements: vec![single_note(NoteName::C, Some(4), Some(4), false)],
+                is_layer_start: true,
             }],
         );
 
@@ -1101,6 +1134,7 @@ mod tests {
                     single_note(NoteName::C, Some(3), Some(8), false),
                     single_note(NoteName::Eb, None, None, false),
                 ],
+                is_layer_start: true,
             }],
         );
 
@@ -1138,6 +1172,7 @@ mod tests {
                     ),
                     single_note(NoteName::C, Some(4), Some(4), false),
                 ],
+                is_layer_start: true,
             }],
         );
 
@@ -1167,6 +1202,7 @@ mod tests {
                     },
                     Articulation::Staccato,
                 )],
+                is_layer_start: true,
             }],
         );
 
@@ -1197,6 +1233,7 @@ mod tests {
                     },
                     Articulation::GateDirect(95),
                 )],
+                is_layer_start: true,
             }],
         );
 
@@ -1222,6 +1259,7 @@ mod tests {
                     single_note(NoteName::C, Some(4), Some(1), false),
                     single_note(NoteName::D, None, None, false),
                 ],
+                is_layer_start: true,
             }],
         );
 
@@ -1262,6 +1300,7 @@ mod tests {
                     single_note(NoteName::E, None, None, false),
                     single_note(NoteName::F, None, None, false),
                 ],
+                is_layer_start: true,
             }],
         );
 
@@ -1290,6 +1329,7 @@ mod tests {
                 PitchedLine {
                     instrument: "bass".to_string(),
                     elements: vec![single_note(NoteName::C, Some(4), Some(4), false)],
+                    is_layer_start: true,
                 },
                 PitchedLine {
                     instrument: "bass".to_string(),
@@ -1299,6 +1339,7 @@ mod tests {
                         single_note(NoteName::B, None, None, false),
                         single_note(NoteName::D, None, None, false),
                     ],
+                    is_layer_start: true,
                 },
             ],
         );
@@ -1317,6 +1358,7 @@ mod tests {
             vec![PitchedLine {
                 instrument: "bass".to_string(),
                 elements: vec![single_note(NoteName::C, Some(4), Some(4), false)],
+                is_layer_start: true,
             }],
         );
 
@@ -1336,6 +1378,7 @@ mod tests {
             vec![PitchedLine {
                 instrument: "bass".to_string(),
                 elements: vec![single_note(NoteName::C, Some(4), Some(4), true)],
+                is_layer_start: true,
             }],
         );
 
@@ -1358,6 +1401,7 @@ mod tests {
             vec![PitchedLine {
                 instrument: "bass".to_string(),
                 elements: vec![],
+                is_layer_start: true,
             }],
         );
 
@@ -1610,6 +1654,7 @@ mod tests {
                         single_note(NoteName::C, Some(4), Some(4), false),
                         single_note(NoteName::D, None, None, false),
                     ],
+                    is_layer_start: true,
                 }],
                 cc_automations: vec![],
             }),
@@ -1639,6 +1684,7 @@ mod tests {
                     }),
                     single_note(NoteName::E, None, Some(4), false),
                 ],
+                is_layer_start: true,
             }],
         );
 
@@ -1668,6 +1714,7 @@ mod tests {
                     }),
                     single_note(NoteName::E, None, Some(4), false),
                 ],
+                is_layer_start: true,
             }],
         );
 
@@ -1695,6 +1742,7 @@ mod tests {
                     }),
                     single_note(NoteName::E, None, Some(4), false),
                 ],
+                is_layer_start: true,
             }],
         );
 
@@ -1720,6 +1768,7 @@ mod tests {
                     }),
                     single_note(NoteName::E, None, Some(4), false),
                 ],
+                is_layer_start: true,
             }],
         );
 
@@ -1760,6 +1809,7 @@ mod tests {
                         count: 4,
                     },
                 )],
+                is_layer_start: true,
             }],
         );
 
@@ -1789,6 +1839,7 @@ mod tests {
                         count: 2,
                     },
                 )],
+                is_layer_start: true,
             }],
         );
 
@@ -1833,6 +1884,7 @@ mod tests {
                     },
                     Articulation::Normal,
                 )],
+                is_layer_start: true,
             }],
         );
 
@@ -1893,6 +1945,7 @@ mod tests {
                     ),
                     single_note(NoteName::E, None, None, false),
                 ],
+                is_layer_start: true,
             }],
         );
 
@@ -1937,6 +1990,7 @@ mod tests {
                     },
                     Articulation::Staccato,
                 )],
+                is_layer_start: true,
             }],
         );
 
@@ -1968,6 +2022,7 @@ mod tests {
                         count: 2,
                     },
                 )],
+                is_layer_start: true,
             }],
         );
 
@@ -2014,6 +2069,7 @@ mod tests {
                     articulation: Articulation::Normal,
                     arpeggio: None,
                 }],
+                is_layer_start: true,
             }],
         );
 
@@ -2070,6 +2126,7 @@ mod tests {
                     articulation: Articulation::Staccato,
                     arpeggio: None,
                 }],
+                is_layer_start: true,
             }],
         );
 
@@ -2105,6 +2162,7 @@ mod tests {
                     },
                     single_note(NoteName::G, None, None, false),
                 ],
+                is_layer_start: true,
             }],
         );
 
@@ -2145,6 +2203,7 @@ mod tests {
                     articulation: Articulation::Normal,
                     arpeggio: None,
                 }],
+                is_layer_start: true,
             }],
         );
 
@@ -2192,6 +2251,7 @@ mod tests {
                         resolution: Some(16),
                     }),
                 }],
+                is_layer_start: true,
             }],
         );
 
@@ -2242,6 +2302,7 @@ mod tests {
                         resolution: Some(16),
                     }),
                 }],
+                is_layer_start: true,
             }],
         );
 
@@ -2285,6 +2346,7 @@ mod tests {
                         resolution: Some(16),
                     }),
                 }],
+                is_layer_start: true,
             }],
         );
 
@@ -2328,6 +2390,7 @@ mod tests {
                         resolution: None,
                     }),
                 }],
+                is_layer_start: true,
             }],
         );
 
@@ -2370,6 +2433,7 @@ mod tests {
                         }),
                     },
                 ],
+                is_layer_start: true,
             }],
         );
 
@@ -2416,6 +2480,7 @@ mod tests {
                         resolution: Some(8),
                     }),
                 }],
+                is_layer_start: true,
             }],
         );
 
@@ -2466,6 +2531,7 @@ mod tests {
                     },
                     Articulation::Normal,
                 )],
+                is_layer_start: true,
             }],
         );
 
@@ -2515,6 +2581,7 @@ mod tests {
                     },
                     Articulation::Normal,
                 )],
+                is_layer_start: true,
             }],
         );
 
@@ -2555,6 +2622,7 @@ mod tests {
                     },
                     Articulation::Normal,
                 )],
+                is_layer_start: true,
             }],
         );
 
@@ -2628,6 +2696,7 @@ mod tests {
             vec![PitchedLine {
                 instrument: "pad".to_string(),
                 elements: vec![single_note(NoteName::C, Some(4), Some(4), false)],
+                is_layer_start: true,
             }],
         );
 
@@ -2682,6 +2751,7 @@ mod tests {
                 lines: vec![PitchedLine {
                     instrument: "bass".to_string(),
                     elements: vec![single_note(NoteName::C, Some(4), Some(4), false)],
+                    is_layer_start: true,
                 }],
                 cc_automations: vec![CcAutomation::Step(CcStepValues {
                     target: CcTarget {
@@ -2732,6 +2802,7 @@ mod tests {
                 lines: vec![PitchedLine {
                     instrument: "bass".to_string(),
                     elements: vec![single_note(NoteName::C, Some(4), Some(4), false)],
+                    is_layer_start: true,
                 }],
                 cc_automations: vec![CcAutomation::Time(CcTimeValues {
                     target: CcTarget {
@@ -2856,6 +2927,7 @@ mod tests {
             vec![PitchedLine {
                 instrument: "bass".to_string(),
                 elements: vec![single_note(NoteName::C, Some(4), Some(4), false)],
+                is_layer_start: true,
             }],
         );
 
@@ -2903,10 +2975,12 @@ mod tests {
                 PitchedLine {
                     instrument: "lead".to_string(),
                     elements: vec![single_note(NoteName::C, Some(4), Some(4), false)],
+                    is_layer_start: true,
                 },
                 PitchedLine {
                     instrument: "pad".to_string(),
                     elements: vec![single_note(NoteName::E, Some(4), Some(4), false)],
+                    is_layer_start: true,
                 },
             ],
         );

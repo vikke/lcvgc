@@ -574,9 +574,14 @@ clip c_merged [bars 4] {
         split_notes, merged_notes,
         "split form must produce same NoteOn(tick, note) sequence as merged form"
     );
-    // 4 全音符 × 3 構成音 = 12 NoteOn
-    // 4 whole-note chords × 3 chord tones = 12 NoteOn events
-    assert_eq!(split_notes.len(), 12);
+    // 念のため、 想定される NoteOn 数を確認:
+    //   dm:4:1   (3 ノート: D F A) +
+    //   bb:3:1   (1 ノート: 単音 Bb3) +
+    //   c:4:1    (1 ノート: 単音 C4) +
+    //   dm:4:1   (3 ノート) = 8 NoteOn
+    // (Bb / C はサフィックス無しの音名表記なので単音、 dm はサフィックス
+    // `m` でマイナーコード)
+    assert_eq!(split_notes.len(), 8);
 }
 
 /// `---` を挟むと前後の行が並列レイヤーとして扱われ、両方が tick 0 から発音される
