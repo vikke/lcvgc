@@ -101,6 +101,7 @@ pub async fn handle_request(evaluator: &Arc<Mutex<Evaluator>>, request: Request)
                     label: item.label,
                     detail: item.detail,
                     kind: format!("{:?}", item.kind),
+                    sort_text: item.sort_text,
                 })
                 .collect();
             Response::lsp(LspResult::Completion { items: lsp_items })
