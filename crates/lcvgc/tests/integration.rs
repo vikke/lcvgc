@@ -514,3 +514,278 @@ clip beat_sp [bars 1] {
     let compiled = compile_clip(clip, &ev.clock_snapshot(), ev.registry());
     assert!(compiled.is_ok());
 }
+
+// ============================================================
+// 同 instrument 連続行の連結 / `---` 並列レイヤー分離の E2E テスト
+// 設計B: PitchedLine.is_layer_start で layer 境界を表現する。
+// 同 instrument の連続行は前行の carry-over を継承して時系列連結。
+// `---` または別 instrument は新 layer (tick 0 起点)。
+// ------------------------------------------------------------
+// E2E tests for line merging within the same instrument and
+// `---` parallel layer separation.
+// ============================================================
+
+/// 同 instrument の連続行が時系列に連結されることを検証する。
+/// 4 行に分けた書き方と 1 行に並べた書き方で MIDI イベント (tick / note / order) が
+/// 完全に一致するはず。
+///
+/// Verify that consecutive lines for the same instrument are merged into one
+/// timeline. The 4-line and 1-line forms must produce identical MIDI events
+/// (tick, note, ordering).
+#[test]
+fn e2e_consecutive_same_instrument_lines_are_merged() {
+    let split = r#"
+device d { port test }
+instrument chord { device d channel 1 }
+
+clip c_split [bars 4] {
+  chord dm:4:1 bb:3:1
+  chord c:4:1 dm:4:1
+}
+"#;
+    let merged = r#"
+device d { port test }
+instrument chord { device d channel 1 }
+
+clip c_merged [bars 4] {
+  chord dm:4:1 bb:3:1 c:4:1 dm:4:1
+}
+"#;
+
+    let collect_note_ons = |source: &str, clip_name: &str| -> Vec<(u64, u8)> {
+        let mut ev = Evaluator::new(120.0);
+        ev.eval_source(source).unwrap();
+        let clip = ev.registry().get_clip(clip_name).unwrap();
+        let compiled = compile_clip(clip, &ev.clock_snapshot(), ev.registry()).unwrap();
+        compiled
+            .events
+            .iter()
+            .filter_map(|e| match e.message {
+                MidiMessage::NoteOn { note, .. } => Some((e.tick, note)),
+                _ => None,
+            })
+            .collect()
+    };
+
+    let split_notes = collect_note_ons(split, "c_split");
+    let merged_notes = collect_note_ons(merged, "c_merged");
+
+    assert_eq!(
+        split_notes, merged_notes,
+        "split form must produce same NoteOn(tick, note) sequence as merged form"
+    );
+    // 念のため、 想定される NoteOn 数を確認:
+    //   dm:4:1   (3 ノート: D F A) +
+    //   bb:3:1   (1 ノート: 単音 Bb3) +
+    //   c:4:1    (1 ノート: 単音 C4) +
+    //   dm:4:1   (3 ノート) = 8 NoteOn
+    // (Bb / C はサフィックス無しの音名表記なので単音、 dm はサフィックス
+    // `m` でマイナーコード)
+    assert_eq!(split_notes.len(), 8);
+}
+
+/// `---` を挟むと前後の行が並列レイヤーとして扱われ、両方が tick 0 から発音される
+/// ことを検証する。
+///
+/// Verify that `---` makes the surrounding lines into parallel layers, both
+/// starting from tick 0.
+#[test]
+fn e2e_dash_divider_creates_parallel_layer() {
+    let source = r#"
+device d { port test }
+instrument chord { device d channel 1 }
+
+clip layered [bars 1] {
+  chord c:4:1
+  ---
+  chord g:4:1
+}
+"#;
+    let mut ev = Evaluator::new(120.0);
+    ev.eval_source(source).unwrap();
+    let clip = ev.registry().get_clip("layered").unwrap();
+    let compiled = compile_clip(clip, &ev.clock_snapshot(), ev.registry()).unwrap();
+
+    // tick 0 で C4 と G4 の NoteOn が両方鳴っているはず
+    // Both C4 (60) and G4 (67) NoteOn events must be at tick 0.
+    let note_ons_at_zero: Vec<u8> = compiled
+        .events
+        .iter()
+        .filter_map(|e| match (e.tick, e.message) {
+            (0, MidiMessage::NoteOn { note, .. }) => Some(note),
+            _ => None,
+        })
+        .collect();
+
+    assert!(
+        note_ons_at_zero.contains(&60),
+        "C4 NoteOn at tick 0 expected, got {note_ons_at_zero:?}"
+    );
+    assert!(
+        note_ons_at_zero.contains(&67),
+        "G4 NoteOn at tick 0 expected, got {note_ons_at_zero:?}"
+    );
+}
+
+/// 連続行で octave / duration の carry-over が継続されることを検証する。
+/// 2 行目の `bb` は前行の `o3, :1` を継承して Bb3 全音符として扱われるべき。
+///
+/// Verify carry-over (octave / duration / dotted) is preserved across
+/// consecutive same-instrument lines.
+#[test]
+fn e2e_carry_over_continues_across_consecutive_lines() {
+    let source = r#"
+device d { port test }
+instrument lead { device d channel 1 }
+
+clip carry [bars 2] {
+  lead c:3:1
+  lead bb
+}
+"#;
+    let mut ev = Evaluator::new(120.0);
+    ev.eval_source(source).unwrap();
+    let clip = ev.registry().get_clip("carry").unwrap();
+    let compiled = compile_clip(clip, &ev.clock_snapshot(), ev.registry()).unwrap();
+
+    // NoteOn を tick 順に取り出す
+    let mut note_ons: Vec<(u64, u8)> = compiled
+        .events
+        .iter()
+        .filter_map(|e| match e.message {
+            MidiMessage::NoteOn { note, .. } => Some((e.tick, note)),
+            _ => None,
+        })
+        .collect();
+    note_ons.sort();
+
+    assert_eq!(note_ons.len(), 2);
+    // C3 = 48 at tick 0
+    assert_eq!(note_ons[0], (0, 48));
+    // Bb3 = 58 at tick = 1 whole note (1920 ticks at PPQ 480)
+    // 全音符 1 個分 (= 4 拍 × 480) 後に Bb3 が鳴る
+    assert_eq!(note_ons[1].1, 58, "carry-over should resolve to Bb3 (58)");
+    assert!(
+        note_ons[1].0 > 0,
+        "second NoteOn must come AFTER the first (merged timeline), got tick={}",
+        note_ons[1].0
+    );
+}
+
+/// `---` で分離された後の layer は carry-over がリセットされることを検証する。
+///
+/// Verify carry-over is reset after a `---` divider.
+#[test]
+fn e2e_carry_over_resets_after_dash_divider() {
+    let source = r#"
+device d { port test }
+instrument lead { device d channel 1 }
+
+clip reset [bars 2] {
+  lead c:3:1
+  ---
+  lead bb
+}
+"#;
+    let mut ev = Evaluator::new(120.0);
+    ev.eval_source(source).unwrap();
+    let clip = ev.registry().get_clip("reset").unwrap();
+    let compiled = compile_clip(clip, &ev.clock_snapshot(), ev.registry()).unwrap();
+
+    // 2 番目の `bb` は新 layer のため、 carry-over はデフォルト (o4, :4) に戻る
+    // → Bb4 = 70 が tick 0 から発音される
+    // The second `bb` is a new layer, so carry-over resets to default (o4, :4)
+    // → Bb4 (70) starts at tick 0.
+    let note_ons_at_zero: Vec<u8> = compiled
+        .events
+        .iter()
+        .filter_map(|e| match (e.tick, e.message) {
+            (0, MidiMessage::NoteOn { note, .. }) => Some(note),
+            _ => None,
+        })
+        .collect();
+
+    assert!(
+        note_ons_at_zero.contains(&48),
+        "C3 NoteOn at tick 0 expected, got {note_ons_at_zero:?}"
+    );
+    assert!(
+        note_ons_at_zero.contains(&70),
+        "Bb4 NoteOn at tick 0 expected (carry-over reset), got {note_ons_at_zero:?}"
+    );
+}
+
+/// 別 instrument が現れた場合は従来どおり tick 0 起点の並列レイヤーになる
+/// ことを検証する。 carry-over も独立。
+///
+/// Verify that a different instrument starts a new parallel layer (tick 0)
+/// with independent carry-over (existing behavior preserved).
+#[test]
+fn e2e_different_instrument_remains_parallel_layer() {
+    let source = r#"
+device d { port test }
+instrument lead { device d channel 1 }
+instrument bass { device d channel 2 }
+
+clip mix [bars 1] {
+  lead c:5:4
+  bass c:3:4
+}
+"#;
+    let mut ev = Evaluator::new(120.0);
+    ev.eval_source(source).unwrap();
+    let clip = ev.registry().get_clip("mix").unwrap();
+    let compiled = compile_clip(clip, &ev.clock_snapshot(), ev.registry()).unwrap();
+
+    let note_ons_at_zero: Vec<u8> = compiled
+        .events
+        .iter()
+        .filter_map(|e| match (e.tick, e.message) {
+            (0, MidiMessage::NoteOn { note, .. }) => Some(note),
+            _ => None,
+        })
+        .collect();
+
+    assert!(note_ons_at_zero.contains(&72), "C5 (lead) at tick 0");
+    assert!(note_ons_at_zero.contains(&48), "C3 (bass) at tick 0");
+}
+
+/// ドラム clip に `---` が現れても no-op として許容されることを検証する。
+/// 現状はピッチド clip 専用機能だが、将来の拡張のため drum body は
+/// `---` をエラーにせず単に消費する。
+///
+/// Verify `---` is accepted as a no-op inside drum clips (reserved for
+/// future use).
+#[test]
+fn e2e_dash_divider_in_drum_clip_is_noop() {
+    let source = r#"
+device drums_dev { port Drums }
+
+kit tr808 {
+  device drums_dev
+  bd    { channel 10, note c2 }
+  snare { channel 10, note d2 }
+}
+
+clip beat_layered [bars 1] {
+  use tr808
+  resolution 16
+  bd    x...x...x...x...
+  ---
+  snare ....x.......x...
+}
+"#;
+    let mut ev = Evaluator::new(120.0);
+    let results = ev.eval_source(source);
+    assert!(
+        results.is_ok(),
+        "drum clip with `---` should parse successfully, got {results:?}"
+    );
+    let clip = ev.registry().get_clip("beat_layered").unwrap();
+    if let ClipBody::Drum(body) = &clip.body {
+        // bd / snare の 2 行が認識されている
+        assert_eq!(body.rows.len(), 2);
+    } else {
+        panic!("expected drum clip");
+    }
+}

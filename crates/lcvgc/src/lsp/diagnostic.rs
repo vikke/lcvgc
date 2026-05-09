@@ -355,6 +355,7 @@ mod tests {
                     .map(|i| PitchedLine {
                         instrument: (*i).into(),
                         elements: vec![],
+                        is_layer_start: true,
                     })
                     .collect(),
                 cc_automations: vec![],
@@ -833,6 +834,7 @@ mod tests {
                         articulation: Articulation::Normal,
                         arpeggio: arp,
                     }],
+                    is_layer_start: true,
                 }],
                 cc_automations: vec![],
             }),
@@ -926,6 +928,7 @@ mod tests {
                         },
                         Articulation::Normal,
                     )],
+                    is_layer_start: true,
                 }],
                 cc_automations: vec![],
             }),

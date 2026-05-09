@@ -773,7 +773,7 @@ If the calculated Gate Off period from the gate ratio is less than 5ms, a minimu
 
 ### 7.8 Multi-line Notation
 
-When consecutive lines with the same instrument name appear within a clip, they are concatenated as a continuation. This allows long clips to be split for readability. Octave/duration carry-over is maintained across lines. How many bars per line is up to the writer.
+When consecutive lines with the same instrument name appear within a clip, they are **merged into a single timeline** as a continuation of the previous line. This allows long clips to be split for readability. Octave and duration carry-over is maintained across lines. How many bars per line is up to the writer.
 
 ```
 // 4 bars as 4 lines, one bar each
@@ -796,7 +796,39 @@ clip bass_c [bars 4] {
 }
 ```
 
-The same applies to drums. Lines with the same instrument name are concatenated. Probability rows correspond only to the hit row immediately above them.
+Concatenation rules:
+
+- Comment lines or blank lines between two lines do not break continuity (they are still merged)
+- `octave` / `duration` / dotted (`.`) state carries over across lines
+- Only **consecutive lines with the same instrument name** are merged. As soon as a different instrument name appears, that line is treated as a new **parallel layer** (starting from `current_tick = 0`, with carry-over also reset)
+
+#### Parallel Layers and the `---` Divider
+
+When you want to **stack multiple lines in parallel**, either use a different instrument name, or insert `---` (a standalone line of three hyphens). The lines before and after `---` are treated as separate parallel layers even if they use the same instrument name (both start at `tick 0`, and carry-over is reset).
+
+```
+clip layered [bars 1] {
+  // Stacking the same chord instrument as two layers
+  chord [c:4 e g]:1
+  ---
+  chord [g:5 b:5 d:6]:1
+}
+
+// Lines for different instruments are automatically separate layers (no --- needed)
+clip mixed [bars 1] {
+  lead  c:5:4 d e f
+  bass  c:3:1
+}
+```
+
+Syntax rules for `---`:
+
+- The hyphens must be exactly **3 characters**. `--` or `----` are not recognized as a divider
+- Leading and trailing horizontal whitespace (space, tab) is allowed
+- The line must end with a newline / EOF / `}` (the end of a clip body)
+- `---` may also appear inside a drum clip body, but is currently consumed as a no-op (reserved for future layer support)
+
+The same applies to drums: lines with the same instrument name are merged. Probability rows correspond only to the hit row immediately above them.
 
 ```
 clip drums_a [bars 2] {
