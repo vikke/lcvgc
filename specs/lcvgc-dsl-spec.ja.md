@@ -925,7 +925,7 @@ clip chords_mixed [bars 2] {
 
 ### 7.12 アルペジオ
 
-和音の後に `arp(方向)` または `arp(方向, 音符解像度)` を付ける。第2引数の音符解像度は省略可能。
+和音の後に `arp(方向)` または `arp(方向, 音符解像度)` を付ける。第2引数の音符解像度は省略可能。**和音は ChordBracket 記法（`[c eb g]`）でもコード名（`cm`, `cm7` など）でもよい**。コード名のときは構成音が自動展開されてアルペジオされる。
 
 ```
 clip arp_a [bars 1] {
@@ -946,6 +946,10 @@ clip arp_d [bars 2] {
 
 clip arp_e [bars 1] {
   keys [c:4 eb:4 g:4]:8 arp(up)               // 第2引数省略 → 和音側の :8 を1音あたりの長さに採用
+}
+
+clip arp_f [bars 1] {
+  keys cm arp(random, 4)                      // コード名 cm の構成音 [c eb g] を 4分音符間隔でランダム
 }
 ```
 
