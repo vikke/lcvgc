@@ -61,6 +61,12 @@ pub enum CompletionContext {
     ClipOptionAfterScale,
     /// clip オプション "[scale <note> " 内: スケールタイプ
     ClipOptionAfterScaleNote,
+    /// `arp(` 直後: アルペジオ方向 (up / down / updown / random) を提案
+    /// After `arp(`: suggest arpeggio directions.
+    AfterArpOpen,
+    /// `arp(<direction>, ` 直後: 主要音価 (4 / 8 / 16 / 32) を提案
+    /// After `arp(<direction>, `: suggest common note resolutions.
+    AfterArpComma,
 }
 
 /// ソーステキスト内の指定オフセットまでの brace depth と
@@ -376,6 +382,42 @@ fn parse_clip_bracket_option(after_bracket: &str, used_options: Vec<String>) -> 
     CompletionContext::ClipOption { used_options }
 }
 
+/// 行頭からカーソルまでのテキストを見て、`arp(` 直後 / `arp(<dir>, ` 直後を判定する。
+///
+/// - `arp(` の `(` 以降にカーソル位置で **方向トークンが完成していない** 場合 →
+///   `AfterArpOpen`
+/// - `arp(<direction>,` の `,` 以降に未確定の数値しか無い場合 → `AfterArpComma`
+///
+/// それ以外（既に方向や数値が完成している、`)` で閉じている等）は `None`。
+///
+/// Inspect the line text up to the cursor and decide whether we are right
+/// after `arp(` (direction completion) or after `arp(<dir>,` (resolution
+/// completion).
+fn detect_arp_completion(line: &str) -> Option<CompletionContext> {
+    // 直近の `arp(` を探す。複数 arp が同じ行にある場合は最後のものを採用。
+    let arp_pos = line.rfind("arp(")?;
+    let after_open = &line[arp_pos + 4..];
+    // すでに `)` で閉じられている場合は補完対象外
+    if after_open.contains(')') {
+        return None;
+    }
+    // `,` で区切る（最大1個まで意味あり）
+    if let Some(comma_pos) = after_open.find(',') {
+        let after_comma = &after_open[comma_pos + 1..];
+        // カンマ以降に空白以外で英字が現れていれば、ユーザーが何かを書き始めている。
+        // 数値だけ書きかけのケース（例: "8"）も補完を出して問題ないため、
+        // 「アルファベットを含む = 補完を返さない」程度の素朴な判定にする。
+        if after_comma.chars().any(|c| c.is_ascii_alphabetic()) {
+            return None;
+        }
+        Some(CompletionContext::AfterArpComma)
+    } else {
+        // `(` の後にまだカンマが無い → 方向トークンの位置
+        // ユーザーが既に方向を書き始めていても、補完候補は同じ 4 件で問題ない。
+        Some(CompletionContext::AfterArpOpen)
+    }
+}
+
 /// clip ブロック内のコンテキストを判定する
 fn determine_clip_context(
     trimmed: &str,
@@ -395,6 +437,12 @@ fn determine_clip_context(
             let used_options = extract_used_options(before_bracket);
             return parse_clip_bracket_option(in_bracket, used_options);
         }
+    }
+
+    // `arp(` 直後 / `arp(<dir>, ` 直後の判定。clip body 内のどの位置でも有効。
+    // Detect `arp(` (suggest direction) or `arp(<dir>, ` (suggest resolution).
+    if let Some(arp_ctx) = detect_arp_completion(full_line) {
+        return arp_ctx;
     }
 
     if trimmed.is_empty() {
@@ -575,6 +623,10 @@ pub fn build_completion_items(ctx: &CompletionContext, registry: &Registry) -> V
         CompletionContext::ClipOptionAfterScale => CompletionProvider::note_completions(),
 
         CompletionContext::ClipOptionAfterScaleNote => CompletionProvider::scale_type_completions(),
+
+        CompletionContext::AfterArpOpen => CompletionProvider::arpeggio_direction_completions(),
+
+        CompletionContext::AfterArpComma => CompletionProvider::arpeggio_resolution_completions(),
     }
 }
 
@@ -1096,6 +1148,79 @@ mod tests {
         let offset = src.find("\n  p").unwrap() + 4; // "p" の直後
         let ctx = determine_completion_context(src, offset);
         assert_eq!(ctx, CompletionContext::DeviceBody);
+    }
+
+    /// `arp(` 直後では AfterArpOpen コンテキストになる。
+    /// After `arp(` the context must be AfterArpOpen.
+    #[test]
+    fn ctx_after_arp_open() {
+        let src = "clip arp_clip [bars 1] {\n  bass cm arp(";
+        assert_eq!(
+            determine_completion_context(src, src.len()),
+            CompletionContext::AfterArpOpen
+        );
+    }
+
+    /// `arp(   ` のような空白後でも AfterArpOpen のまま。
+    /// AfterArpOpen still applies after whitespace.
+    #[test]
+    fn ctx_after_arp_open_with_whitespace() {
+        let src = "clip arp_clip [bars 1] {\n  bass cm arp(  ";
+        assert_eq!(
+            determine_completion_context(src, src.len()),
+            CompletionContext::AfterArpOpen
+        );
+    }
+
+    /// `arp(up, ` 直後では AfterArpComma コンテキストになる。
+    /// After `arp(<dir>, ` the context must be AfterArpComma.
+    #[test]
+    fn ctx_after_arp_comma() {
+        let src = "clip arp_clip [bars 1] {\n  bass cm arp(up, ";
+        assert_eq!(
+            determine_completion_context(src, src.len()),
+            CompletionContext::AfterArpComma
+        );
+    }
+
+    /// `arp(random,` のように空白なしカンマ直後でも AfterArpComma。
+    /// AfterArpComma applies even without trailing space.
+    #[test]
+    fn ctx_after_arp_comma_no_space() {
+        let src = "clip arp_clip [bars 1] {\n  bass cm arp(random,";
+        assert_eq!(
+            determine_completion_context(src, src.len()),
+            CompletionContext::AfterArpComma
+        );
+    }
+
+    /// AfterArpOpen の補完候補は up/down/updown/random の 4 件。
+    /// AfterArpOpen returns the four direction completions.
+    #[test]
+    fn build_completion_items_for_after_arp_open_returns_directions() {
+        let ctx = CompletionContext::AfterArpOpen;
+        let registry = Registry::new();
+        let items = build_completion_items(&ctx, &registry);
+        let labels: Vec<&str> = items.iter().map(|i| i.label.as_str()).collect();
+        assert!(labels.contains(&"up"));
+        assert!(labels.contains(&"down"));
+        assert!(labels.contains(&"updown"));
+        assert!(labels.contains(&"random"));
+        assert_eq!(labels.len(), 4);
+    }
+
+    /// AfterArpComma の補完候補は主要音価 (4, 8, 16, 32)。
+    /// AfterArpComma returns the major note resolutions.
+    #[test]
+    fn build_completion_items_for_after_arp_comma_returns_resolutions() {
+        let ctx = CompletionContext::AfterArpComma;
+        let registry = Registry::new();
+        let items = build_completion_items(&ctx, &registry);
+        let labels: Vec<&str> = items.iter().map(|i| i.label.as_str()).collect();
+        assert!(labels.contains(&"4"));
+        assert!(labels.contains(&"8"));
+        assert!(labels.contains(&"16"));
+        assert!(labels.contains(&"32"));
     }
 
     #[test]
