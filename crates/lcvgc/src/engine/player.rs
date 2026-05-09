@@ -48,12 +48,13 @@ pub struct ClipPlayer {
     /// `current_tick` unchanged and `events_at()` returns an empty Vec.
     /// Unlike mute, the phase (position within the loop) is frozen.
     paused: bool,
-    /// 当該ループ周期で確率抽選により mute されている events index 集合。
+    /// 当該ループ周期で確率抽選 / random-choice 抽選により mute されている events index 集合。
     /// ループ境界をまたぐ毎に再抽選で更新される。
     ///
-    /// Set of event indices that lost the probability roll for the current
-    /// loop iteration. Refreshed every time the player crosses a loop
-    /// boundary so each loop produces a fresh drum variation.
+    /// Set of event indices that lost the probability roll (drum)
+    /// or were not selected by random-choice arpeggio for the current loop
+    /// iteration. Refreshed every loop boundary so each loop yields a
+    /// fresh variation.
     masked_events: HashSet<usize>,
 }
 
@@ -76,7 +77,7 @@ impl ClipPlayer {
             paused: false,
             masked_events: HashSet::new(),
         };
-        player.reroll_drum_mask(&mut rand::thread_rng());
+        player.reroll_masks(&mut rand::thread_rng());
         player
     }
 
@@ -93,7 +94,7 @@ impl ClipPlayer {
             paused: false,
             masked_events: HashSet::new(),
         };
-        player.reroll_drum_mask(rng);
+        player.reroll_masks(rng);
         player
     }
 
@@ -103,22 +104,39 @@ impl ClipPlayer {
         &self.masked_events
     }
 
-    /// ドラム発音率行に基づき event mask を再抽選する。
+    /// ドラム発音率行と random-choice 抽選を再実行し、両者の結果を `masked_events` に
+    /// 反映する。
     ///
-    /// `drum_mask_groups` が空ならば即 return し、ループ境界での実行コストは
-    /// HashSet 1 つの clear のみとなる。各 group につき `should_trigger` を 1 回
-    /// 引いて、外れた group の event indices を全て masked_events に積む。
+    /// - `drum_mask_groups`: 各 group につき `should_trigger` を 1 回引き、外れた
+    ///   group の event indices を全て mask する。
+    /// - `random_choice_groups`: 各 group の候補から 1 つを選び、それ以外の候補に
+    ///   属する index を全て mask する。
     ///
-    /// Rerolls the probability mask for every drum group. Cheap when no
-    /// probability rows are present (just a HashSet clear).
-    pub fn reroll_drum_mask<R: Rng>(&mut self, rng: &mut R) {
+    /// どちらも空ならば HashSet 1 つの clear のみで終了する。
+    ///
+    /// Rerolls drum probability masks and random-choice arpeggio selection,
+    /// merging both results into `masked_events`. For each drum group rolls
+    /// once and masks losing groups; for each random-choice group picks one
+    /// candidate and masks all others.
+    pub fn reroll_masks<R: Rng>(&mut self, rng: &mut R) {
         self.masked_events.clear();
-        if self.clip.drum_mask_groups.is_empty() {
-            return;
-        }
         for group in &self.clip.drum_mask_groups {
             if !should_trigger(Some(group.probability), rng) {
                 for idx in &group.event_indices {
+                    self.masked_events.insert(*idx);
+                }
+            }
+        }
+        for group in &self.clip.random_choice_groups {
+            if group.candidates.is_empty() {
+                continue;
+            }
+            let chosen_idx = rng.gen_range(0..group.candidates.len());
+            for (i, cand) in group.candidates.iter().enumerate() {
+                if i == chosen_idx {
+                    continue;
+                }
+                for idx in cand {
                     self.masked_events.insert(*idx);
                 }
             }
@@ -228,7 +246,7 @@ impl ClipPlayer {
                 }
                 // 新しいループ周期に入ったので確率抽選を再実行する
                 // Entered a new loop iteration → reroll the probability mask
-                self.reroll_drum_mask(&mut rand::thread_rng());
+                self.reroll_masks(&mut rand::thread_rng());
             }
         }
     }
@@ -528,6 +546,7 @@ mod tests {
             total_ticks,
             warnings: vec![],
             drum_mask_groups: vec![],
+            random_choice_groups: vec![],
         }
     }
 
@@ -1120,6 +1139,7 @@ mod tests {
             total_ticks,
             warnings: vec![],
             drum_mask_groups: groups,
+            random_choice_groups: vec![],
         }
     }
 
@@ -1202,5 +1222,116 @@ mod tests {
         assert!(player.masked_event_indices().is_empty());
         player.advance(480);
         assert!(player.masked_event_indices().is_empty());
+    }
+
+    // --- random_choice_groups テスト ---
+
+    use crate::engine::compiler::RandomChoiceGroup;
+
+    /// random_choice_groups 付き clip を生成するテストヘルパー
+    fn make_clip_with_random_groups(
+        events: Vec<(u64, MidiMessage)>,
+        total_ticks: u64,
+        random_choice_groups: Vec<RandomChoiceGroup>,
+    ) -> CompiledClip {
+        CompiledClip {
+            events: events
+                .into_iter()
+                .map(|(tick, message)| MidiEvent::new(tick, message, ""))
+                .collect(),
+            total_ticks,
+            warnings: vec![],
+            drum_mask_groups: vec![],
+            random_choice_groups,
+        }
+    }
+
+    /// 候補2件の random_choice_group では、毎ループ必ず1候補だけが残り、
+    /// 残りは masked_events に積まれる。
+    /// In a 2-candidate group, exactly one candidate survives per loop and
+    /// the other is masked.
+    #[test]
+    fn random_choice_keeps_exactly_one_candidate_per_loop() {
+        // 同一 tick=0 に 2 候補 (NoteOn(60), NoteOn(64)) を重ね、片方だけ生き残ることを確認
+        let clip = make_clip_with_random_groups(
+            vec![(0, note_on(60)), (0, note_on(64))],
+            480,
+            vec![RandomChoiceGroup {
+                candidates: vec![vec![0], vec![1]],
+            }],
+        );
+        let mut rng = StdRng::seed_from_u64(1);
+        let player = ClipPlayer::new_with_rng(clip, true, &mut rng);
+
+        // tick=0 で events_at が返すのはちょうど 1 件
+        let events = player.events_at(0);
+        assert_eq!(events.len(), 1, "ちょうど 1 候補だけ生き残るべき");
+        // その他は masked
+        assert_eq!(player.masked_event_indices().len(), 1);
+    }
+
+    /// ループ境界をまたぐ毎に random-choice の選択が（少なくとも）変わり得ること。
+    /// 多数の独立 group で、二回連続で同じ選択になる確率が天文学的に低い構成を組み、
+    /// 異なるマスクが得られることを示す。
+    /// Across a loop boundary, random selections must reroll. Build many
+    /// independent groups so two consecutive identical selections are
+    /// astronomically unlikely.
+    #[test]
+    fn random_choice_reroll_changes_per_loop() {
+        // 64 group × 各 2 候補 → 同じ選択集合を 2 回連続で引く確率は 2^-64
+        let mut events = Vec::new();
+        let mut groups: Vec<RandomChoiceGroup> = Vec::new();
+        for i in 0..64u64 {
+            let tick = i * 4;
+            let on_idx_a = events.len();
+            events.push((tick, note_on(60)));
+            let on_idx_b = events.len();
+            events.push((tick, note_on(72)));
+            groups.push(RandomChoiceGroup {
+                candidates: vec![vec![on_idx_a], vec![on_idx_b]],
+            });
+        }
+        let clip = make_clip_with_random_groups(events, 480, groups);
+        let mut rng = StdRng::seed_from_u64(7);
+        let mut player = ClipPlayer::new_with_rng(clip, true, &mut rng);
+
+        let first_mask = player.masked_event_indices().clone();
+        player.advance(480);
+        let second_mask = player.masked_event_indices().clone();
+
+        assert_ne!(
+            first_mask, second_mask,
+            "random_choice mask must be rerolled at loop boundary"
+        );
+    }
+
+    /// random_choice_groups と drum_mask_groups は両立し、両方の mask が合算される。
+    /// random_choice_groups and drum_mask_groups coexist; masks merge.
+    #[test]
+    fn random_choice_and_drum_mask_coexist() {
+        // event 0: drum prob=0 (確実に mask)
+        // event 1, 2: random choice 候補 2 件 (どちらか 1 つだけ残る)
+        let clip = CompiledClip {
+            events: vec![
+                MidiEvent::new(0, note_on(36), ""),
+                MidiEvent::new(60, note_on(60), ""),
+                MidiEvent::new(60, note_on(64), ""),
+            ],
+            total_ticks: 480,
+            warnings: vec![],
+            drum_mask_groups: vec![DrumProbabilityGroup {
+                event_indices: vec![0],
+                probability: 0,
+            }],
+            random_choice_groups: vec![RandomChoiceGroup {
+                candidates: vec![vec![1], vec![2]],
+            }],
+        };
+        let mut rng = StdRng::seed_from_u64(1);
+        let player = ClipPlayer::new_with_rng(clip, true, &mut rng);
+
+        // event 0 は必ず mask、random は 1 件だけ残るので mask は計 2 件
+        assert_eq!(player.masked_event_indices().len(), 2);
+        assert!(player.masked_event_indices().contains(&0));
     }
 }

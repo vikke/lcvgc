@@ -137,6 +137,7 @@ mod tests {
             total_ticks,
             warnings: vec![],
             drum_mask_groups: vec![],
+            random_choice_groups: vec![],
         }
     }
 

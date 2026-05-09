@@ -9,6 +9,7 @@ use crate::midi::channel::MidiChannel;
 use crate::midi::chord::chord_notes;
 use crate::midi::message::MidiMessage;
 use crate::midi::note::note_number;
+use crate::parser::clip_arpeggio::ArpeggioDirection;
 use crate::parser::clip_articulation::Articulation;
 use crate::parser::clip_shorthand::CarryOverState;
 
@@ -65,6 +66,25 @@ pub struct DrumProbabilityGroup {
     pub probability: u8,
 }
 
+/// `arp(random, ...)` のように「複数候補から1つだけを毎ループ抽選で選ぶ」
+/// セマンティクスを表現する group。
+///
+/// 各 `candidates` 要素は、互いに排他で発音される候補ノートの MIDI イベント
+/// index 集合（典型的には NoteOn と対応する NoteOff の 2 件）を保持する。
+/// player はループ境界毎に 1 つだけ候補を選び、それ以外の候補に属する
+/// イベントを `masked_events` に積む。
+///
+/// Group expressing "pick one candidate per loop iteration", used for
+/// `arp(random, ...)`. Each `candidates` entry is a set of `events` indices
+/// that fire together (e.g. a NoteOn/NoteOff pair). The player picks one
+/// candidate at every loop boundary and masks all other candidates' events.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RandomChoiceGroup {
+    /// 候補リスト。各候補は同時に triggered/silenced される event index 群。
+    /// Candidate sets, each holding the `events` indices to keep when chosen.
+    pub candidates: Vec<Vec<usize>>,
+}
+
 /// コンパイル済みクリップ
 /// Compiled clip containing MIDI events and metadata
 #[derive(Debug, Clone)]
@@ -80,6 +100,12 @@ pub struct CompiledClip {
     /// Probability groups produced from drum probability rows; empty means no
     /// per-loop probability gating is required.
     pub drum_mask_groups: Vec<DrumProbabilityGroup>,
+    /// `arp(random, ...)` などの「複数候補から1つを毎ループ抽選」用 group。
+    /// 空ならば抽選不要。
+    ///
+    /// Per-loop random-choice groups (e.g. produced by `arp(random, ...)`).
+    /// Empty when no random selection is required.
+    pub random_choice_groups: Vec<RandomChoiceGroup>,
 }
 
 /// クリップ定義をtickベースMIDIイベント列にコンパイルする
@@ -88,12 +114,15 @@ pub fn compile_clip(
     clock: &Clock,
     registry: &Registry,
 ) -> Result<CompiledClip, EngineError> {
-    let (mut events, mut drum_mask_groups) = match &clip.body {
-        ClipBody::Pitched(body) => (
-            compile_pitched(body, clock, registry, clip.options.bars)?,
-            Vec::new(),
-        ),
-        ClipBody::Drum(body) => compile_drum(body, clock, registry)?,
+    let (mut events, mut drum_mask_groups, mut random_choice_groups) = match &clip.body {
+        ClipBody::Pitched(body) => {
+            let (evts, randoms) = compile_pitched(body, clock, registry, clip.options.bars)?;
+            (evts, Vec::new(), randoms)
+        }
+        ClipBody::Drum(body) => {
+            let (evts, drums) = compile_drum(body, clock, registry)?;
+            (evts, drums, Vec::new())
+        }
     };
 
     let mut warnings = Vec::new();
@@ -111,9 +140,10 @@ pub fn compile_clip(
                 clip.name, bars, overflow_count
             ));
         }
-        // 超過イベントを切り捨て、対応する drum_mask_groups も整理する
-        // Drop overflow events and prune the matching probability group entries
-        // so that the remaining indices stay consistent.
+        // 超過イベントを切り捨て、対応する drum_mask_groups / random_choice_groups の
+        // index も整理する。
+        // Drop overflow events and prune matching index sets so remaining
+        // indices stay consistent.
         let kept_indices: Vec<bool> = events.iter().map(|e| e.tick < max_ticks).collect();
         let mut old_to_new: Vec<Option<usize>> = Vec::with_capacity(events.len());
         let mut new_idx: usize = 0;
@@ -134,6 +164,16 @@ pub fn compile_clip(
                 .collect();
         }
         drum_mask_groups.retain(|g| !g.event_indices.is_empty());
+        for group in random_choice_groups.iter_mut() {
+            for cand in group.candidates.iter_mut() {
+                *cand = cand
+                    .iter()
+                    .filter_map(|i| old_to_new.get(*i).copied().flatten())
+                    .collect();
+            }
+            group.candidates.retain(|c| !c.is_empty());
+        }
+        random_choice_groups.retain(|g| g.candidates.len() >= 2);
         max_ticks
     } else {
         // bars未指定: イベントの最大tick + 1（最低でも0）
@@ -141,13 +181,12 @@ pub fn compile_clip(
     };
 
     // tick順にソート（同一tickではNoteOnをNoteOffより先に）
-    // ソートに伴うインデックス変動を drum_mask_groups にも反映するため、
-    // 一時的に元 index を持たせてソートし、permutation を再構築する。
+    // ソートに伴うインデックス変動を drum_mask_groups / random_choice_groups にも
+    // 反映するため、一時的に元 index を持たせてソートし、permutation を再構築する。
     //
     // Sort tick-ascending (NoteOn before NoteOff at the same tick). Because
-    // the sort permutes events, also rebuild `drum_mask_groups.event_indices`
-    // through the permutation so probability groups still point at the right
-    // events afterwards.
+    // the sort permutes events, also rebuild group event indices through the
+    // permutation so they still point at the right events afterwards.
     let mut indexed: Vec<(usize, MidiEvent)> = events.into_iter().enumerate().collect();
     indexed.sort_by(|a, b| {
         a.1.tick.cmp(&b.1.tick).then_with(|| {
@@ -168,12 +207,21 @@ pub fn compile_clip(
         }
         group.event_indices.sort_unstable();
     }
+    for group in random_choice_groups.iter_mut() {
+        for cand in group.candidates.iter_mut() {
+            for idx in cand.iter_mut() {
+                *idx = old_to_sorted[*idx];
+            }
+            cand.sort_unstable();
+        }
+    }
 
     Ok(CompiledClip {
         events: sorted_events,
         total_ticks,
         warnings,
         drum_mask_groups,
+        random_choice_groups,
     })
 }
 
@@ -198,16 +246,28 @@ fn compile_pitched(
     clock: &Clock,
     registry: &Registry,
     bars: Option<u32>,
-) -> Result<Vec<MidiEvent>, EngineError> {
+) -> Result<(Vec<MidiEvent>, Vec<RandomChoiceGroup>), EngineError> {
     let mut events = Vec::new();
+    let mut random_choice_groups: Vec<RandomChoiceGroup> = Vec::new();
     for line in &body.lines {
-        let line_events = compile_pitched_line(line, clock, registry, bars)?;
+        let (line_events, line_groups) = compile_pitched_line(line, clock, registry, bars)?;
+        // line ごとに index は 0 開始のため、結合時に既存 events 長を offset として加算する
+        // Each line indexes from 0, so add the running events length as offset on merge.
+        let offset = events.len();
+        for mut group in line_groups {
+            for cand in group.candidates.iter_mut() {
+                for idx in cand.iter_mut() {
+                    *idx += offset;
+                }
+            }
+            random_choice_groups.push(group);
+        }
         events.extend(line_events);
     }
     // CCオートメーションのコンパイル
     let cc_events = compile_cc_automations(&body.cc_automations, clock, registry)?;
     events.extend(cc_events);
-    Ok(events)
+    Ok((events, random_choice_groups))
 }
 
 /// ピッチドライン1行のコンパイル
@@ -218,7 +278,7 @@ fn compile_pitched_line(
     clock: &Clock,
     registry: &Registry,
     bars: Option<u32>,
-) -> Result<Vec<MidiEvent>, EngineError> {
+) -> Result<(Vec<MidiEvent>, Vec<RandomChoiceGroup>), EngineError> {
     let inst = registry
         .get_instrument(&line.instrument)
         .ok_or_else(|| EngineError::UnknownInstrument(line.instrument.clone()))?;
@@ -229,6 +289,7 @@ fn compile_pitched_line(
     let device = inst.device.clone();
 
     let mut events = Vec::new();
+    let mut random_choice_groups: Vec<RandomChoiceGroup> = Vec::new();
     let mut current_tick: u64 = 0;
     let mut carry = CarryOverState::new();
 
@@ -242,10 +303,11 @@ fn compile_pitched_line(
         &mut current_tick,
         &mut carry,
         &mut events,
+        &mut random_choice_groups,
         bars,
     )?;
 
-    Ok(events)
+    Ok((events, random_choice_groups))
 }
 
 /// ピッチド要素列をMIDIイベントにコンパイルする（再帰対応）。
@@ -263,6 +325,7 @@ fn compile_elements(
     current_tick: &mut u64,
     carry: &mut CarryOverState,
     events: &mut Vec<MidiEvent>,
+    random_choice_groups: &mut Vec<RandomChoiceGroup>,
     bars: Option<u32>,
 ) -> Result<(), EngineError> {
     for element in elements {
@@ -354,40 +417,142 @@ fn compile_elements(
                 duration,
                 dotted,
                 articulation,
-                arpeggio: _, // TODO: アルペジオ対応
+                arpeggio,
             } => {
-                // 和音ブラケット→同時発音のNoteOn/NoteOff生成
-                // Chord bracket → generate simultaneous NoteOn/NoteOff events
-                let resolved = carry.resolve_duration_only(*duration, *dotted);
+                // 構成音を MIDI ノート番号列に解決（記譜順を保持）
+                // Resolve chord tones to MIDI note numbers, preserving notation order.
+                let resolved_notes: Vec<u8> = notes
+                    .iter()
+                    .map(|&(name, oct_opt)| {
+                        let oct = oct_opt.unwrap_or(carry.octave);
+                        note_number(name, oct)
+                    })
+                    .collect();
 
-                let note_ticks = clock.duration_to_ticks(resolved.duration, resolved.dotted);
                 let gate_percent = resolve_gate_percent(articulation, gate_normal, gate_staccato);
-                let gate_ticks = apply_min_gate_off(note_ticks, gate_percent, clock);
 
-                for &(name, oct_opt) in notes {
-                    let oct = oct_opt.unwrap_or(carry.octave);
-                    let note = note_number(name, oct);
-                    events.push(MidiEvent::new(
-                        *current_tick,
-                        MidiMessage::NoteOn {
-                            channel,
-                            note,
-                            velocity: 100,
-                        },
-                        device,
-                    ));
-                    events.push(MidiEvent::new(
-                        *current_tick + gate_ticks,
-                        MidiMessage::NoteOff {
-                            channel,
-                            note,
-                            velocity: 0,
-                        },
-                        device,
-                    ));
+                if let Some(arp) = arpeggio {
+                    // --- アルペジオ展開 ---
+                    // Arpeggio expansion: chord tones are sequenced one at a time.
+
+                    // 1音あたりの音価を決定する。
+                    // resolution > duration(明示) > carry-over(前回 duration) の順で優先。
+                    //
+                    // Determine per-step duration: prefer arpeggio.resolution, then the
+                    // explicit chord duration, then the carry-over duration.
+                    let step_duration_value = match arp.resolution {
+                        Some(r) => {
+                            // resolution があれば carry-over も上書きする（次の要素にも引き継ぐため）
+                            // Update carry-over so subsequent elements inherit this value.
+                            let resolved = carry.resolve_duration_only(Some(r), *dotted);
+                            resolved.duration
+                        }
+                        None => {
+                            let resolved = carry.resolve_duration_only(*duration, *dotted);
+                            resolved.duration
+                        }
+                    };
+                    let step_ticks = clock.duration_to_ticks(step_duration_value, *dotted);
+                    let gate_ticks = apply_min_gate_off(step_ticks, gate_percent, clock);
+
+                    if arp.direction == ArpeggioDirection::Random {
+                        // Random: 各ステップに「全候補ノート」を重ねて emit し、
+                        // ループ毎に 1 候補だけ残るよう RandomChoiceGroup を作る。
+                        // ステップ数は構成音数と一致させる（他方向と同じく1サイクル分）。
+                        //
+                        // For Random, lay all candidate notes at every step and let the
+                        // player keep one candidate per loop via RandomChoiceGroup.
+                        // The cycle length equals the number of chord tones, matching
+                        // the deterministic directions.
+                        let step_count = resolved_notes.len();
+                        for _ in 0..step_count {
+                            let mut candidates: Vec<Vec<usize>> =
+                                Vec::with_capacity(resolved_notes.len());
+                            for &note in &resolved_notes {
+                                let note_on_idx = events.len();
+                                events.push(MidiEvent::new(
+                                    *current_tick,
+                                    MidiMessage::NoteOn {
+                                        channel,
+                                        note,
+                                        velocity: 100,
+                                    },
+                                    device,
+                                ));
+                                let note_off_idx = events.len();
+                                events.push(MidiEvent::new(
+                                    *current_tick + gate_ticks,
+                                    MidiMessage::NoteOff {
+                                        channel,
+                                        note,
+                                        velocity: 0,
+                                    },
+                                    device,
+                                ));
+                                candidates.push(vec![note_on_idx, note_off_idx]);
+                            }
+                            // 候補が 2 件以上ある場合のみ抽選 group を登録する（1 件は無意味）
+                            // Only record a group when there are multiple candidates.
+                            if candidates.len() >= 2 {
+                                random_choice_groups.push(RandomChoiceGroup { candidates });
+                            }
+                            *current_tick += step_ticks;
+                        }
+                    } else {
+                        let sequence = build_arpeggio_sequence(&resolved_notes, arp.direction);
+                        for note in sequence {
+                            events.push(MidiEvent::new(
+                                *current_tick,
+                                MidiMessage::NoteOn {
+                                    channel,
+                                    note,
+                                    velocity: 100,
+                                },
+                                device,
+                            ));
+                            events.push(MidiEvent::new(
+                                *current_tick + gate_ticks,
+                                MidiMessage::NoteOff {
+                                    channel,
+                                    note,
+                                    velocity: 0,
+                                },
+                                device,
+                            ));
+                            *current_tick += step_ticks;
+                        }
+                    }
+                } else {
+                    // --- 同時発音（既存挙動）---
+                    // Simultaneous chord (legacy behavior).
+                    let resolved = carry.resolve_duration_only(*duration, *dotted);
+
+                    let note_ticks = clock.duration_to_ticks(resolved.duration, resolved.dotted);
+                    let gate_ticks = apply_min_gate_off(note_ticks, gate_percent, clock);
+
+                    for &note in &resolved_notes {
+                        events.push(MidiEvent::new(
+                            *current_tick,
+                            MidiMessage::NoteOn {
+                                channel,
+                                note,
+                                velocity: 100,
+                            },
+                            device,
+                        ));
+                        events.push(MidiEvent::new(
+                            *current_tick + gate_ticks,
+                            MidiMessage::NoteOff {
+                                channel,
+                                note,
+                                velocity: 0,
+                            },
+                            device,
+                        ));
+                    }
+
+                    *current_tick += note_ticks;
                 }
-
-                *current_tick += note_ticks;
             }
             PitchedElement::Repetition(rep) => {
                 let inner_elements = crate::parser::clip::parse_repetition_content(&rep.content)
@@ -403,6 +568,7 @@ fn compile_elements(
                         current_tick,
                         carry,
                         events,
+                        random_choice_groups,
                         bars,
                     )?;
                 }
@@ -425,6 +591,48 @@ fn compile_elements(
     }
 
     Ok(())
+}
+
+/// アルペジオの方向に従って構成音を1サイクル分のシーケンスへ並べ替える。
+///
+/// - `Up`: 音高昇順
+/// - `Down`: 音高降順
+/// - `UpDown`: 音高昇順 → 降順の往復（両端は二度鳴らさない、ping-pong）
+/// - `Random`: 記譜順をそのまま返す（ループ毎の抽選は player 側で適用するため、
+///   ここでは候補列としての並びを保持する）
+///
+/// Reorder chord tones into one arpeggio cycle according to the direction.
+/// `Random` keeps notation order; per-loop randomization is performed in the player.
+fn build_arpeggio_sequence(notes: &[u8], direction: ArpeggioDirection) -> Vec<u8> {
+    if notes.is_empty() {
+        return Vec::new();
+    }
+    match direction {
+        ArpeggioDirection::Up => {
+            let mut sorted = notes.to_vec();
+            sorted.sort_unstable();
+            sorted
+        }
+        ArpeggioDirection::Down => {
+            let mut sorted = notes.to_vec();
+            sorted.sort_unstable_by(|a, b| b.cmp(a));
+            sorted
+        }
+        ArpeggioDirection::UpDown => {
+            let mut sorted = notes.to_vec();
+            sorted.sort_unstable();
+            // ping-pong: 末尾と先頭の重複を避けるため、降順側は端点を除いて連結
+            let len = sorted.len();
+            let mut sequence = sorted.clone();
+            if len >= 2 {
+                for &n in sorted[1..len.saturating_sub(1)].iter().rev() {
+                    sequence.push(n);
+                }
+            }
+            sequence
+        }
+        ArpeggioDirection::Random => notes.to_vec(),
+    }
 }
 
 /// アーティキュレーションからゲート比率を解決
@@ -1784,6 +1992,283 @@ mod tests {
             .collect();
         // C3=48, E5=76, G4=67
         assert_eq!(notes, vec![48, 76, 67]);
+    }
+
+    // --- ChordBracket アルペジオ テスト ---
+
+    /// `arp(up, 16)` で構成音が音高昇順に16分音符間隔で発音されること。
+    /// `arp(up, 16)` should sequence chord tones in ascending pitch order at 16th-note intervals.
+    #[test]
+    fn chord_bracket_arpeggio_up_uses_resolution() {
+        use crate::parser::clip_arpeggio::{Arpeggio, ArpeggioDirection};
+        let registry = make_registry_with_bass();
+        let clock = Clock::new(120.0);
+        // [c:4 eb:4 g:4 bb:4]:1 arp(up, 16)
+        // 1音=16分音符=120ticks、4音 → 計480ticks、duration(:1)は無視されること
+        let clip = make_pitched_clip(
+            "test",
+            None,
+            vec![PitchedLine {
+                instrument: "bass".to_string(),
+                elements: vec![PitchedElement::ChordBracket {
+                    notes: vec![
+                        (NoteName::C, Some(4)),
+                        (NoteName::Eb, None),
+                        (NoteName::G, None),
+                        (NoteName::Bb, None),
+                    ],
+                    duration: Some(1),
+                    dotted: false,
+                    articulation: Articulation::Normal,
+                    arpeggio: Some(Arpeggio {
+                        direction: ArpeggioDirection::Up,
+                        resolution: Some(16),
+                    }),
+                }],
+            }],
+        );
+
+        let compiled = compile_clip(&clip, &clock, &registry).unwrap();
+        let note_ons: Vec<_> = compiled
+            .events
+            .iter()
+            .filter(|e| matches!(e.message, MidiMessage::NoteOn { .. }))
+            .collect();
+        // 4音が順次（同時ではなく）発音される
+        assert_eq!(note_ons.len(), 4);
+        let ticks: Vec<u64> = note_ons.iter().map(|e| e.tick).collect();
+        assert_eq!(ticks, vec![0, 120, 240, 360]);
+        let notes: Vec<u8> = note_ons
+            .iter()
+            .map(|e| match e.message {
+                MidiMessage::NoteOn { note, .. } => note,
+                _ => unreachable!(),
+            })
+            .collect();
+        // C4=60, Eb4=63, G4=67, Bb4=70 (昇順)
+        assert_eq!(notes, vec![60, 63, 67, 70]);
+    }
+
+    /// `arp(down, 16)` で構成音が音高降順に発音されること。
+    /// `arp(down, 16)` should sequence chord tones in descending pitch order.
+    #[test]
+    fn chord_bracket_arpeggio_down() {
+        use crate::parser::clip_arpeggio::{Arpeggio, ArpeggioDirection};
+        let registry = make_registry_with_bass();
+        let clock = Clock::new(120.0);
+        let clip = make_pitched_clip(
+            "test",
+            None,
+            vec![PitchedLine {
+                instrument: "bass".to_string(),
+                elements: vec![PitchedElement::ChordBracket {
+                    notes: vec![
+                        (NoteName::C, Some(4)),
+                        (NoteName::E, None),
+                        (NoteName::G, None),
+                    ],
+                    duration: Some(1),
+                    dotted: false,
+                    articulation: Articulation::Normal,
+                    arpeggio: Some(Arpeggio {
+                        direction: ArpeggioDirection::Down,
+                        resolution: Some(16),
+                    }),
+                }],
+            }],
+        );
+
+        let compiled = compile_clip(&clip, &clock, &registry).unwrap();
+        let notes: Vec<u8> = compiled
+            .events
+            .iter()
+            .filter_map(|e| match e.message {
+                MidiMessage::NoteOn { note, .. } => Some(note),
+                _ => None,
+            })
+            .collect();
+        // G4=67, E4=64, C4=60 (降順)
+        assert_eq!(notes, vec![67, 64, 60]);
+    }
+
+    /// `arp(updown, 16)` は up→down の往復で、両端を二度鳴らさない（ping-pong）。
+    /// `arp(updown, 16)` ping-pongs without repeating the endpoints.
+    #[test]
+    fn chord_bracket_arpeggio_updown_pingpong() {
+        use crate::parser::clip_arpeggio::{Arpeggio, ArpeggioDirection};
+        let registry = make_registry_with_bass();
+        let clock = Clock::new(120.0);
+        // 3音 [c, e, g] の updown は c, e, g, e の 4 ステップ（c と g は端点なので二度鳴らさない）
+        let clip = make_pitched_clip(
+            "test",
+            None,
+            vec![PitchedLine {
+                instrument: "bass".to_string(),
+                elements: vec![PitchedElement::ChordBracket {
+                    notes: vec![
+                        (NoteName::C, Some(4)),
+                        (NoteName::E, None),
+                        (NoteName::G, None),
+                    ],
+                    duration: Some(1),
+                    dotted: false,
+                    articulation: Articulation::Normal,
+                    arpeggio: Some(Arpeggio {
+                        direction: ArpeggioDirection::UpDown,
+                        resolution: Some(16),
+                    }),
+                }],
+            }],
+        );
+
+        let compiled = compile_clip(&clip, &clock, &registry).unwrap();
+        let notes: Vec<u8> = compiled
+            .events
+            .iter()
+            .filter_map(|e| match e.message {
+                MidiMessage::NoteOn { note, .. } => Some(note),
+                _ => None,
+            })
+            .collect();
+        // C4=60, E4=64, G4=67, E4=64
+        assert_eq!(notes, vec![60, 64, 67, 64]);
+    }
+
+    /// resolution 省略時は和音 duration を1音あたりの長さとして採用する。
+    /// When resolution is omitted, the chord duration is used as the per-step length.
+    #[test]
+    fn chord_bracket_arpeggio_falls_back_to_duration() {
+        use crate::parser::clip_arpeggio::{Arpeggio, ArpeggioDirection};
+        let registry = make_registry_with_bass();
+        let clock = Clock::new(120.0);
+        // [c:4 e:4 g:4]:8 arp(up) → 各音=8分音符=240ticks
+        let clip = make_pitched_clip(
+            "test",
+            None,
+            vec![PitchedLine {
+                instrument: "bass".to_string(),
+                elements: vec![PitchedElement::ChordBracket {
+                    notes: vec![
+                        (NoteName::C, Some(4)),
+                        (NoteName::E, None),
+                        (NoteName::G, None),
+                    ],
+                    duration: Some(8),
+                    dotted: false,
+                    articulation: Articulation::Normal,
+                    arpeggio: Some(Arpeggio {
+                        direction: ArpeggioDirection::Up,
+                        resolution: None,
+                    }),
+                }],
+            }],
+        );
+
+        let compiled = compile_clip(&clip, &clock, &registry).unwrap();
+        let note_ons: Vec<_> = compiled
+            .events
+            .iter()
+            .filter(|e| matches!(e.message, MidiMessage::NoteOn { .. }))
+            .collect();
+        let ticks: Vec<u64> = note_ons.iter().map(|e| e.tick).collect();
+        assert_eq!(ticks, vec![0, 240, 480]);
+    }
+
+    /// resolution / duration が共に明示指定無しでも carry-over された duration を採用。
+    /// (LSP では明示記述レベルで両方無しを警告として扱うが、コンパイラは carry-over を尊重する)
+    /// When both resolution and duration are unspecified, the compiler still
+    /// compiles using the carry-over duration. (LSP separately warns when the
+    /// source omits both — handled at the diagnostics layer.)
+    #[test]
+    fn chord_bracket_arpeggio_uses_carry_over_when_unspecified() {
+        use crate::parser::clip_arpeggio::{Arpeggio, ArpeggioDirection};
+        let registry = make_registry_with_bass();
+        let clock = Clock::new(120.0);
+        // 前のノートで duration=8 を確定させ、その後 ChordBracket は両方未指定 → 8 を引き継ぐ
+        let clip = make_pitched_clip(
+            "test",
+            None,
+            vec![PitchedLine {
+                instrument: "bass".to_string(),
+                elements: vec![
+                    single_note(NoteName::C, Some(3), Some(8), false),
+                    PitchedElement::ChordBracket {
+                        notes: vec![(NoteName::C, Some(4)), (NoteName::E, None)],
+                        duration: None,
+                        dotted: false,
+                        articulation: Articulation::Normal,
+                        arpeggio: Some(Arpeggio {
+                            direction: ArpeggioDirection::Up,
+                            resolution: None,
+                        }),
+                    },
+                ],
+            }],
+        );
+
+        let compiled = compile_clip(&clip, &clock, &registry).unwrap();
+        let note_ons: Vec<_> = compiled
+            .events
+            .iter()
+            .filter(|e| matches!(e.message, MidiMessage::NoteOn { .. }))
+            .collect();
+        // 1つ目: 単音 C3@tick0 (8分音符=240ticks)
+        // 2つ目以降: アルペジオ C4@240, E4@480 (各8分音符=240ticks)
+        assert_eq!(note_ons.len(), 3);
+        let ticks: Vec<u64> = note_ons.iter().map(|e| e.tick).collect();
+        assert_eq!(ticks, vec![0, 240, 480]);
+    }
+
+    /// `arp(random, ...)` は各ステップに全候補を重ねて emit し、
+    /// random_choice_groups を構成音数分作成する。
+    /// `arp(random, ...)` lays all candidates per step and emits one
+    /// random_choice_group per step.
+    #[test]
+    fn chord_bracket_arpeggio_random_emits_choice_groups() {
+        use crate::parser::clip_arpeggio::{Arpeggio, ArpeggioDirection};
+        let registry = make_registry_with_bass();
+        let clock = Clock::new(120.0);
+        // 3音 [c, e, g]:1 arp(random, 8) → 各ステップ=8分音符=240ticks
+        // ステップ数=3、各ステップに3候補 (NoteOn+NoteOff = 6 events) を重ねる
+        let clip = make_pitched_clip(
+            "test",
+            None,
+            vec![PitchedLine {
+                instrument: "bass".to_string(),
+                elements: vec![PitchedElement::ChordBracket {
+                    notes: vec![
+                        (NoteName::C, Some(4)),
+                        (NoteName::E, None),
+                        (NoteName::G, None),
+                    ],
+                    duration: Some(1),
+                    dotted: false,
+                    articulation: Articulation::Normal,
+                    arpeggio: Some(Arpeggio {
+                        direction: ArpeggioDirection::Random,
+                        resolution: Some(8),
+                    }),
+                }],
+            }],
+        );
+
+        let compiled = compile_clip(&clip, &clock, &registry).unwrap();
+        // 構成音 3 × ステップ数 3 = 9 NoteOn (ただし候補として並ぶ)
+        let note_ons: Vec<_> = compiled
+            .events
+            .iter()
+            .filter(|e| matches!(e.message, MidiMessage::NoteOn { .. }))
+            .collect();
+        assert_eq!(note_ons.len(), 9);
+        // 3 ステップそれぞれで group が 1 つ、各 group は 3 候補
+        assert_eq!(compiled.random_choice_groups.len(), 3);
+        for g in &compiled.random_choice_groups {
+            assert_eq!(g.candidates.len(), 3);
+            // 各候補は NoteOn/NoteOff の 2 件
+            for c in &g.candidates {
+                assert_eq!(c.len(), 2);
+            }
+        }
     }
 
     // --- 最小Gate Off 5ms テスト ---

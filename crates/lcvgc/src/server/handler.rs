@@ -183,6 +183,11 @@ pub async fn handle_request(evaluator: &Arc<Mutex<Evaluator>>, request: Request)
                 analyzer.blocks(),
                 &device_connection_errors,
             ));
+            // arp の音価未指定 (`[..]:D` も `arp(_, N)` も無し) を Error 診断として加える
+            // Surface arpeggio specifications missing both per-step duration sources.
+            diags.extend(DiagnosticProvider::arpeggio_missing_duration_diagnostics(
+                analyzer.blocks(),
+            ));
             // include_diagnostics()は呼ばない（Lua側で実施）
             // Do not call include_diagnostics() (handled on Lua side)
             let items: Vec<LspDiagnosticItem> = diags
