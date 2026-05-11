@@ -4,18 +4,24 @@ name: CI
 #
 # - lint:      rustfmt + clippy
 # - build-and-test: 3 OS で release build + test を行い、archive を artifact に上げる
-# - release:   build-and-test 完了後に push (= main 含む全 branch) なら走り、
-#              CI artifact を集めて固定タグ `latest` の GitHub Release を上書きする
-#
-# 1 人開発 + 「最新だけあれば良い」前提のため、release は version 別ではなく
-# `latest` 1 個固定で運用する。各 push のたびに asset が上書きされる。
-# version 別履歴が欲しくなったら `softprops/action-gh-release` を別タグでも
-# 呼び出す形に拡張する。
+# - release:   build-and-test 完了後に push なら走る。
+#              (a) 固定タグ `latest` の Release を **作り直す**
+#                  (delete → create) ことで created_at をビルド時刻に
+#                  追従させる。`released this N days ago` が古いまま
+#                  だった問題への対処。cargo-binstall は asset URL
+#                  (= tag 名 + ファイル名) を見るため、Release ID
+#                  変動の影響を受けない。
+#              (b) ビルドごとに `nightly-<short_sha>` Release を
+#                  別途発行。同 artifact を再利用するためコンパイル
+#                  時間は増えない (アップロード時間のみ追加)。
+#              (c) `nightly-*` Release は直近 `${NIGHTLY_KEEP}` 件
+#                  残して、それ以外は tag ごと削除して掃除する。
 #
 # Single workflow combining CI and Release. After tests pass, the release
-# job overwrites the fixed `latest` tag's GitHub Release with the freshly
-# built archives. Suited for a one-person dev loop where only the most
-# recent build matters.
+# job recreates the `latest` release on every push (so its "released at"
+# timestamp tracks the build time) and additionally publishes a
+# `nightly-<short_sha>` release per build, pruning all but the most
+# recent `${NIGHTLY_KEEP}` nightly releases.
 
 on:
   push:
@@ -27,6 +33,10 @@ permissions:
 
 env:
   CARGO_TERM_COLOR: always
+  # `nightly-*` Release を直近何件残すか。env で外出ししているので、
+  # 増やしたいときはこの値を書き換えるだけで prune ステップに反映される。
+  # Number of most recent `nightly-*` releases to keep when pruning.
+  NIGHTLY_KEEP: "3"
 
 jobs:
   lint:
@@ -122,10 +132,12 @@ jobs:
 
   # ------------------------------------------------------------------------
   # 全 build-and-test (3 OS) が pass した上で push (PR ではない) の時だけ走る。
-  # 固定タグ `latest` の GitHub Release を毎回上書きアップロードする。
+  # 固定タグ `latest` の Release を毎回再作成 + `nightly-<sha>` Release を
+  # 追加発行 + 古い `nightly-*` を直近 NIGHTLY_KEEP 件残して prune する。
   #
-  # Runs only on push events after all build-and-test jobs pass. Overwrites
-  # the fixed `latest` Release with the freshly built archives.
+  # Runs only on push events after all build-and-test jobs pass. Recreates
+  # the `latest` release, publishes a per-build `nightly-<short_sha>`
+  # release, and prunes older nightly releases beyond NIGHTLY_KEEP.
   # ------------------------------------------------------------------------
   release:
     needs: build-and-test
@@ -155,25 +167,66 @@ jobs:
           find artifacts -type f \( -name '*.zip' -o -name '*.tar.gz' \) -exec cp {} release_assets/ \;
           ls -la release_assets/
 
-      # 同名タグの release があれば asset を入れ替える。softprops/action-gh-release
-      # は同名 asset があれば置換する挙動なので、過去の asset が残らない。
-      # tag は `latest` 固定。release name にも commit SHA を含めて識別性を確保する。
+      # `latest` Release を毎回 **delete → create** で作り直す。
+      # action-gh-release の上書きは created_at を更新しないため、
+      # UI 上の "released this N days ago" がビルド時刻と乖離する問題が
+      # あった。gh CLI で消してから作り直すことで created_at もタグ
+      # オブジェクトの日付も毎回 fresh になる。
+      # cargo-binstall は asset URL (タグ名 + ファイル名) を参照するため、
+      # Release ID 変動の影響は受けない。
       #
-      # Overwrites the `latest` tag's release. The action replaces same-named
-      # assets, so old binaries are not retained.
-      - name: Upload to `latest` Release (overwrite)
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: latest
-          name: latest (build ${{ github.sha }})
-          body: |
-            最新 main / branch の自動 release ビルド。
+      # Recreate the `latest` release every push so its created_at tracks
+      # the build time. Asset URLs (consumed by cargo-binstall) stay stable.
+      - name: Recreate `latest` Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          gh release delete latest --yes --cleanup-tag || true
+          notes=$(printf '最新 main / branch の自動 release ビルド。\n\n- commit: %s\n- branch: %s\n- workflow run: %s\n' \
+            "${{ github.sha }}" "${{ github.ref_name }}" "${{ github.run_id }}")
+          gh release create latest release_assets/* \
+            --title "latest (build ${{ github.sha }})" \
+            --notes "$notes" \
+            --latest
 
-            - commit: ${{ github.sha }}
-            - branch: ${{ github.ref_name }}
-            - workflow run: ${{ github.run_id }}
-          files: release_assets/*
-          fail_on_unmatched_files: true
-          # 同名 release を上書き
-          # Overwrite the same-tagged release in place.
-          make_latest: true
+      # ビルドごとの履歴 release `nightly-<short_sha>` を発行する。
+      # 同 artifact をそのまま転用するためコンパイルは追加で走らない。
+      # 同 sha のリビルド時は既存 release を差し替える。
+      #
+      # Publish a per-build `nightly-<short_sha>` release reusing the same
+      # artifacts (no extra compilation). Replaces an existing release for
+      # the same SHA if rebuilt.
+      - name: Publish `nightly-<sha>` Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          short_sha="$(printf '%s' '${{ github.sha }}' | cut -c1-7)"
+          tag="nightly-${short_sha}"
+          date_utc="$(date -u +%Y-%m-%d)"
+          notes=$(printf 'ビルドごとの履歴 release。\n\n- commit: %s\n- branch: %s\n- workflow run: %s\n' \
+            "${{ github.sha }}" "${{ github.ref_name }}" "${{ github.run_id }}")
+          gh release delete "$tag" --yes --cleanup-tag || true
+          gh release create "$tag" release_assets/* \
+            --title "nightly ${short_sha} (${date_utc})" \
+            --notes "$notes"
+
+      # 直近 NIGHTLY_KEEP 件の `nightly-*` だけ残し、それ以外は release と
+      # tag を削除する。`gh release list` は publish 順 (新しい順) を返すが、
+      # 念のため createdAt で並べ直してから先頭 NIGHTLY_KEEP 件をスキップする。
+      #
+      # Keep only the most recent NIGHTLY_KEEP `nightly-*` releases.
+      - name: Prune old `nightly-*` releases
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          NIGHTLY_KEEP: ${{ env.NIGHTLY_KEEP }}
+        run: |
+          set -euo pipefail
+          gh release list --limit 100 --json tagName,createdAt \
+            --jq "map(select(.tagName | startswith(\"nightly-\"))) | sort_by(.createdAt) | reverse | .[${NIGHTLY_KEEP}:] | .[].tagName" \
+            | while read -r old_tag; do
+                [ -z "$old_tag" ] && continue
+                echo "Pruning $old_tag"
+                gh release delete "$old_tag" --yes --cleanup-tag
+              done
