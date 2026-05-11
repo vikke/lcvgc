@@ -29,16 +29,34 @@ pub enum CompletionContext {
     KitBody,
     /// kit 内 "device " の後: デバイス名を提案
     KitAfterDevice,
-    /// clip ブロック内の行頭（pitched）: 楽器名 + スケール構成音・ダイアトニックコード
-    /// を提案する。
+    /// clip ブロック内の **行頭** (pitched): 楽器名のみを提案する。
     ///
-    /// `scale` は clip-local `[scale ROOT TYPE]` を最優先で解決し、
-    /// 無ければ呼び出し側で `Registry::scale()`（トップレベル `scale`）に
-    /// フォールバックさせる。
-    /// - scale が解決できているとき: 取り得る音名（スケール構成音 7 音）と
-    ///   ダイアトニックコード 7 つだけを返し、半音階 17 音は出さない。
-    /// - `None`（clip-local も top-level も無い）のとき: 半音階 17 音を提示する。
-    PitchedClipBody {
+    /// pitched clip の各行は `INSTRUMENT_NAME <element>*` という構造で、
+    /// 行頭は instrument 名を書く位置である。音名やコード名は instrument 名の
+    /// **あと** にしか書けないため、行頭では出さない。
+    ///
+    /// At the start of a pitched-clip line, only instrument names are valid.
+    /// Note names and chord names appear strictly after the instrument token.
+    PitchedClipLineStart {
+        /// clip ローカルの `[scale ...]` で確定した (ルート音, スケール種)。
+        /// 行頭では使わないが、後続の `PitchedClipAfterInstrument` 判定と
+        /// 構造を揃えるため保持する。
+        scale: Option<(NoteName, ScaleType)>,
+    },
+    /// clip ブロック内の **instrument 名直後** (pitched): 音名・コード名を提案する。
+    ///
+    /// 行頭の instrument 名 (`chord`, `lead`, `bass` 等) を書き終え、空白を
+    /// 1 個以上越えた位置。`scale` の解決状態に応じて以下を返す:
+    /// - scale が解決できているとき: スケール構成音 7 音 + ダイアトニックコード 7 つ。
+    ///   半音階 17 音フォールバックは出さない。
+    /// - `None` のとき: 半音階 17 音を提示する。
+    ///
+    /// **instrument 名は含めない** (本位置では文法的に書けない)。
+    ///
+    /// Right after an instrument token on a pitched clip line. Instrument
+    /// names are excluded here because they cannot legally appear in this
+    /// position.
+    PitchedClipAfterInstrument {
         /// clip ローカルの `[scale ...]` で確定した (ルート音, スケール種)
         scale: Option<(NoteName, ScaleType)>,
     },
@@ -464,7 +482,7 @@ fn determine_clip_context(
             return CompletionContext::DrumClipBody;
         }
         let scale = extract_clip_local_scale(source, brace_pos);
-        return CompletionContext::PitchedClipBody { scale };
+        return CompletionContext::PitchedClipLineStart { scale };
     }
     if trimmed.starts_with("use ") {
         return CompletionContext::ClipAfterUse;
@@ -475,8 +493,24 @@ fn determine_clip_context(
     if clip_has_use(source, brace_pos, cursor_offset) {
         CompletionContext::DrumClipBody
     } else {
+        // pitched clip 行内: instrument 名を書き終えたか (= カーソルまでに
+        // 「最初の非空白トークンの直後の空白」が存在するか) で位置を区別する。
+        // 行頭から最初の非空白文字列を取り、その先に空白が現れたら
+        // 「instrument 名直後」 (= 音名/コード期待) とみなす。
+        //
+        // Inside a pitched-clip line: differentiate "line start" vs "after the
+        // instrument token" by checking whether the first non-whitespace token
+        // is already followed by whitespace at the cursor position.
         let scale = extract_clip_local_scale(source, brace_pos);
-        CompletionContext::PitchedClipBody { scale }
+        let line_text = full_line.trim_start();
+        let after_instrument = line_text
+            .find(char::is_whitespace)
+            .is_some_and(|i| i < line_text.len());
+        if after_instrument {
+            CompletionContext::PitchedClipAfterInstrument { scale }
+        } else {
+            CompletionContext::PitchedClipLineStart { scale }
+        }
     }
 }
 
@@ -591,31 +625,30 @@ pub fn build_completion_items(ctx: &CompletionContext, registry: &Registry) -> V
             CompletionProvider::identifier_completions(&registry.device_names(), "device")
         }
 
-        CompletionContext::PitchedClipBody { scale } => {
-            // 1) instrument 名（先頭）
-            let mut items = CompletionProvider::identifier_completions(
-                &registry.instrument_names(),
-                "instrument",
-            );
+        CompletionContext::PitchedClipLineStart { .. } => {
+            // 行頭は instrument 名だけが書ける位置。音名/コードは出さない。
+            // Only instrument names are valid here; note names and chord names
+            // cannot appear at the start of a pitched-clip line.
+            CompletionProvider::identifier_completions(&registry.instrument_names(), "instrument")
+        }
 
-            // 2) スケール解決: clip-local > registry (top-level)
-            //    - clip-local `[scale ...]` が最優先
-            //    - 無ければトップレベル `scale` にフォールバック
-            //    - 両方無ければ None（半音階17音だけ出す）
+        CompletionContext::PitchedClipAfterInstrument { scale } => {
+            // instrument 名を書き終えた位置: 音名/コードのみを提示する。
+            // instrument 名は本位置では文法的に書けないため候補に含めない。
+            //
+            // Scale resolution: clip-local `[scale ...]` > registry top-level
+            // `scale` > unresolved. When resolved, return in-scale notes (7) +
+            // diatonic chords (7); otherwise fall back to chromatic 17 notes.
             let resolved_scale: Option<(NoteName, ScaleType)> =
                 scale.or_else(|| registry.scale().map(|s| (s.root, s.scale_type)));
 
+            let mut items = Vec::new();
             if let Some((root, scale_type)) = resolved_scale {
-                // 2a) スケール構成音 7 音 (sortText "0_..." で先頭優先)
                 items.extend(CompletionProvider::scale_note_completions(root, scale_type));
-                // 2b) ダイアトニックコード
                 items.extend(CompletionProvider::diatonic_completions(root, scale_type));
             } else {
-                // 3) scale 未解決時のみ半音階 17 音を提示
-                //    scale が解決できているときは取り得る音名・コード名のみに絞る
                 items.extend(CompletionProvider::note_completions());
             }
-
             items
         }
 
@@ -1016,23 +1049,24 @@ mod tests {
         );
     }
 
+    /// 行頭 (instrument 名期待位置) では PitchedClipLineStart を返す。
+    /// bars だけの clip は scale 未確定 → None。
     #[test]
-    fn ctx_pitched_clip_body() {
-        // bars だけの clip は scale 未確定 → None
+    fn ctx_pitched_clip_line_start() {
         let src = "clip bass_a [bars 1] {\n  ";
         assert_eq!(
             determine_completion_context(src, src.len()),
-            CompletionContext::PitchedClipBody { scale: None }
+            CompletionContext::PitchedClipLineStart { scale: None }
         );
     }
 
-    /// clip-local `[scale c major]` が `PitchedClipBody` に伝搬する
+    /// clip-local `[scale c major]` が PitchedClipLineStart に伝搬する
     #[test]
-    fn ctx_pitched_clip_body_with_clip_local_scale_c_major() {
+    fn ctx_pitched_clip_line_start_with_clip_local_scale_c_major() {
         let src = "clip x [scale c major] {\n  ";
         assert_eq!(
             determine_completion_context(src, src.len()),
-            CompletionContext::PitchedClipBody {
+            CompletionContext::PitchedClipLineStart {
                 scale: Some((NoteName::C, ScaleType::Major))
             }
         );
@@ -1040,11 +1074,11 @@ mod tests {
 
     /// clip-local `[bars N] [scale d minor]` 順でも scale が拾える (後勝ち)
     #[test]
-    fn ctx_pitched_clip_body_with_bars_then_scale_d_minor() {
+    fn ctx_pitched_clip_line_start_with_bars_then_scale_d_minor() {
         let src = "clip x [bars 8] [scale d minor] {\n  ";
         assert_eq!(
             determine_completion_context(src, src.len()),
-            CompletionContext::PitchedClipBody {
+            CompletionContext::PitchedClipLineStart {
                 scale: Some((NoteName::D, ScaleType::Minor))
             }
         );
@@ -1052,12 +1086,52 @@ mod tests {
 
     /// 同じ clip ヘッダに複数 `[scale ...]` がある場合は後勝ち
     #[test]
-    fn ctx_pitched_clip_body_last_scale_wins() {
+    fn ctx_pitched_clip_line_start_last_scale_wins() {
         let src = "clip x [scale c major] [scale a minor] {\n  ";
         assert_eq!(
             determine_completion_context(src, src.len()),
-            CompletionContext::PitchedClipBody {
+            CompletionContext::PitchedClipLineStart {
                 scale: Some((NoteName::A, ScaleType::Minor))
+            }
+        );
+    }
+
+    /// `chord ` のように instrument 名 + 空白が書かれた状態は
+    /// PitchedClipAfterInstrument (音名/コードを期待) を返す。
+    /// instrument 名が混ざるのは行頭のみで、ここでは出さない。
+    #[test]
+    fn ctx_pitched_clip_after_instrument_when_instrument_then_space() {
+        let src = "clip x [scale d minor] {\n  chord ";
+        assert_eq!(
+            determine_completion_context(src, src.len()),
+            CompletionContext::PitchedClipAfterInstrument {
+                scale: Some((NoteName::D, ScaleType::Minor))
+            }
+        );
+    }
+
+    /// 音名を 1 つ書いた後 (`chord dm:4:1 `) も PitchedClipAfterInstrument のまま。
+    /// 同じ instrument 名上で複数音/複数コードが続く文法に対応する。
+    #[test]
+    fn ctx_pitched_clip_after_instrument_continues_for_subsequent_tokens() {
+        let src = "clip x [scale d minor] {\n  chord dm:4:1 ";
+        assert_eq!(
+            determine_completion_context(src, src.len()),
+            CompletionContext::PitchedClipAfterInstrument {
+                scale: Some((NoteName::D, ScaleType::Minor))
+            }
+        );
+    }
+
+    /// instrument 名を書き途中 (`cho`) は行頭扱いのまま (まだ空白を越えていない)。
+    /// この段階では instrument 名候補の絞り込みを期待する。
+    #[test]
+    fn ctx_pitched_clip_line_start_while_typing_instrument_name() {
+        let src = "clip x [scale d minor] {\n  cho";
+        assert_eq!(
+            determine_completion_context(src, src.len()),
+            CompletionContext::PitchedClipLineStart {
+                scale: Some((NoteName::D, ScaleType::Minor))
             }
         );
     }
@@ -1341,11 +1415,103 @@ mod tests {
         assert!(labels.contains(&"32"));
     }
 
-    /// PitchedClipBody (clip-local scale) の補完候補はスケール構成音 7 音と
-    /// ダイアトニックコード 7 つだけで構成され、半音階フォールバックは含まれない
+    /// 行頭 (PitchedClipLineStart) の候補は **registry に登録された
+    /// instrument 名のみ**。音名・コード名・半音階フォールバックは含まない。
+    /// At the line start, completions are exclusively instrument identifiers.
     #[test]
-    fn build_pitched_clip_body_with_clip_local_scale_includes_scale_notes_and_diatonic() {
-        let ctx = CompletionContext::PitchedClipBody {
+    fn build_pitched_clip_line_start_returns_only_instrument_names() {
+        use crate::ast::device::DeviceDef;
+        use crate::ast::instrument::InstrumentDef;
+        use crate::ast::Block;
+        use crate::midi::channel::MidiChannel;
+
+        let ctx = CompletionContext::PitchedClipLineStart {
+            scale: Some((NoteName::D, ScaleType::Minor)),
+        };
+        let mut registry = Registry::new();
+        registry.register_block(Block::Device(DeviceDef {
+            name: "dev".to_string(),
+            port: "p".to_string(),
+            transport: true,
+        }));
+        for name in ["chord", "lead", "bass"] {
+            registry.register_block(Block::Instrument(InstrumentDef {
+                name: name.to_string(),
+                device: "dev".to_string(),
+                channel: MidiChannel::from_one_based(1).unwrap(),
+                note: None,
+                gate_normal: None,
+                gate_staccato: None,
+                cc_mappings: vec![],
+                local_vars: vec![],
+                unresolved: Default::default(),
+            }));
+        }
+        let items = build_completion_items(&ctx, &registry);
+
+        // すべて instrument 識別子で構成される
+        let labels: std::collections::HashSet<&str> =
+            items.iter().map(|i| i.label.as_str()).collect();
+        assert!(labels.contains("chord"));
+        assert!(labels.contains("lead"));
+        assert!(labels.contains("bass"));
+        // 音名/コード名/半音階フォールバックは出ない
+        assert!(items.iter().all(|i| i.kind != CompletionKind::NoteName));
+        assert!(items.iter().all(|i| i.kind != CompletionKind::ChordName));
+    }
+
+    /// `chord ` の続き (PitchedClipAfterInstrument) では
+    /// **instrument 名は候補に含めない**。これが本修正の本丸。
+    /// After the instrument token, instrument names must not be suggested.
+    #[test]
+    fn build_pitched_clip_after_instrument_excludes_instrument_names() {
+        use crate::ast::device::DeviceDef;
+        use crate::ast::instrument::InstrumentDef;
+        use crate::ast::Block;
+        use crate::midi::channel::MidiChannel;
+
+        let ctx = CompletionContext::PitchedClipAfterInstrument {
+            scale: Some((NoteName::D, ScaleType::Minor)),
+        };
+        let mut registry = Registry::new();
+        registry.register_block(Block::Device(DeviceDef {
+            name: "dev".to_string(),
+            port: "p".to_string(),
+            transport: true,
+        }));
+        for name in ["chord", "lead", "bass"] {
+            registry.register_block(Block::Instrument(InstrumentDef {
+                name: name.to_string(),
+                device: "dev".to_string(),
+                channel: MidiChannel::from_one_based(1).unwrap(),
+                note: None,
+                gate_normal: None,
+                gate_staccato: None,
+                cc_mappings: vec![],
+                local_vars: vec![],
+                unresolved: Default::default(),
+            }));
+        }
+        let items = build_completion_items(&ctx, &registry);
+        let labels: std::collections::HashSet<&str> =
+            items.iter().map(|i| i.label.as_str()).collect();
+        for name in ["chord", "lead", "bass"] {
+            assert!(
+                !labels.contains(name),
+                "instrument name `{name}` must not appear after the instrument token"
+            );
+        }
+        // 代わりに音名/コードは出る
+        assert!(items.iter().any(|i| i.kind == CompletionKind::NoteName));
+        assert!(items.iter().any(|i| i.kind == CompletionKind::ChordName));
+    }
+
+    /// instrument 名直後 (clip-local scale) の候補はスケール構成音 7 音と
+    /// ダイアトニックコード 7 つだけで構成され、半音階フォールバックは含まれない。
+    #[test]
+    fn build_pitched_clip_after_instrument_with_clip_local_scale_includes_scale_notes_and_diatonic()
+    {
+        let ctx = CompletionContext::PitchedClipAfterInstrument {
             scale: Some((NoteName::C, ScaleType::Major)),
         };
         let registry = Registry::new();
@@ -1392,14 +1558,14 @@ mod tests {
         );
     }
 
-    /// clip-local scale が無い場合は registry (top-level scale) にフォールバックする
+    /// clip-local scale が無い場合は registry (top-level scale) にフォールバックする。
     /// (top-level scale が解決できているので半音階フォールバックは出ない)
     #[test]
-    fn build_pitched_clip_body_falls_back_to_registry_scale() {
+    fn build_pitched_clip_after_instrument_falls_back_to_registry_scale() {
         use crate::ast::scale::ScaleDef;
         use crate::ast::Block;
 
-        let ctx = CompletionContext::PitchedClipBody { scale: None };
+        let ctx = CompletionContext::PitchedClipAfterInstrument { scale: None };
         let mut registry = Registry::new();
         registry.register_block(Block::Scale(ScaleDef {
             root: NoteName::A,
@@ -1423,10 +1589,10 @@ mod tests {
         assert_eq!(chromatic_count, 0);
     }
 
-    /// scale が両方無い場合は半音階17音のみで sortText も付かない
+    /// scale が両方無い場合は半音階17音のみで sortText も付かない。
     #[test]
-    fn build_pitched_clip_body_without_any_scale_uses_chromatic_only() {
-        let ctx = CompletionContext::PitchedClipBody { scale: None };
+    fn build_pitched_clip_after_instrument_without_any_scale_uses_chromatic_only() {
+        let ctx = CompletionContext::PitchedClipAfterInstrument { scale: None };
         let registry = Registry::new();
         let items = build_completion_items(&ctx, &registry);
 
@@ -1450,13 +1616,13 @@ mod tests {
         }
     }
 
-    /// clip-local scale は registry の top-level scale を上書きする
+    /// clip-local scale は registry の top-level scale を上書きする。
     #[test]
-    fn build_pitched_clip_body_clip_local_scale_overrides_registry() {
+    fn build_pitched_clip_after_instrument_clip_local_scale_overrides_registry() {
         use crate::ast::scale::ScaleDef;
         use crate::ast::Block;
 
-        let ctx = CompletionContext::PitchedClipBody {
+        let ctx = CompletionContext::PitchedClipAfterInstrument {
             scale: Some((NoteName::C, ScaleType::Major)),
         };
         let mut registry = Registry::new();
