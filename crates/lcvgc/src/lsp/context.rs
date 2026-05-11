@@ -29,11 +29,15 @@ pub enum CompletionContext {
     KitBody,
     /// kit 内 "device " の後: デバイス名を提案
     KitAfterDevice,
-    /// clip ブロック内の行頭（pitched）: 楽器名 + スケール構成音 / 半音階を提案
+    /// clip ブロック内の行頭（pitched）: 楽器名 + スケール構成音・ダイアトニックコード
+    /// を提案する。
     ///
     /// `scale` は clip-local `[scale ROOT TYPE]` を最優先で解決し、
     /// 無ければ呼び出し側で `Registry::scale()`（トップレベル `scale`）に
-    /// フォールバックさせる。`None` の場合は半音階17音のみ。
+    /// フォールバックさせる。
+    /// - scale が解決できているとき: 取り得る音名（スケール構成音 7 音）と
+    ///   ダイアトニックコード 7 つだけを返し、半音階 17 音は出さない。
+    /// - `None`（clip-local も top-level も無い）のとき: 半音階 17 音を提示する。
     PitchedClipBody {
         /// clip ローカルの `[scale ...]` で確定した (ルート音, スケール種)
         scale: Option<(NoteName, ScaleType)>,
@@ -606,18 +610,11 @@ pub fn build_completion_items(ctx: &CompletionContext, registry: &Registry) -> V
                 items.extend(CompletionProvider::scale_note_completions(root, scale_type));
                 // 2b) ダイアトニックコード
                 items.extend(CompletionProvider::diatonic_completions(root, scale_type));
+            } else {
+                // 3) scale 未解決時のみ半音階 17 音を提示
+                //    scale が解決できているときは取り得る音名・コード名のみに絞る
+                items.extend(CompletionProvider::note_completions());
             }
-
-            // 3) 半音階 17 音（借用音用フォールバック）
-            //    scale が解決できているときは sortText "9_..." を付けて末尾に並べる
-            //    解決できていないときは従来通り sortText 無しで挿入
-            let mut chromatic = CompletionProvider::note_completions();
-            if resolved_scale.is_some() {
-                for (i, item) in chromatic.iter_mut().enumerate() {
-                    item.sort_text = Some(format!("9_{i:02}"));
-                }
-            }
-            items.extend(chromatic);
 
             items
         }
@@ -1344,8 +1341,8 @@ mod tests {
         assert!(labels.contains(&"32"));
     }
 
-    /// PitchedClipBody (clip-local scale) の補完候補にスケール構成音と
-    /// ダイアトニックコードが含まれ、半音階フォールバックは sortText で末尾に並ぶ
+    /// PitchedClipBody (clip-local scale) の補完候補はスケール構成音 7 音と
+    /// ダイアトニックコード 7 つだけで構成され、半音階フォールバックは含まれない
     #[test]
     fn build_pitched_clip_body_with_clip_local_scale_includes_scale_notes_and_diatonic() {
         let ctx = CompletionContext::PitchedClipBody {
@@ -1374,15 +1371,29 @@ mod tests {
             "diatonic chords expected 7, got {chords:?}"
         );
 
-        // 半音階17音は sortText "9_*" 付きでフォールバック
+        // 半音階フォールバック (sortText "9_*") は出さない
         let chromatic_count = items
             .iter()
             .filter(|i| i.sort_text.as_deref().is_some_and(|s| s.starts_with("9_")))
             .count();
-        assert_eq!(chromatic_count, 17);
+        assert_eq!(
+            chromatic_count, 0,
+            "scale が解決できているときは半音階フォールバックを出さない"
+        );
+
+        // NoteName kind の候補もスケール構成音 7 つだけ
+        let note_kind_count = items
+            .iter()
+            .filter(|i| i.kind == CompletionKind::NoteName)
+            .count();
+        assert_eq!(
+            note_kind_count, 7,
+            "scale 解決時の NoteName 候補は構成音 7 つのみ"
+        );
     }
 
     /// clip-local scale が無い場合は registry (top-level scale) にフォールバックする
+    /// (top-level scale が解決できているので半音階フォールバックは出ない)
     #[test]
     fn build_pitched_clip_body_falls_back_to_registry_scale() {
         use crate::ast::scale::ScaleDef;
@@ -1403,6 +1414,13 @@ mod tests {
             .map(|i| i.label.as_str())
             .collect();
         assert_eq!(scale_notes, vec!["a", "b", "c", "d", "e", "f", "g"]);
+
+        // 半音階フォールバック (sortText "9_*") は出さない
+        let chromatic_count = items
+            .iter()
+            .filter(|i| i.sort_text.as_deref().is_some_and(|s| s.starts_with("9_")))
+            .count();
+        assert_eq!(chromatic_count, 0);
     }
 
     /// scale が両方無い場合は半音階17音のみで sortText も付かない
