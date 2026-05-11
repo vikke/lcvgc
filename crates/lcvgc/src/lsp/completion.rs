@@ -104,21 +104,8 @@ fn semitone_to_label(semitone: u8, prefer_flat: bool) -> &'static str {
     }
 }
 
-/// 補完ラベル生成時にフラット表記を優先するスケール種か判定する
-///
-/// マイナー系・モードのうちフラットが多いものは `eb` `ab` `bb` のような
-/// 表記を返したい。Major / Lydian / Mixolydian は sharp 系として扱う。
-fn scale_prefers_flat(scale_type: ScaleType) -> bool {
-    match scale_type {
-        ScaleType::Major | ScaleType::Lydian | ScaleType::Mixolydian => false,
-        ScaleType::Minor
-        | ScaleType::HarmonicMinor
-        | ScaleType::MelodicMinor
-        | ScaleType::Dorian
-        | ScaleType::Phrygian
-        | ScaleType::Locrian => true,
-    }
-}
+// `scale_prefers_flat` は `diatonic::scale_prefers_flat` に統合済 (pub).
+// scale 構成音補完とダイアトニックコード補完で同じ選好を共有する。
 
 /// scale 構成音補完の `detail` 用にスケールタイプの表記を返す
 fn scale_type_label(scale_type: ScaleType) -> &'static str {
@@ -563,7 +550,7 @@ impl CompletionProvider {
             scale_root_label(root),
             scale_type_label(scale_type)
         );
-        let prefer_flat = scale_prefers_flat(scale_type);
+        let prefer_flat = diatonic::scale_prefers_flat(scale_type);
         intervals
             .iter()
             .enumerate()
@@ -762,6 +749,36 @@ mod tests {
     fn test_diatonic_completions_c_major() {
         let items = CompletionProvider::diatonic_completions(NoteName::C, ScaleType::Major);
         assert_eq!(items.len(), 7);
+    }
+
+    /// ダイアトニックコード補完の label は DSL に直挿し可能な小文字表記。
+    /// d minor は flat 選好で `bb` を含み、大文字や `A#` は決して含まない。
+    /// Diatonic completion labels are lowercase DSL-insertable strings.
+    /// d minor prefers flats (`bb`) and never emits uppercase or `A#`.
+    #[test]
+    fn diatonic_completions_d_minor_labels_are_dsl_insertable() {
+        let items = CompletionProvider::diatonic_completions(NoteName::D, ScaleType::Minor);
+        let labels: Vec<&str> = items.iter().map(|i| i.label.as_str()).collect();
+        assert_eq!(labels, vec!["dm", "edim", "f", "gm", "am", "bb", "c"]);
+        for label in &labels {
+            assert!(
+                label.chars().all(|c| !c.is_ascii_uppercase()),
+                "label `{label}` must be lowercase"
+            );
+            assert_ne!(
+                *label, "A#",
+                "A# must never appear as a chord completion label"
+            );
+        }
+    }
+
+    /// ダイアトニックコード補完の kind は ChordName のまま。
+    #[test]
+    fn diatonic_completions_kind_remains_chord_name() {
+        let items = CompletionProvider::diatonic_completions(NoteName::D, ScaleType::Minor);
+        for item in &items {
+            assert_eq!(item.kind, CompletionKind::ChordName);
+        }
     }
 
     /// scale 構成音補完: c major は c d e f g a b の7件を返す
