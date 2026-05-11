@@ -1,3 +1,5 @@
+use std::collections::HashSet;
+
 use rand::Rng;
 
 use crate::ast::scene::{SceneDef, SceneEntry};
@@ -33,6 +35,7 @@ pub fn resolve_scene<R: Rng>(scene: &SceneDef, rng: &mut R) -> SceneInstance {
             SceneEntry::Clip {
                 candidates,
                 probability,
+                muted: _, // muted は scene activate 時の初期状態用 (毎ループの解決には影響しない)
             } => {
                 if !shuffle::probability_check(*probability, rng) {
                     continue;
@@ -51,6 +54,32 @@ pub fn resolve_scene<R: Rng>(scene: &SceneDef, rng: &mut R) -> SceneInstance {
         clips,
         tempo_change,
     }
+}
+
+/// シーン定義から「activate 時に初期 mute 状態でロードすべき clip 名」の集合を返す（§8.6）。
+/// シャッフル候補に `mute` 前置が付いている場合は、候補リスト内の全 clip 名を muted 集合に含める。
+/// resolve_scene が実際にどの clip を選ぶかとは独立で、scene activate 時に1度だけ参照する。
+///
+/// Return the set of clip names that must be loaded in muted state when the scene
+/// becomes active (§8.6). When a shuffle entry carries the `mute` prefix, every
+/// candidate name in that entry is included so that whichever candidate is picked
+/// is muted from the start. This is independent of the per-loop result of
+/// `resolve_scene` and is consulted only once per scene activation.
+pub fn initial_muted_clips(scene: &SceneDef) -> HashSet<String> {
+    let mut set = HashSet::new();
+    for entry in &scene.entries {
+        if let SceneEntry::Clip {
+            candidates,
+            probability: _,
+            muted: true,
+        } = entry
+        {
+            for cand in candidates {
+                set.insert(cand.clip.clone());
+            }
+        }
+    }
+    set
 }
 
 #[cfg(test)]
@@ -93,6 +122,7 @@ mod tests {
         let s = scene(vec![SceneEntry::Clip {
             candidates: vec![candidate("bass", 1)],
             probability: None,
+            muted: false,
         }]);
         let mut r = rng();
         for _ in 0..100 {
@@ -107,6 +137,7 @@ mod tests {
         let s = scene(vec![SceneEntry::Clip {
             candidates: vec![candidate("bass", 1)],
             probability: Some(0),
+            muted: false,
         }]);
         let mut r = rng();
         for _ in 0..100 {
@@ -121,6 +152,7 @@ mod tests {
         let s = scene(vec![SceneEntry::Clip {
             candidates: vec![candidate("bass", 1)],
             probability: Some(9),
+            muted: false,
         }]);
         let mut r = rng();
         let count = (0..1000)
@@ -135,6 +167,7 @@ mod tests {
         let s = scene(vec![SceneEntry::Clip {
             candidates: vec![candidate("a", 1), candidate("b", 1)],
             probability: None,
+            muted: false,
         }]);
         let mut r = rng();
         let result = resolve_scene(&s, &mut r);
@@ -158,11 +191,13 @@ mod tests {
             SceneEntry::Clip {
                 candidates: vec![candidate("bass", 1)],
                 probability: None,
+                muted: false,
             },
             SceneEntry::Tempo(Tempo::Relative(10)),
             SceneEntry::Clip {
                 candidates: vec![candidate("lead", 1)],
                 probability: None,
+                muted: false,
             },
         ]);
         let result = resolve_scene(&s, &mut rng());
@@ -177,14 +212,17 @@ mod tests {
             SceneEntry::Clip {
                 candidates: vec![candidate("a", 1)],
                 probability: None,
+                muted: false,
             },
             SceneEntry::Clip {
                 candidates: vec![candidate("b", 1)],
                 probability: None,
+                muted: false,
             },
             SceneEntry::Clip {
                 candidates: vec![candidate("c", 1)],
                 probability: None,
+                muted: false,
             },
         ]);
         let result = resolve_scene(&s, &mut rng());
@@ -197,6 +235,7 @@ mod tests {
         let s = scene(vec![SceneEntry::Clip {
             candidates: vec![candidate("heavy", 9), candidate("light", 1)],
             probability: None,
+            muted: false,
         }]);
         let mut r = rng();
         let heavy_count = (0..1000)
@@ -214,6 +253,7 @@ mod tests {
         let s = scene(vec![SceneEntry::Clip {
             candidates: vec![],
             probability: None,
+            muted: false,
         }]);
         let result = resolve_scene(&s, &mut rng());
         assert!(result.clips.is_empty());
@@ -236,5 +276,80 @@ mod tests {
         let s = scene(vec![SceneEntry::Tempo(Tempo::Relative(-10))]);
         let result = resolve_scene(&s, &mut rng());
         assert_eq!(result.tempo_change, Some(Tempo::Relative(-10)));
+    }
+
+    // §8.6: initial_muted_clips のテスト
+    // §8.6: tests for initial_muted_clips
+
+    /// muted: false のみなら空集合
+    /// Empty set when no entry is marked muted.
+    #[test]
+    fn initial_muted_clips_empty_when_no_muted_entries() {
+        let s = scene(vec![
+            SceneEntry::Clip {
+                candidates: vec![candidate("bass", 1)],
+                probability: None,
+                muted: false,
+            },
+            SceneEntry::Clip {
+                candidates: vec![candidate("drums", 1)],
+                probability: Some(7),
+                muted: false,
+            },
+        ]);
+        assert!(initial_muted_clips(&s).is_empty());
+    }
+
+    /// muted: true のエントリの clip 名が集合に含まれる
+    /// Clip names from muted entries are collected.
+    #[test]
+    fn initial_muted_clips_collects_muted_entries() {
+        let s = scene(vec![
+            SceneEntry::Clip {
+                candidates: vec![candidate("bass", 1)],
+                probability: None,
+                muted: false,
+            },
+            SceneEntry::Clip {
+                candidates: vec![candidate("drums", 1)],
+                probability: None,
+                muted: true,
+            },
+        ]);
+        let muted = initial_muted_clips(&s);
+        assert_eq!(muted.len(), 1);
+        assert!(muted.contains("drums"));
+    }
+
+    /// muted: true でシャッフル候補がある場合、全候補が集合に含まれる
+    /// All shuffle candidates are included when the muted prefix is on a shuffle entry.
+    #[test]
+    fn initial_muted_clips_includes_all_shuffle_candidates() {
+        let s = scene(vec![SceneEntry::Clip {
+            candidates: vec![candidate("drums_a", 1), candidate("drums_funk", 1)],
+            probability: None,
+            muted: true,
+        }]);
+        let muted = initial_muted_clips(&s);
+        assert_eq!(muted.len(), 2);
+        assert!(muted.contains("drums_a"));
+        assert!(muted.contains("drums_funk"));
+    }
+
+    /// Tempo エントリは集合に影響しない
+    /// Tempo entries do not affect the muted set.
+    #[test]
+    fn initial_muted_clips_ignores_tempo() {
+        let s = scene(vec![
+            SceneEntry::Tempo(Tempo::Absolute(120)),
+            SceneEntry::Clip {
+                candidates: vec![candidate("bass", 1)],
+                probability: None,
+                muted: true,
+            },
+        ]);
+        let muted = initial_muted_clips(&s);
+        assert_eq!(muted.len(), 1);
+        assert!(muted.contains("bass"));
     }
 }

@@ -1262,6 +1262,37 @@ scene breakdown {
 }
 ```
 
+### 8.6 初期ミュート（mute 前置）
+
+scene 内の clip 行の先頭に `mute` を前置すると、その scene が active 化された時点で**該当 clip を mute された状態でロード**する。tick は他の clip と揃った状態で進み、後から `unmute <clip>` するだけで位相を保ったまま即合流できる。
+
+```
+scene verse {
+  drums_a
+  mute bass_a                // verse では bass_a は最初から mute
+  lead_a
+}
+
+scene chorus {
+  drums_a
+  bass_a                     // chorus では unmute された状態で開始
+  lead_a
+}
+```
+
+- `mute` 前置はシャッフル候補や確率と**併用可能**:
+
+  ```
+  scene breakdown {
+    mute drums_a | drums_poly  // どちらが選ばれても mute された状態でロード
+    mute lead_a 7              // 70%で発火する候補だが、初期状態は mute
+  }
+  ```
+
+- 動的な切替は従来通りトップレベルの `mute <clip>` / `unmute <clip>` で行う（§10.3.2）。
+- `unmute` 前置は**サポートしない**（デフォルトが unmuted のため）。
+- 別 scene へ切り替えると、新しい scene の `mute` 前置宣言で**再初期化**される。前 scene 上で動的に変更された mute 状態は引き継がれない。
+
 ---
 
 ## 9. セッション定義 (session)
@@ -1385,6 +1416,7 @@ unmute drums_a
 - active_scene に存在しない clip 名は **no-op**（`MutedNoop { reason }` / `UnmutedNoop { reason }` を返す）
 - LSP 診断で未定義 clip 名に対して Warning を事前表示する
 - `unmute` は既に mute されていない clip に対してもべき等（単に `Unmuted` を返す）
+- scene 定義側で**初期 mute 状態**を宣言したい場合は §8.6「初期ミュート（mute 前置）」を参照。トップレベル `mute <clip>` は **動的な実行時切替**、scene 内 `mute` 前置は **scene activate 時の初期状態**、と役割が分かれる。
 
 ### 10.4 再生制御の semantics（stop / pause / mute）
 

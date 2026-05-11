@@ -44,6 +44,7 @@ impl DiagnosticProvider {
                         if let SceneEntry::Clip {
                             candidates,
                             probability: _,
+                            muted: _,
                         } = entry
                         {
                             for candidate in candidates {
@@ -374,6 +375,7 @@ mod tests {
                         weight: 1,
                     }],
                     probability: None,
+                    muted: false,
                 })
                 .collect(),
         })

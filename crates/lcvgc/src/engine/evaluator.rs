@@ -16,7 +16,7 @@ use crate::engine::error::EngineError;
 use crate::engine::player::ScenePlayer;
 use crate::engine::registry::Registry;
 use crate::engine::resolver;
-use crate::engine::scene_runner::resolve_scene;
+use crate::engine::scene_runner::{initial_muted_clips, resolve_scene};
 use crate::engine::scope::ScopeChain;
 use crate::engine::state::{NextAction, PlaybackCommand, StateManager};
 
@@ -395,6 +395,17 @@ impl Evaluator {
             // Phase 3 treats all clips in a scene as looping=true
             player.add_clip(clip_name.clone(), compiled, true);
         }
+
+        // §8.6: scene 定義側で `mute` 前置されたエントリの clip を初期 mute 状態でロードする。
+        // 該当 clip がこのループの resolve_scene で選ばれていない場合（確率落ち等）は no-op。
+        //
+        // §8.6: apply initial mute for clips whose scene entry was prefixed with `mute`.
+        // If a muted-marked clip wasn't picked by `resolve_scene` this loop (e.g.
+        // dropped by probability), the call is a no-op.
+        for muted_clip in initial_muted_clips(scene_def) {
+            player.mute_clip(&muted_clip);
+        }
+
         Ok(player)
     }
 
@@ -1473,6 +1484,7 @@ mod tests {
                     weight: 1,
                 }],
                 probability: None,
+                muted: false,
             }],
         }))
         .unwrap();
@@ -1520,6 +1532,7 @@ mod tests {
                     weight: 1,
                 }],
                 probability: None,
+                muted: false,
             }],
         }))
         .unwrap();
@@ -1555,6 +1568,7 @@ mod tests {
                     weight: 1,
                 }],
                 probability: None,
+                muted: false,
             }],
         }))
         .unwrap();
@@ -1602,6 +1616,7 @@ mod tests {
                         weight: 1,
                     }],
                     probability: None,
+                    muted: false,
                 }],
             }))
             .unwrap();
@@ -1676,6 +1691,7 @@ mod tests {
                     weight: 1,
                 }],
                 probability: None,
+                muted: false,
             }],
         }))
         .unwrap();
@@ -1712,6 +1728,7 @@ mod tests {
                     weight: 1,
                 }],
                 probability: None,
+                muted: false,
             }],
         }))
         .unwrap();
@@ -2096,6 +2113,7 @@ mod tests {
                     weight: 1,
                 }],
                 probability: None,
+                muted: false,
             }],
         }))
         .unwrap();
@@ -3210,5 +3228,115 @@ instrument bass {
         // 存在しない device を clear しても panic せず空のまま
         ev.clear_device_connection_error("ghost");
         assert!(ev.device_connection_errors().is_empty());
+    }
+
+    // §8.6: scene 内 `mute` 前置による初期 mute の E2E テスト
+    // §8.6: end-to-end tests for the scene-internal `mute` prefix (initial mute)
+
+    /// scene 内で `mute bass` と前置すると、scene activate 時に該当 clip が mute された状態でロードされる。
+    /// Prefixing a clip line with `mute` inside the scene block loads it muted on activation.
+    #[test]
+    fn scene_internal_mute_prefix_initially_mutes_clip_on_activate() {
+        let mut ev = Evaluator::new(120.0);
+        let src = "device dev { port test }\n\
+                   instrument inst_a {\n  device dev\n  channel 2\n}\n\
+                   instrument inst_b {\n  device dev\n  channel 3\n}\n\
+                   clip a [bars 1] {\n  inst_a c\n}\n\
+                   clip b [bars 1] {\n  inst_b c\n}\n\
+                   scene verse {\n  a\n  mute b\n}\n";
+        eval_src(&mut ev, src);
+        ev.eval_block(Block::Play(PlayCommand {
+            target: PlayTarget::Scene("verse".into()),
+            repeat: RepeatSpec::Loop,
+        }))
+        .unwrap();
+
+        let scene = ev.active_scene().unwrap();
+        assert!(!scene.is_muted("a"), "a は非 mute でロードされる");
+        assert!(
+            scene.is_muted("b"),
+            "mute 前置された b は初期 mute でロードされる"
+        );
+        // 初期 mute は AllNotesOff を伴わない（まだ鳴っていないので）
+        // Initial mute does not require AllNotesOff (clip has not started yet).
+        assert!(
+            ev.take_pending_all_notes_off().is_empty(),
+            "scene activate 時の初期 mute は AllNotesOff を積まない"
+        );
+    }
+
+    /// scene 内 `mute` 前置はトップレベル `unmute <clip>` で動的に解除できる。
+    /// The initial mute set by scene-internal `mute` prefix can be released by top-level `unmute <clip>`.
+    #[test]
+    fn scene_internal_mute_prefix_can_be_unmuted_dynamically() {
+        use crate::ast::playback::UnmuteCommand;
+        let mut ev = Evaluator::new(120.0);
+        let src = "device dev { port test }\n\
+                   instrument inst_b {\n  device dev\n  channel 3\n}\n\
+                   clip b [bars 1] {\n  inst_b c\n}\n\
+                   scene verse {\n  mute b\n}\n";
+        eval_src(&mut ev, src);
+        ev.eval_block(Block::Play(PlayCommand {
+            target: PlayTarget::Scene("verse".into()),
+            repeat: RepeatSpec::Loop,
+        }))
+        .unwrap();
+        assert!(ev.active_scene().unwrap().is_muted("b"));
+
+        ev.eval_block(Block::Unmute(UnmuteCommand { target: "b".into() }))
+            .unwrap();
+        assert!(
+            !ev.active_scene().unwrap().is_muted("b"),
+            "unmute で初期 mute を解除できる"
+        );
+    }
+
+    /// scene を切り替えると、新 scene の宣言で mute 状態が再初期化される
+    /// （前 scene 上で動的に変更された mute 状態は引き継がない）。
+    /// Switching scenes re-initializes the mute state per the new scene's declaration;
+    /// dynamic mute changes on the previous scene are not carried over.
+    #[test]
+    fn scene_switch_reinitializes_mute_state_from_declaration() {
+        use crate::ast::playback::MuteCommand;
+        let mut ev = Evaluator::new(120.0);
+        let src = "device dev { port test }\n\
+                   instrument inst_a {\n  device dev\n  channel 2\n}\n\
+                   instrument inst_b {\n  device dev\n  channel 3\n}\n\
+                   clip a [bars 1] {\n  inst_a c\n}\n\
+                   clip b [bars 1] {\n  inst_b c\n}\n\
+                   scene verse {\n  mute a\n  b\n}\n\
+                   scene chorus {\n  a\n  mute b\n}\n";
+        eval_src(&mut ev, src);
+
+        // verse: a が初期 mute / b は非 mute
+        ev.eval_block(Block::Play(PlayCommand {
+            target: PlayTarget::Scene("verse".into()),
+            repeat: RepeatSpec::Loop,
+        }))
+        .unwrap();
+        assert!(ev.active_scene().unwrap().is_muted("a"));
+        assert!(!ev.active_scene().unwrap().is_muted("b"));
+
+        // verse 上で b を動的に mute（この変更は scene 切替で破棄されるべき）
+        ev.eval_block(Block::Mute(MuteCommand { target: "b".into() }))
+            .unwrap();
+        assert!(ev.active_scene().unwrap().is_muted("b"));
+        // 動的 mute で AllNotesOff が積まれている分は捨てる
+        ev.take_pending_all_notes_off();
+
+        // chorus へ切替: 宣言通り a は非 mute / b は初期 mute
+        ev.eval_block(Block::Play(PlayCommand {
+            target: PlayTarget::Scene("chorus".into()),
+            repeat: RepeatSpec::Loop,
+        }))
+        .unwrap();
+        assert!(
+            !ev.active_scene().unwrap().is_muted("a"),
+            "chorus の宣言で a は非 mute に再初期化される"
+        );
+        assert!(
+            ev.active_scene().unwrap().is_muted("b"),
+            "chorus の宣言で b は初期 mute に再初期化される（前 scene の動的 mute は引き継がない）"
+        );
     }
 }

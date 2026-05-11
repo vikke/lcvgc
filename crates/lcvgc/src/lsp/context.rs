@@ -1297,6 +1297,24 @@ mod tests {
         );
     }
 
+    /// §8.6: SceneBody 文脈の補完候補に `mute` キーワードが含まれる
+    /// §8.6: SceneBody completions include the `mute` keyword for scene-internal initial mute
+    #[test]
+    fn build_completion_items_for_scene_body_includes_mute_keyword() {
+        let ctx = CompletionContext::SceneBody;
+        let registry = Registry::new();
+        let items = build_completion_items(&ctx, &registry);
+        let labels: Vec<&str> = items.iter().map(|i| i.label.as_str()).collect();
+        assert!(
+            labels.contains(&"mute"),
+            "SceneBody completions should include `mute` (§8.6). got: {labels:?}"
+        );
+        assert!(
+            labels.contains(&"tempo"),
+            "SceneBody completions should still include `tempo`. got: {labels:?}"
+        );
+    }
+
     /// AfterArpOpen の補完候補は up/down/updown/random の 4 件。
     /// AfterArpOpen returns the four direction completions.
     #[test]
