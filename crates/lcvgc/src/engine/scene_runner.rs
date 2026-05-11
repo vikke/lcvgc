@@ -82,6 +82,29 @@ pub fn initial_muted_clips(scene: &SceneDef) -> HashSet<String> {
     set
 }
 
+/// scene 内の tempo 行だけを抽出する。RNG 副作用は無い。
+///
+/// scene のループ完了境界で「次ループに向けて何 bpm を apply するか」を取り出すために使う。
+/// `resolve_scene` は確率/シャッフルで RNG を消費するため、ループ境界で tempo だけ
+/// 取りたい用途では本関数を使う。tempo 行が複数あった場合は最後の指定が採用される
+/// (`resolve_scene` と同じ挙動)。
+///
+/// Extracts the tempo entry from a scene without any RNG side effects.
+///
+/// Used at scene loop boundaries to decide how to advance the tempo for the
+/// next loop without disturbing the RNG used by `resolve_scene`. When multiple
+/// tempo entries appear in the same scene, the last one wins (matching
+/// `resolve_scene`'s behavior).
+pub fn extract_tempo_change(scene: &SceneDef) -> Option<Tempo> {
+    let mut last = None;
+    for entry in &scene.entries {
+        if let SceneEntry::Tempo(tempo) = entry {
+            last = Some(tempo.clone());
+        }
+    }
+    last
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -351,5 +374,50 @@ mod tests {
         let muted = initial_muted_clips(&s);
         assert_eq!(muted.len(), 1);
         assert!(muted.contains("bass"));
+    }
+
+    // extract_tempo_change: scene 内の tempo 行を RNG 副作用なしで抽出
+    //
+    // ループ完了境界で「次のループに向けて何 bpm 動かすか」を引くために使う。
+    // resolve_scene と違い RNG を消費しないため、毎ループ境界で安全に呼べる。
+
+    /// 絶対値の tempo 行 → Tempo::Absolute
+    #[test]
+    fn extract_tempo_change_absolute() {
+        let s = scene(vec![SceneEntry::Tempo(Tempo::Absolute(120))]);
+        assert_eq!(extract_tempo_change(&s), Some(Tempo::Absolute(120)));
+    }
+
+    /// 相対値の tempo 行 → Tempo::Relative
+    #[test]
+    fn extract_tempo_change_relative() {
+        let s = scene(vec![SceneEntry::Tempo(Tempo::Relative(5))]);
+        assert_eq!(extract_tempo_change(&s), Some(Tempo::Relative(5)));
+    }
+
+    /// tempo 行なしの scene → None
+    #[test]
+    fn extract_tempo_change_none_when_no_tempo_entry() {
+        let s = scene(vec![SceneEntry::Clip {
+            candidates: vec![candidate("bass", 1)],
+            probability: None,
+            muted: false,
+        }]);
+        assert_eq!(extract_tempo_change(&s), None);
+    }
+
+    /// tempo 行が複数 → 最後の指定が採用される (resolve_scene と整合)
+    #[test]
+    fn extract_tempo_change_last_wins() {
+        let s = scene(vec![
+            SceneEntry::Tempo(Tempo::Absolute(120)),
+            SceneEntry::Clip {
+                candidates: vec![candidate("bass", 1)],
+                probability: None,
+                muted: false,
+            },
+            SceneEntry::Tempo(Tempo::Relative(-10)),
+        ]);
+        assert_eq!(extract_tempo_change(&s), Some(Tempo::Relative(-10)));
     }
 }
