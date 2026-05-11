@@ -131,23 +131,29 @@ pub fn expand_repetition(input: &str) -> String {
         let inner = &s[open + 1..close];
         let after = &s[close + 1..];
 
-        // `)*N` 形式を検出（N は1桁以上の数値）
-        // Detect `)*N` form (N is one or more digits)
-        if let Some(stripped) = after.strip_prefix('*') {
-            let digits_len = stripped
+        // `) [ws] * [ws] N` 形式を検出 (空白は任意個数許容、改行も可)
+        // Detect `) [ws] * [ws] N` form, allowing any whitespace (incl. newlines)
+        // around the `*` and the digits.
+        let after_ws1 = after.trim_start();
+        if let Some(after_star) = after_ws1.strip_prefix('*') {
+            let after_ws2 = after_star.trim_start();
+            let digits_len = after_ws2
                 .find(|c: char| !c.is_ascii_digit())
-                .unwrap_or(stripped.len());
+                .unwrap_or(after_ws2.len());
             if digits_len > 0 {
-                let n: usize = stripped[..digits_len].parse().unwrap_or(1);
+                let n: usize = after_ws2[..digits_len].parse().unwrap_or(1);
                 let repeated = inner.repeat(n);
-                let rest = &stripped[digits_len..];
+                let rest = &after_ws2[digits_len..];
                 s = format!("{}{}{}", &s[..open], repeated, rest);
                 continue;
             }
         }
 
-        // `(...)` だが `*N` がない場合、括弧を除去してスキップ
-        // `(...)` without `*N` — remove parentheses and skip
+        // `(...)` だが `*N` がない場合、括弧を除去してスキップ (count=1 相当)。
+        // 括弧の前後にあった空白はそのまま保持する。
+        //
+        // `(...)` without `*N` — strip parens and keep going (equivalent to
+        // count=1). Whitespace surrounding the parens is left untouched.
         s = format!("{}{}{}", &s[..open], inner, after);
     }
     s
@@ -227,6 +233,32 @@ mod tests {
     #[test]
     fn expand_repetition_multiple() {
         assert_eq!(expand_repetition("(x.)*2(X.)*2"), "x.x.X.X.");
+    }
+
+    // --- 空白許容 / グルーピング (PR #79) ---
+
+    /// `)` と `*` の間にスペースがあっても展開される
+    #[test]
+    fn expand_repetition_space_between_close_paren_and_star() {
+        assert_eq!(expand_repetition("(x.) *4"), "x.x.x.x.");
+    }
+
+    /// `*` と数字の間にスペースがあっても展開される
+    #[test]
+    fn expand_repetition_space_between_star_and_number() {
+        assert_eq!(expand_repetition("(x.)* 4"), "x.x.x.x.");
+    }
+
+    /// `*` 前後に改行が混在しても展開される
+    #[test]
+    fn expand_repetition_multiline_around_star() {
+        assert_eq!(expand_repetition("(x.)\n*\n4"), "x.x.x.x.");
+    }
+
+    /// `*N` を省略した `(...)` は中身をそのまま残す (count=1 のグルーピング)
+    #[test]
+    fn expand_repetition_grouping_no_count() {
+        assert_eq!(expand_repetition("(x.x.)"), "x.x.");
     }
 
     // --- expand_pipe tests ---

@@ -697,6 +697,27 @@ clip chords_a [bars 4] {
 
 Octave/duration carry-over within repetitions does not reset to the beginning on each iteration; it carries over the state from the end of the previous iteration.
 
+#### Whitespace and grouping
+
+- Any amount of whitespace (spaces, tabs, **newlines**) is allowed around `(`, `)`, `*`, and the digits of `N`. All of the following are equivalent:
+
+```
+(c d e f)*4
+( c d e f )*4
+(c d e f) * 4
+(c d e f)*  4
+(
+    c d e f
+    g a b c
+) * 8
+```
+
+- When `*N` is **omitted**, `( ... )` acts as a plain grouping bracket: its contents are expanded as-is. Useful when you want to wrap a phrase visually, or to add/remove the `*N` suffix without touching the parentheses.
+
+```
+lead ( c d e f )    // ≡  lead c d e f
+```
+
 ### 7.7 Articulation (Gate Control)
 
 Controls the gate duration (Note On to Note Off period) of notes through articulation.
@@ -1060,6 +1081,8 @@ snare |x||x
 hh    (x.x.)*4              // Repeat x.x. four times
 hh    (x.o.)*3 xxxx         // Change only the last beat
 ```
+
+As in §7.6, any amount of whitespace (spaces, tabs, newlines) is allowed around `(`, `)`, `*`, and the digits. Omitting `*N` turns `( ... )` into a plain grouping that simply expands its contents (`(x.x.)` ≡ `x.x.`).
 
 #### Probability Row
 
