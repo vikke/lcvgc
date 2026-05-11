@@ -16,7 +16,7 @@ use crate::engine::error::EngineError;
 use crate::engine::player::ScenePlayer;
 use crate::engine::registry::Registry;
 use crate::engine::resolver;
-use crate::engine::scene_runner::{initial_muted_clips, resolve_scene};
+use crate::engine::scene_runner::{extract_tempo_change, initial_muted_clips, resolve_scene};
 use crate::engine::scope::ScopeChain;
 use crate::engine::state::{NextAction, PlaybackCommand, StateManager};
 
@@ -154,6 +154,14 @@ pub struct Evaluator {
     /// 現在 play 中の ScenePlayer（Phase 3: PlayScene でコンパイル・構築）
     /// Currently active ScenePlayer (Phase 3: built when PlayScene is evaluated)
     active_scene: Option<ScenePlayer>,
+    /// 現在 active な scene の名前。`active_scene` の代入とペアで更新する。
+    /// scene 内 tempo 行をループ完了境界で apply する際に、どの SceneDef を
+    /// 引けば良いか辿るために使う。session 中も `entries` に応じて切り替わる。
+    ///
+    /// Name of the currently active scene, updated alongside `active_scene`.
+    /// Used to look up the right SceneDef when applying scene-level tempo
+    /// entries at loop boundaries. Also tracks scene changes inside a session.
+    active_scene_name: Option<String>,
     /// Stop/mute 評価時に呼び出し側が送出すべき AllNotesOff の対象
     /// `(device, channel)` 一覧（Phase 5 + Issue #49）
     ///
@@ -207,6 +215,7 @@ impl Evaluator {
             clock: Arc::new(RwLock::new(Clock::new(bpm))),
             scope: ScopeChain::new(),
             active_scene: None,
+            active_scene_name: None,
             pending_all_notes_off: Vec::new(),
             pending_transport: Vec::new(),
             device_event_tx: None,
@@ -338,15 +347,33 @@ impl Evaluator {
     /// - `EngineError::UnknownScene` - 次シーンが registry に未登録
     /// - `EngineError::UnknownClip` - 次シーン内の clip が未登録
     pub fn on_scene_loop_complete(&mut self) -> Result<SceneTransitionOutcome, EngineError> {
+        // §8.4: 今 1 ループを終えた scene の tempo 行を apply する。
+        // scene activate 直後は apply せず、最初のループ完了境界で初めて apply
+        // するセマンティクスのため、ここで state を進める前に処理する。
+        //
+        // §8.4: apply the tempo entry of the scene that just completed one loop.
+        // We deliberately run this before advancing the state so that scene
+        // activation itself does not trigger a tempo apply — the very first
+        // loop boundary is what actually rolls the tempo forward.
+        if let Some(name) = self.active_scene_name.clone() {
+            if let Some(scene_def) = self.registry.get_scene(&name).cloned() {
+                if let Some(tempo) = extract_tempo_change(&scene_def) {
+                    self.clock.write().unwrap().apply_tempo(&tempo);
+                }
+            }
+        }
+
         let action = self.state.scene_loop_complete();
         match action {
             NextAction::ContinueScene => Ok(SceneTransitionOutcome::Continue),
             NextAction::SceneComplete => {
                 self.active_scene = None;
+                self.active_scene_name = None;
                 Ok(SceneTransitionOutcome::SceneComplete)
             }
             NextAction::SessionComplete => {
                 self.active_scene = None;
+                self.active_scene_name = None;
                 Ok(SceneTransitionOutcome::SessionComplete)
             }
             NextAction::NextSessionEntry { scene_name } => {
@@ -357,6 +384,7 @@ impl Evaluator {
                     .clone();
                 let player = self.build_scene_player(&scene_def)?;
                 self.active_scene = Some(player);
+                self.active_scene_name = Some(scene_name.clone());
                 Ok(SceneTransitionOutcome::NextScene { scene_name })
             }
         }
@@ -548,6 +576,7 @@ impl Evaluator {
                             .clone();
                         let player = self.build_scene_player(&scene_def)?;
                         self.active_scene = Some(player);
+                        self.active_scene_name = Some(name.clone());
                         self.state.apply_command(PlaybackCommand::PlayScene {
                             name,
                             repeat: cmd.repeat,
@@ -571,8 +600,10 @@ impl Evaluator {
                                         .clone();
                                     let player = self.build_scene_player(&scene_def)?;
                                     self.active_scene = Some(player);
+                                    self.active_scene_name = Some(first.scene.clone());
                                 } else {
                                     self.active_scene = None;
+                                    self.active_scene_name = None;
                                 }
                                 self.state.apply_play_session(&def, cmd.repeat);
                             }
@@ -616,6 +647,7 @@ impl Evaluator {
                         self.state
                             .apply_command(PlaybackCommand::Stop { target: None });
                         self.active_scene = None;
+                        self.active_scene_name = None;
                     }
                     Some(name) => {
                         let is_current = self
@@ -631,6 +663,7 @@ impl Evaluator {
                                 target: Some(name.clone()),
                             });
                             self.active_scene = None;
+                            self.active_scene_name = None;
                         } else {
                             // scene/session 名に一致しない target は no-op。
                             // Target does not match the current scene/session → no-op.
@@ -1704,6 +1737,277 @@ mod tests {
         let outcome = ev.on_scene_loop_complete().unwrap();
         assert_eq!(outcome, SceneTransitionOutcome::Continue);
         assert!(ev.active_scene().is_some());
+    }
+
+    // --- scene 内 tempo 行のループ境界 apply (issue: tempo +n が効かない) ---
+
+    /// scene 内 `tempo +5` をループ境界で apply → 累積する
+    #[test]
+    fn on_scene_loop_complete_applies_relative_tempo_cumulatively() {
+        let mut ev = Evaluator::new(120.0);
+        ev.eval_block(Block::Clip(ClipDef {
+            name: "a".into(),
+            options: ClipOptions::default(),
+            body: ClipBody::Pitched(PitchedClipBody {
+                lines: vec![],
+                cc_automations: vec![],
+            }),
+        }))
+        .unwrap();
+        ev.eval_block(Block::Scene(SceneDef {
+            name: "buildup".into(),
+            entries: vec![
+                crate::ast::scene::SceneEntry::Clip {
+                    candidates: vec![crate::ast::scene::ShuffleCandidate {
+                        clip: "a".into(),
+                        weight: 1,
+                    }],
+                    probability: None,
+                    muted: false,
+                },
+                crate::ast::scene::SceneEntry::Tempo(Tempo::Relative(5)),
+            ],
+        }))
+        .unwrap();
+        ev.eval_block(Block::Play(PlayCommand {
+            target: PlayTarget::Scene("buildup".into()),
+            repeat: RepeatSpec::Loop,
+        }))
+        .unwrap();
+
+        // activate 直後は 120 のまま (最初のループ完了境界で初めて apply)
+        assert!((ev.bpm() - 120.0).abs() < f64::EPSILON);
+
+        ev.on_scene_loop_complete().unwrap();
+        assert!((ev.bpm() - 125.0).abs() < f64::EPSILON);
+
+        ev.on_scene_loop_complete().unwrap();
+        assert!((ev.bpm() - 130.0).abs() < f64::EPSILON);
+
+        ev.on_scene_loop_complete().unwrap();
+        assert!((ev.bpm() - 135.0).abs() < f64::EPSILON);
+    }
+
+    /// scene 内 `tempo 120` (絶対値) → ループ境界で毎回 120 にセット
+    #[test]
+    fn on_scene_loop_complete_applies_absolute_tempo_each_loop() {
+        let mut ev = Evaluator::new(140.0);
+        ev.eval_block(Block::Clip(ClipDef {
+            name: "a".into(),
+            options: ClipOptions::default(),
+            body: ClipBody::Pitched(PitchedClipBody {
+                lines: vec![],
+                cc_automations: vec![],
+            }),
+        }))
+        .unwrap();
+        ev.eval_block(Block::Scene(SceneDef {
+            name: "drop".into(),
+            entries: vec![
+                crate::ast::scene::SceneEntry::Clip {
+                    candidates: vec![crate::ast::scene::ShuffleCandidate {
+                        clip: "a".into(),
+                        weight: 1,
+                    }],
+                    probability: None,
+                    muted: false,
+                },
+                crate::ast::scene::SceneEntry::Tempo(Tempo::Absolute(120)),
+            ],
+        }))
+        .unwrap();
+        ev.eval_block(Block::Play(PlayCommand {
+            target: PlayTarget::Scene("drop".into()),
+            repeat: RepeatSpec::Loop,
+        }))
+        .unwrap();
+
+        // activate 時は 140 のまま、最初のループ完了境界で 120 にセット
+        assert!((ev.bpm() - 140.0).abs() < f64::EPSILON);
+        ev.on_scene_loop_complete().unwrap();
+        assert!((ev.bpm() - 120.0).abs() < f64::EPSILON);
+        // 2 回目も冪等に 120
+        ev.on_scene_loop_complete().unwrap();
+        assert!((ev.bpm() - 120.0).abs() < f64::EPSILON);
+    }
+
+    /// トップレベル `tempo 140` 動的 eval が起点を変える → 次ループは 140 + relative
+    #[test]
+    fn on_scene_loop_complete_relative_uses_dynamic_tempo_as_base() {
+        let mut ev = Evaluator::new(120.0);
+        ev.eval_block(Block::Clip(ClipDef {
+            name: "a".into(),
+            options: ClipOptions::default(),
+            body: ClipBody::Pitched(PitchedClipBody {
+                lines: vec![],
+                cc_automations: vec![],
+            }),
+        }))
+        .unwrap();
+        ev.eval_block(Block::Scene(SceneDef {
+            name: "buildup".into(),
+            entries: vec![
+                crate::ast::scene::SceneEntry::Clip {
+                    candidates: vec![crate::ast::scene::ShuffleCandidate {
+                        clip: "a".into(),
+                        weight: 1,
+                    }],
+                    probability: None,
+                    muted: false,
+                },
+                crate::ast::scene::SceneEntry::Tempo(Tempo::Relative(5)),
+            ],
+        }))
+        .unwrap();
+        ev.eval_block(Block::Play(PlayCommand {
+            target: PlayTarget::Scene("buildup".into()),
+            repeat: RepeatSpec::Loop,
+        }))
+        .unwrap();
+
+        // 1 ループ完了 → 125
+        ev.on_scene_loop_complete().unwrap();
+        assert!((ev.bpm() - 125.0).abs() < f64::EPSILON);
+
+        // トップレベル tempo 140 で起点を切り替え
+        ev.eval_block(Block::Tempo(Tempo::Absolute(140))).unwrap();
+        assert!((ev.bpm() - 140.0).abs() < f64::EPSILON);
+
+        // 次のループ完了 → 140 + 5 = 145
+        ev.on_scene_loop_complete().unwrap();
+        assert!((ev.bpm() - 145.0).abs() < f64::EPSILON);
+    }
+
+    /// tempo 行を含まない scene → bpm 不変
+    #[test]
+    fn on_scene_loop_complete_no_tempo_entry_keeps_bpm() {
+        let mut ev = Evaluator::new(120.0);
+        ev.eval_block(Block::Clip(ClipDef {
+            name: "a".into(),
+            options: ClipOptions::default(),
+            body: ClipBody::Pitched(PitchedClipBody {
+                lines: vec![],
+                cc_automations: vec![],
+            }),
+        }))
+        .unwrap();
+        ev.eval_block(Block::Scene(SceneDef {
+            name: "verse".into(),
+            entries: vec![crate::ast::scene::SceneEntry::Clip {
+                candidates: vec![crate::ast::scene::ShuffleCandidate {
+                    clip: "a".into(),
+                    weight: 1,
+                }],
+                probability: None,
+                muted: false,
+            }],
+        }))
+        .unwrap();
+        ev.eval_block(Block::Play(PlayCommand {
+            target: PlayTarget::Scene("verse".into()),
+            repeat: RepeatSpec::Loop,
+        }))
+        .unwrap();
+
+        for _ in 0..5 {
+            ev.on_scene_loop_complete().unwrap();
+            assert!((ev.bpm() - 120.0).abs() < f64::EPSILON);
+        }
+    }
+
+    /// session 内 scene 遷移時の tempo 行の作用範囲を検証する。
+    /// ループ完了境界は「今 1 ループ終えた scene」の tempo 行を apply する。
+    /// 次 scene へ遷移する境界もこれは同様。s2 自身は tempo 行を持たないので、
+    /// s2 が active になった後の呼び出しでは bpm は変わらない。
+    #[test]
+    fn on_scene_loop_complete_session_transition_applies_prev_scene_tempo_only() {
+        let mut ev = Evaluator::new(120.0);
+        for name in ["a", "b"] {
+            ev.eval_block(Block::Clip(ClipDef {
+                name: name.into(),
+                options: ClipOptions::default(),
+                body: ClipBody::Pitched(PitchedClipBody {
+                    lines: vec![],
+                    cc_automations: vec![],
+                }),
+            }))
+            .unwrap();
+        }
+        // s1 は tempo +5 を持つ、s2 は tempo 行なし
+        ev.eval_block(Block::Scene(SceneDef {
+            name: "s1".into(),
+            entries: vec![
+                crate::ast::scene::SceneEntry::Clip {
+                    candidates: vec![crate::ast::scene::ShuffleCandidate {
+                        clip: "a".into(),
+                        weight: 1,
+                    }],
+                    probability: None,
+                    muted: false,
+                },
+                crate::ast::scene::SceneEntry::Tempo(Tempo::Relative(5)),
+            ],
+        }))
+        .unwrap();
+        ev.eval_block(Block::Scene(SceneDef {
+            name: "s2".into(),
+            entries: vec![crate::ast::scene::SceneEntry::Clip {
+                candidates: vec![crate::ast::scene::ShuffleCandidate {
+                    clip: "b".into(),
+                    weight: 1,
+                }],
+                probability: None,
+                muted: false,
+            }],
+        }))
+        .unwrap();
+        ev.eval_block(Block::Session(SessionDef {
+            name: "song".into(),
+            entries: vec![
+                crate::ast::session::SessionEntry {
+                    scene: "s1".into(),
+                    repeat: crate::ast::session::SessionRepeat::Once,
+                },
+                crate::ast::session::SessionEntry {
+                    scene: "s2".into(),
+                    repeat: crate::ast::session::SessionRepeat::Once,
+                },
+            ],
+        }))
+        .unwrap();
+        ev.eval_block(Block::Play(PlayCommand {
+            target: PlayTarget::Session("song".into()),
+            repeat: RepeatSpec::Once,
+        }))
+        .unwrap();
+
+        // 1 回目: state は最初 entries[0]=s1 を返す (Phase 4 挙動)。
+        // この境界で「直前 active=s1 のループ 1 周完了」として s1 の tempo +5 を apply (= 125)。
+        let outcome = ev.on_scene_loop_complete().unwrap();
+        assert_eq!(
+            outcome,
+            SceneTransitionOutcome::NextScene {
+                scene_name: "s1".into()
+            }
+        );
+        assert!((ev.bpm() - 125.0).abs() < f64::EPSILON);
+
+        // 2 回目: s1 (Once) が終わって NextScene{s2} に遷移。
+        // 直前 active=s1 のループ 2 周目完了 → さらに +5 apply (= 130)、
+        // その後 active を s2 に切り替え。
+        let outcome = ev.on_scene_loop_complete().unwrap();
+        assert_eq!(
+            outcome,
+            SceneTransitionOutcome::NextScene {
+                scene_name: "s2".into()
+            }
+        );
+        assert!((ev.bpm() - 130.0).abs() < f64::EPSILON);
+
+        // 3 回目: 直前 active=s2 (tempo 行なし) → bpm 不変、その後 SessionComplete。
+        let outcome = ev.on_scene_loop_complete().unwrap();
+        assert_eq!(outcome, SceneTransitionOutcome::SessionComplete);
+        assert!((ev.bpm() - 130.0).abs() < f64::EPSILON);
     }
 
     /// Phase 4: PlayScene(Once) で on_scene_loop_complete は SceneComplete

@@ -329,6 +329,10 @@ scene drop {
 }
 ```
 
+A `tempo` entry inside a scene is **evaluated and applied to the clock each time the scene completes one loop**. `tempo +5` accumulates; `tempo 120` re-sets to 120 every loop (idempotent). The entry is **not** applied on the initial scene activation — the very first loop boundary is the first apply. When a session transitions to a different scene, the boundary is treated as "the previous scene just finished a loop", so the previous scene's tempo entry applies at that transition.
+
+The sign of `tempo +N` / `tempo -N` may be separated from the number by **any amount of in-line whitespace (spaces / tabs)**; newlines are not permitted. `tempo +5`, `tempo + 5`, and `tempo +  \t  5` are all equivalent.
+
 ---
 
 ## 4.1 Scale (scale)
@@ -1248,6 +1252,11 @@ scene drop {
   tempo 120
 }
 ```
+
+See §4 for evaluation timing and syntax details. Highlights:
+- Applied once per scene **loop boundary**; the BPM does not change in the middle of a loop.
+- `+N` / `-N` accumulate; the absolute `N` form re-sets to N each loop (idempotent).
+- Any amount of in-line whitespace (e.g. `tempo + 5`, `tempo +  \t  5`) is allowed between the sign and the number; newlines are not.
 
 ### 8.5 Combinations
 
