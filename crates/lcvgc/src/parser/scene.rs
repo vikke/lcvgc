@@ -1,7 +1,7 @@
 use nom::{
     branch::alt,
     bytes::complete::tag,
-    character::complete::{char, one_of},
+    character::complete::{char, one_of, space1},
     combinator::{map, opt},
     IResult,
 };
@@ -51,9 +51,23 @@ fn parse_probability(input: &str) -> IResult<&str, u8> {
     Ok((input, d.to_digit(10).unwrap() as u8))
 }
 
-/// クリップエントリをパースする: `ident(*w)? (| ident(*w)?)* (prob)?`
-/// Parse a clip entry: `ident(*w)? (| ident(*w)?)* (prob)?`
+/// クリップエントリの先頭にある任意の `mute` 前置をパースする。
+/// 識別子の途中（例: `mute_drum`）と区別するため、`mute` の直後は空白でなければならない。
+/// Parse the optional `mute ` prefix at the head of a clip entry.
+/// `mute` must be followed by whitespace so that identifiers like `mute_drum`
+/// are not consumed.
+fn parse_mute_prefix(input: &str) -> IResult<&str, ()> {
+    let (rest, _) = tag("mute")(input)?;
+    let (rest, _) = space1(rest)?;
+    Ok((rest, ()))
+}
+
+/// クリップエントリをパースする: `(mute )? ident(*w)? (| ident(*w)?)* (prob)?`
+/// Parse a clip entry: `(mute )? ident(*w)? (| ident(*w)?)* (prob)?`
 fn parse_clip_entry(input: &str) -> IResult<&str, SceneEntry> {
+    let (input, mute_prefix) = opt(parse_mute_prefix)(input)?;
+    let muted = mute_prefix.is_some();
+
     let (input, first) = parse_shuffle_candidate(input)?;
     let mut candidates = vec![first];
 
@@ -78,6 +92,7 @@ fn parse_clip_entry(input: &str) -> IResult<&str, SceneEntry> {
         SceneEntry::Clip {
             candidates,
             probability: prob,
+            muted,
         },
     ))
 }
@@ -137,6 +152,7 @@ mod tests {
                     weight: 1,
                 }],
                 probability: None,
+                muted: false,
             }
         );
     }
@@ -160,6 +176,7 @@ mod tests {
                     weight: 1,
                 }],
                 probability: Some(7),
+                muted: false,
             }
         );
     }
@@ -182,6 +199,7 @@ mod tests {
                     },
                 ],
                 probability: None,
+                muted: false,
             }
         );
     }
@@ -204,6 +222,7 @@ mod tests {
                     },
                 ],
                 probability: None,
+                muted: false,
             }
         );
     }
@@ -226,6 +245,7 @@ mod tests {
                     },
                 ],
                 probability: Some(8),
+                muted: false,
             }
         );
     }
@@ -280,6 +300,7 @@ mod tests {
                     },
                 ],
                 probability: Some(8),
+                muted: false,
             }
         );
 
@@ -291,6 +312,7 @@ mod tests {
                     weight: 1,
                 }],
                 probability: None,
+                muted: false,
             }
         );
 
@@ -302,6 +324,7 @@ mod tests {
                     weight: 1,
                 }],
                 probability: Some(3),
+                muted: false,
             }
         );
     }
@@ -336,6 +359,170 @@ mod tests {
                     },
                 ],
                 probability: None,
+                muted: false,
+            }
+        );
+    }
+
+    // §8.6: scene 内 `mute` 前置のテスト群
+    // §8.6: tests for the `mute` prefix inside a scene block.
+
+    #[test]
+    fn test_mute_prefix_simple_clip() {
+        let (rest, scene) = parse_scene("scene verse { mute bass_a }").unwrap();
+        assert_eq!(rest, "");
+        assert_eq!(
+            scene.entries[0],
+            SceneEntry::Clip {
+                candidates: vec![ShuffleCandidate {
+                    clip: "bass_a".into(),
+                    weight: 1,
+                }],
+                probability: None,
+                muted: true,
+            }
+        );
+    }
+
+    #[test]
+    fn test_mute_prefix_with_shuffle() {
+        let (rest, scene) = parse_scene("scene verse { mute drums_a | drums_funk }").unwrap();
+        assert_eq!(rest, "");
+        assert_eq!(
+            scene.entries[0],
+            SceneEntry::Clip {
+                candidates: vec![
+                    ShuffleCandidate {
+                        clip: "drums_a".into(),
+                        weight: 1,
+                    },
+                    ShuffleCandidate {
+                        clip: "drums_funk".into(),
+                        weight: 1,
+                    },
+                ],
+                probability: None,
+                muted: true,
+            }
+        );
+    }
+
+    #[test]
+    fn test_mute_prefix_with_probability() {
+        let (rest, scene) = parse_scene("scene verse { mute lead_a 7 }").unwrap();
+        assert_eq!(rest, "");
+        assert_eq!(
+            scene.entries[0],
+            SceneEntry::Clip {
+                candidates: vec![ShuffleCandidate {
+                    clip: "lead_a".into(),
+                    weight: 1,
+                }],
+                probability: Some(7),
+                muted: true,
+            }
+        );
+    }
+
+    #[test]
+    fn test_mute_prefix_with_weighted_shuffle_and_probability() {
+        let (rest, scene) = parse_scene("scene verse { mute drums_a*3 | drums_funk 8 }").unwrap();
+        assert_eq!(rest, "");
+        assert_eq!(
+            scene.entries[0],
+            SceneEntry::Clip {
+                candidates: vec![
+                    ShuffleCandidate {
+                        clip: "drums_a".into(),
+                        weight: 3,
+                    },
+                    ShuffleCandidate {
+                        clip: "drums_funk".into(),
+                        weight: 1,
+                    },
+                ],
+                probability: Some(8),
+                muted: true,
+            }
+        );
+    }
+
+    /// `mute_drum` のように identifier の途中に `mute` が現れた場合は前置と誤認しないこと。
+    /// Identifiers like `mute_drum` must not be mistakenly treated as a `mute` prefix.
+    #[test]
+    fn test_mute_in_identifier_is_not_prefix() {
+        let (rest, scene) = parse_scene("scene verse { mute_drum }").unwrap();
+        assert_eq!(rest, "");
+        assert_eq!(
+            scene.entries[0],
+            SceneEntry::Clip {
+                candidates: vec![ShuffleCandidate {
+                    clip: "mute_drum".into(),
+                    weight: 1,
+                }],
+                probability: None,
+                muted: false,
+            }
+        );
+    }
+
+    /// `mute` の直後にスペースが無く、いきなり `{` などが来る場合は前置として扱わない。
+    /// 実際の構文上は `mute` の後に必ず clip 識別子が続くため、このケースは parse error
+    /// （ここでは `mute }` のように `mute` の後ろに識別子が無い → identifier が見つからない）。
+    /// `mute` not followed by an identifier must yield a parse error rather than
+    /// silently treating `mute` itself as a clip name.
+    #[test]
+    fn test_mute_prefix_without_clip_is_error() {
+        let result = parse_scene("scene verse { mute }");
+        assert!(result.is_err(), "expected error, got: {:?}", result);
+    }
+
+    /// 複数行で muted / non-muted が混在しても各行が独立に解釈されること。
+    /// Mixed muted / non-muted entries on multiple lines must be parsed independently.
+    #[test]
+    fn test_mute_prefix_mixed_in_scene() {
+        let input = "scene verse {
+            drums_a
+            mute bass_a
+            lead_a 7
+        }";
+        let (rest, scene) = parse_scene(input).unwrap();
+        assert_eq!(rest, "");
+        assert_eq!(scene.entries.len(), 3);
+
+        assert_eq!(
+            scene.entries[0],
+            SceneEntry::Clip {
+                candidates: vec![ShuffleCandidate {
+                    clip: "drums_a".into(),
+                    weight: 1,
+                }],
+                probability: None,
+                muted: false,
+            }
+        );
+
+        assert_eq!(
+            scene.entries[1],
+            SceneEntry::Clip {
+                candidates: vec![ShuffleCandidate {
+                    clip: "bass_a".into(),
+                    weight: 1,
+                }],
+                probability: None,
+                muted: true,
+            }
+        );
+
+        assert_eq!(
+            scene.entries[2],
+            SceneEntry::Clip {
+                candidates: vec![ShuffleCandidate {
+                    clip: "lead_a".into(),
+                    weight: 1,
+                }],
+                probability: Some(7),
+                muted: false,
             }
         );
     }

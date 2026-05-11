@@ -411,14 +411,24 @@ impl CompletionProvider {
     /// scene ブロック内で有効な追加キーワード補完候補を返す
     ///
     /// # Returns
-    /// scene ブロック内の追加キーワード（`tempo`）
+    /// scene ブロック内の追加キーワード（`tempo`, `mute`）
+    /// - `tempo`: テンポ変化（§8.4）
+    /// - `mute`: clip 行への前置で初期 mute 状態でロード（§8.6）
     pub fn scene_body_keyword_completions() -> Vec<CompletionItem> {
-        vec![CompletionItem {
-            label: "tempo".to_string(),
-            detail: Some("テンポ変化 (絶対値 or +N)".to_string()),
-            kind: CompletionKind::Keyword,
-            sort_text: None,
-        }]
+        vec![
+            CompletionItem {
+                label: "tempo".to_string(),
+                detail: Some("テンポ変化 (絶対値 or +N)".to_string()),
+                kind: CompletionKind::Keyword,
+                sort_text: None,
+            },
+            CompletionItem {
+                label: "mute".to_string(),
+                detail: Some("§8.6: 続く clip 行を初期 mute 状態でロード".to_string()),
+                kind: CompletionKind::Keyword,
+                sort_text: None,
+            },
+        ]
     }
 
     /// session エントリのオプション補完候補を返す
@@ -658,6 +668,32 @@ mod tests {
         let items = CompletionProvider::keyword_completions();
         assert!(items.iter().any(|i| i.label == "mute"));
         assert!(items.iter().any(|i| i.label == "unmute"));
+    }
+
+    /// §8.6: scene ブロック内のキーワード補完に `mute` が含まれる
+    /// §8.6: `mute` is included in scene-body keyword completions
+    #[test]
+    fn test_scene_body_keyword_completions_contains_mute() {
+        let items = CompletionProvider::scene_body_keyword_completions();
+        assert!(
+            items.iter().any(|i| i.label == "mute"),
+            "scene body completions should include `mute` for §8.6 prefix"
+        );
+        assert!(
+            items.iter().any(|i| i.label == "tempo"),
+            "scene body completions should still include `tempo`"
+        );
+    }
+
+    /// §8.6: scene ブロック内には `unmute` 前置は無いので候補に出さない
+    /// §8.6: `unmute` prefix is not supported inside scene blocks, so it must not appear
+    #[test]
+    fn test_scene_body_keyword_completions_excludes_unmute() {
+        let items = CompletionProvider::scene_body_keyword_completions();
+        assert!(
+            !items.iter().any(|i| i.label == "unmute"),
+            "scene body completions must not include `unmute` (default is unmuted)"
+        );
     }
 
     #[test]

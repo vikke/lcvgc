@@ -25,6 +25,11 @@ pub enum SceneEntry {
         /// 発音確率 (1-9、オプション)
         /// Firing probability (1-9, optional)
         probability: Option<u8>, // 1-9
+        /// 初期 mute フラグ（§8.6, scene 内 `mute` 前置で true）
+        /// `mute` を前置すると true。scene activate 時に該当 clip を初期 mute 状態でロードする。
+        /// Initial-mute flag (§8.6). True when the entry was prefixed with `mute` in the
+        /// scene block; the clip is loaded in muted state when the scene becomes active.
+        muted: bool,
     },
     /// テンポ変更エントリ
     /// Tempo change entry
