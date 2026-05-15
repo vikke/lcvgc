@@ -179,6 +179,20 @@ fn parse_pitched_body(mut input: &str) -> IResult<&str, PitchedClipBody> {
                 }
             }
 
+            // `|` 拍境界スナップを試行
+            // Try `|` beat-boundary snap. 単独トークン (=次が空白/改行/EOF/}) のみ受理。
+            // Only accept a standalone `|` token (followed by whitespace, newline,
+            // EOF, or closing brace) so future `||` (or similar) syntax stays open.
+            if current.starts_with('|') {
+                let after = &current[1..];
+                let next_ch = after.chars().next();
+                if matches!(next_ch, None | Some(' ' | '\t' | '\r' | '\n' | '}')) {
+                    elements.push(PitchedElement::PipeSnap);
+                    current = after;
+                    continue;
+                }
+            }
+
             // 小節ジャンプを試行
             // Try bar jump
             if let Ok((r, bj)) = parse_bar_jump(current) {
@@ -639,6 +653,18 @@ pub fn parse_repetition_content(content: &str) -> Result<Vec<PitchedElement>, St
             break;
         }
 
+        // `|` 拍境界スナップを試行
+        // Try `|` beat-boundary snap (standalone token only)
+        if current.starts_with('|') {
+            let after = &current[1..];
+            let next_ch = after.chars().next();
+            if matches!(next_ch, None | Some(' ' | '\t' | '\r' | '\n')) {
+                elements.push(PitchedElement::PipeSnap);
+                current = after;
+                continue;
+            }
+        }
+
         // 小節ジャンプを試行
         // Try bar jump
         if let Ok((r, bj)) = parse_bar_jump(current) {
@@ -910,6 +936,46 @@ mod tests {
                 }
             }
             _ => panic!("expected drum"),
+        }
+    }
+
+    /// `|` 拍境界スナップが PitchedElement::PipeSnap としてパースされる
+    /// `|` parses as PitchedElement::PipeSnap.
+    #[test]
+    fn test_pitched_pipe_snap() {
+        let input = r#"clip bass_pipe [bars 1] {
+  bass c:3:8 c | c c
+}"#;
+        let (rest, clip) = parse_clip(input).unwrap();
+        assert_eq!(rest, "");
+        match &clip.body {
+            ClipBody::Pitched(body) => {
+                assert_eq!(body.lines.len(), 1);
+                let elems = &body.lines[0].elements;
+                // c c | c c → 5 要素
+                assert_eq!(elems.len(), 5);
+                assert!(matches!(elems[2], PitchedElement::PipeSnap));
+            }
+            _ => panic!("expected pitched"),
+        }
+    }
+
+    /// 末尾の `|` も認識される
+    /// Trailing `|` is recognized.
+    #[test]
+    fn test_pitched_trailing_pipe_snap() {
+        let input = r#"clip bass_pipe [bars 1] {
+  bass c:3:8 c |
+}"#;
+        let (rest, clip) = parse_clip(input).unwrap();
+        assert_eq!(rest, "");
+        match &clip.body {
+            ClipBody::Pitched(body) => {
+                let elems = &body.lines[0].elements;
+                assert_eq!(elems.len(), 3);
+                assert!(matches!(elems[2], PitchedElement::PipeSnap));
+            }
+            _ => panic!("expected pitched"),
         }
     }
 

@@ -386,6 +386,19 @@ fn compile_elements(
     random_choice_groups: &mut Vec<RandomChoiceGroup>,
     bars: Option<u32>,
 ) -> Result<(), EngineError> {
+    // PipeSnap (`|`) のための直近アンカー追跡。
+    //   - `pipe_anchor_tick`: 直近 `|`/行頭の絶対 tick 位置。
+    //   - `pipe_anchor_event_count`: そのときの `events.len()`。 truncate 時
+    //     「このセグメントで追加された events のみ」を対象に絞るために使う。
+    //
+    // Anchor state for `|` snap:
+    //   - `pipe_anchor_tick`: absolute tick at the most recent `|` / start
+    //     of this element list.
+    //   - `pipe_anchor_event_count`: `events.len()` at that anchor. Used to
+    //     limit truncation to events emitted in the current segment so that
+    //     events emitted by previous segments stay intact.
+    let mut pipe_anchor_tick: u64 = *current_tick;
+    let mut pipe_anchor_event_count: usize = events.len();
     for element in elements {
         match element {
             PitchedElement::Note(note_event, articulation) => match note_event {
@@ -617,6 +630,55 @@ fn compile_elements(
                 }
                 let bar_ticks = clock.ticks_per_bar();
                 *current_tick = (jump.bar_number as u64 - 1) * bar_ticks;
+                // BarJump で絶対位置にスナップした後は、 `|` のアンカーも
+                // 新位置にリセットする (= 新セグメント開始扱い)。
+                // After absolute snap, reset the `|` anchor to start a new segment.
+                pipe_anchor_tick = *current_tick;
+                pipe_anchor_event_count = events.len();
+            }
+            PitchedElement::PipeSnap => {
+                // `|` 拍境界スナップ。
+                //   - ticks_since_pipe <= ticks_per_beat: 不足 → 次拍境界 (= anchor + tpb) まで進める
+                //   - ticks_since_pipe > ticks_per_beat: 超過 → 直前拍境界 (= anchor + floor(ts/tpb)*tpb) に戻し、
+                //     anchor 以降に追加された events のうちオンセットが境界以降のものを削除する。
+                //
+                // Snap to a beat boundary. Pad short segments by advancing
+                // `current_tick`, truncate overruns by rewinding `current_tick`
+                // and dropping events from this segment whose onset moved past
+                // the boundary.
+                let tpb = clock.ticks_per_beat();
+                let ticks_since_pipe = current_tick.saturating_sub(pipe_anchor_tick);
+                if ticks_since_pipe <= tpb {
+                    // 不足ケース。 次拍境界まで進めるだけ (events に変更なし)。
+                    // Short: advance to the next beat boundary, no events removed.
+                    *current_tick = pipe_anchor_tick + tpb;
+                } else {
+                    // 超過ケース。
+                    // Overrun: rewind to previous beat boundary and drop events.
+                    let beats = ticks_since_pipe / tpb;
+                    let target_tick = pipe_anchor_tick + beats * tpb;
+                    // このセグメントで追加された events (index >= pipe_anchor_event_count)
+                    // のうち、 tick >= target_tick の物を削除する。
+                    // それより前 (= 別セグメント) の events や、まだ境界内に収まる
+                    // events は触らない。
+                    //
+                    // Remove events added in this segment whose tick falls
+                    // at or past the truncation target. Earlier-segment events
+                    // and events still within the previous beat boundary stay.
+                    let mut i = pipe_anchor_event_count;
+                    while i < events.len() {
+                        if events[i].tick >= target_tick {
+                            events.remove(i);
+                        } else {
+                            i += 1;
+                        }
+                    }
+                    *current_tick = target_tick;
+                }
+                // 次のセグメントのために anchor を更新。
+                // Update anchors for the next segment.
+                pipe_anchor_tick = *current_tick;
+                pipe_anchor_event_count = events.len();
             }
         }
     }
@@ -1774,6 +1836,206 @@ mod tests {
 
         let result = compile_clip(&clip, &clock, &registry);
         assert!(result.is_ok());
+    }
+
+    // ============================================================
+    // PipeSnap (`|` 拍境界スナップ) のテスト
+    // PipeSnap (`|` beat-boundary snap) tests.
+    // ============================================================
+
+    /// 拍ぴったり (= 8分2個) の後に `|` が来てもイベントに変化が無い。
+    /// `|` after exactly one beat is a no-op.
+    #[test]
+    fn pipe_snap_exact_beat_is_noop() {
+        let registry = make_registry_with_bass();
+        let clock = Clock::new(120.0);
+        // bass c:3:8 c | → 8 分 × 2 = 1 拍 = 480 tick ピッタリ
+        let clip = make_pitched_clip(
+            "test",
+            None,
+            vec![PitchedLine {
+                instrument: "bass".to_string(),
+                elements: vec![
+                    single_note(NoteName::C, Some(3), Some(8), false),
+                    single_note(NoteName::C, None, None, false),
+                    PitchedElement::PipeSnap,
+                ],
+                is_layer_start: true,
+            }],
+        );
+
+        let compiled = compile_clip(&clip, &clock, &registry).unwrap();
+        let note_ons: Vec<_> = compiled
+            .events
+            .iter()
+            .filter(|e| matches!(e.message, MidiMessage::NoteOn { .. }))
+            .collect();
+        // 2 つのノートが残り、 truncate されない
+        assert_eq!(note_ons.len(), 2);
+        assert_eq!(note_ons[0].tick, 0);
+        assert_eq!(note_ons[1].tick, 240);
+    }
+
+    /// 不足ケース (= 8分1個 = 半拍) の後の `|` で次拍境界まで進む。
+    /// `|` after only half a beat pads to the next beat boundary.
+    #[test]
+    fn pipe_snap_pads_short_to_next_beat() {
+        let registry = make_registry_with_bass();
+        let clock = Clock::new(120.0);
+        // bass c:3:8 | c → 1 個目 8 分 (240 tick) の後 `|` で 480 まで進める
+        //   → 2 個目 c のオンセットは tick 480
+        let clip = make_pitched_clip(
+            "test",
+            None,
+            vec![PitchedLine {
+                instrument: "bass".to_string(),
+                elements: vec![
+                    single_note(NoteName::C, Some(3), Some(8), false),
+                    PitchedElement::PipeSnap,
+                    single_note(NoteName::C, None, None, false),
+                ],
+                is_layer_start: true,
+            }],
+        );
+
+        let compiled = compile_clip(&clip, &clock, &registry).unwrap();
+        let note_ons: Vec<_> = compiled
+            .events
+            .iter()
+            .filter(|e| matches!(e.message, MidiMessage::NoteOn { .. }))
+            .collect();
+        assert_eq!(note_ons.len(), 2);
+        assert_eq!(note_ons[0].tick, 0);
+        // `|` で次拍境界 (480) に揃える
+        assert_eq!(note_ons[1].tick, 480);
+    }
+
+    /// 超過ケース (= 8分5個 = 1.25 拍) の後の `|` で前拍境界まで戻り、
+    /// 5 個目の音を削除する。
+    /// `|` after 5 eighth notes (1.25 beats) truncates the 5th note.
+    #[test]
+    fn pipe_snap_truncates_overrun_to_previous_beat() {
+        let registry = make_registry_with_bass();
+        let clock = Clock::new(120.0);
+        // bass c:3:8 c c c c c | → 5 個 (= 1200 tick) → 拍境界 (= 480) に戻して
+        //   音 1-4 だけ残す (= 4 個)
+        let clip = make_pitched_clip(
+            "test",
+            None,
+            vec![PitchedLine {
+                instrument: "bass".to_string(),
+                elements: vec![
+                    single_note(NoteName::C, Some(3), Some(8), false),
+                    single_note(NoteName::C, None, None, false),
+                    single_note(NoteName::C, None, None, false),
+                    single_note(NoteName::C, None, None, false),
+                    single_note(NoteName::C, None, None, false),
+                    PitchedElement::PipeSnap,
+                ],
+                is_layer_start: true,
+            }],
+        );
+
+        let compiled = compile_clip(&clip, &clock, &registry).unwrap();
+        let note_ons: Vec<_> = compiled
+            .events
+            .iter()
+            .filter(|e| matches!(e.message, MidiMessage::NoteOn { .. }))
+            .collect();
+        // 5 個目はカットされて 4 個残る
+        // 5th note is truncated, 4 notes remain
+        assert_eq!(note_ons.len(), 4);
+    }
+
+    /// 上のテストの正確な期待値を確認するための tick 並び。
+    /// (テストファースト用に separate な確認テスト)
+    /// Verifies exact tick ordering after pipe-snap truncate.
+    #[test]
+    fn pipe_snap_truncate_keeps_first_beat_notes() {
+        let registry = make_registry_with_bass();
+        let clock = Clock::new(120.0);
+        let clip = make_pitched_clip(
+            "test",
+            None,
+            vec![PitchedLine {
+                instrument: "bass".to_string(),
+                elements: vec![
+                    single_note(NoteName::C, Some(3), Some(8), false),
+                    single_note(NoteName::C, None, None, false),
+                    single_note(NoteName::C, None, None, false),
+                    single_note(NoteName::C, None, None, false),
+                    single_note(NoteName::C, None, None, false),
+                    PitchedElement::PipeSnap,
+                ],
+                is_layer_start: true,
+            }],
+        );
+
+        let compiled = compile_clip(&clip, &clock, &registry).unwrap();
+        let mut note_on_ticks: Vec<u64> = compiled
+            .events
+            .iter()
+            .filter(|e| matches!(e.message, MidiMessage::NoteOn { .. }))
+            .map(|e| e.tick)
+            .collect();
+        note_on_ticks.sort();
+        // 0, 240, 480, 720 が残り (1.5 拍まで)、ではなく
+        // 0, 240 (1拍 = 480 ticks), then... ?
+        //
+        // 8 分音符 (= 240 tick) × 4 個 = 960 tick = 2 拍。 これは拍境界。
+        // 5 個目 (tick 960) → ticks_since_pipe = 1200 > 480。 直前拍境界 = 1200 / 480 * 480 = 960。
+        // 5 個目のオンセットが 960 だが、これは 960 >= 960 なので削除対象。
+        // 結果、 0, 240, 480, 720 の 4 個。
+        assert_eq!(note_on_ticks, vec![0, 240, 480, 720]);
+    }
+
+    /// 複数の `|` が連続するときに、各セグメントが独立に評価される。
+    /// Multiple `|` segments are evaluated independently.
+    #[test]
+    fn pipe_snap_multiple_segments_are_independent() {
+        let registry = make_registry_with_bass();
+        let clock = Clock::new(120.0);
+        // bass c:3:8 | c c c c c | → 前半: 不足 1個 → 480 まで埋め
+        //  後半: 5 個 (1200 tick) → 拍境界 480 に切り落とし → 後半は 4 個
+        // 合計 NoteOn = 1 + 4 = 5
+        let clip = make_pitched_clip(
+            "test",
+            None,
+            vec![PitchedLine {
+                instrument: "bass".to_string(),
+                elements: vec![
+                    single_note(NoteName::C, Some(3), Some(8), false),
+                    PitchedElement::PipeSnap,
+                    single_note(NoteName::C, None, None, false),
+                    single_note(NoteName::C, None, None, false),
+                    single_note(NoteName::C, None, None, false),
+                    single_note(NoteName::C, None, None, false),
+                    single_note(NoteName::C, None, None, false),
+                    PitchedElement::PipeSnap,
+                ],
+                is_layer_start: true,
+            }],
+        );
+
+        let compiled = compile_clip(&clip, &clock, &registry).unwrap();
+        let mut note_on_ticks: Vec<u64> = compiled
+            .events
+            .iter()
+            .filter(|e| matches!(e.message, MidiMessage::NoteOn { .. }))
+            .map(|e| e.tick)
+            .collect();
+        note_on_ticks.sort();
+        // 1 個目: tick 0
+        // `|` で 480 まで pad
+        // 2-5 個目: tick 480, 720, 960, 1200 (5 個目までは pad しない)
+        // 6 個目: tick 1440 (= 480 + 240*4 = 1440, これは 480+960 = 1440, 拍境界では無い)
+        //   → ticks_since_pipe2 = 1440 - 480 = 960 (= 2 拍)。 5個入れたら 1200。
+        // 待った: 5 個入れたら累積 ticks_since_pipe = 5 * 240 = 1200。 1200 > 480 なので truncate。
+        // 直前拍境界 = 1200 / 480 * 480 = 960。
+        // 5 個目 (= 6 番目のグローバルノート) は anchor_tick + 960 = 480 + 960 = 1440 がオンセット。
+        // この 5 個目を削る (= 4 個残る)。
+        // 結果: 1 + 4 = 5 NoteOn
+        assert_eq!(note_on_ticks, vec![0, 480, 720, 960, 1200]);
     }
 
     #[test]
