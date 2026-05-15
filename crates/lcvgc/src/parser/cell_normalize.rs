@@ -513,12 +513,12 @@ mod tests {
         // bar3 (step32-): b b . ... (32-step total padded)
         assert_eq!(final_out.len(), 64);
         assert_eq!(&final_out[..4], &['a', 'a', '.', '.']);
-        for i in 4..32 {
-            assert_eq!(final_out[i], '.', "bar1 末尾と bar2 は全 . のはず (idx={i})");
+        for (i, v) in final_out.iter().enumerate().take(32).skip(4) {
+            assert_eq!(*v, '.', "bar1 末尾と bar2 は全 . のはず (idx={i})");
         }
         assert_eq!(&final_out[32..34], &['b', 'b']);
-        for i in 34..64 {
-            assert_eq!(final_out[i], '.', "bar3 残りと bar4 は全 . のはず (idx={i})");
+        for (i, v) in final_out.iter().enumerate().take(64).skip(34) {
+            assert_eq!(*v, '.', "bar3 残りと bar4 は全 . のはず (idx={i})");
         }
     }
 }
