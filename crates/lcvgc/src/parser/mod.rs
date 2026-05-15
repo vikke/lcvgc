@@ -10,6 +10,9 @@ pub mod clip_articulation;
 /// クリップ・小節ジャンプパーサーモジュール
 /// Clip bar jump parser module
 pub mod clip_bar_jump;
+/// セル列正規化モジュール (drum/CC/pitched で共通の `.` `|` `>N` 処理)
+/// Cell-sequence normalization (shared `.`/`|`/`>N` handling).
+pub mod cell_normalize;
 /// クリップCCパーサーモジュール
 /// Clip CC (Control Change) parser module
 pub mod clip_cc;
