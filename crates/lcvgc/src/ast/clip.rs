@@ -40,6 +40,17 @@ pub enum PitchedElement {
     /// 小節ジャンプ
     /// Bar jump marker
     BarJump(BarJump),
+    /// `|` 拍境界スナップ。
+    /// コンパイル時に「直近 `|`/行頭以降の累積 tick が `ticks_per_beat` 未満なら
+    /// 次拍境界まで埋め (休符)、超過なら直前拍境界まで戻す (= 末尾の音を削る)」を実行する。
+    /// drum 行の `|` と意味を揃えるためのマーカー。
+    ///
+    /// Beat-boundary snap. At compile time:
+    ///   - if elapsed ticks since the last `|`/row start are <= one beat,
+    ///     pad forward (with rest) to the next beat boundary.
+    ///   - if elapsed ticks exceed one beat, truncate back to the previous
+    ///     beat boundary, dropping the trailing notes that overran.
+    PipeSnap,
 }
 
 /// 音程付きインストゥルメントの記譜ライン

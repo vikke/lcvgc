@@ -122,7 +122,7 @@ pub fn compile_clip(
                 (evts, Vec::new(), randoms, end)
             }
             ClipBody::Drum(body) => {
-                let (evts, drums, end) = compile_drum(body, clock, registry)?;
+                let (evts, drums, end) = compile_drum(body, clock, registry, clip.options.bars)?;
                 (evts, drums, Vec::new(), end)
             }
         };
@@ -309,7 +309,7 @@ fn compile_pitched(
     }
 
     // CCオートメーションのコンパイル
-    let cc_events = compile_cc_automations(&body.cc_automations, clock, registry)?;
+    let cc_events = compile_cc_automations(&body.cc_automations, clock, registry, bars)?;
     events.extend(cc_events);
     Ok((events, random_choice_groups, logical_end_ticks))
 }
@@ -386,6 +386,19 @@ fn compile_elements(
     random_choice_groups: &mut Vec<RandomChoiceGroup>,
     bars: Option<u32>,
 ) -> Result<(), EngineError> {
+    // PipeSnap (`|`) のための直近アンカー追跡。
+    //   - `pipe_anchor_tick`: 直近 `|`/行頭の絶対 tick 位置。
+    //   - `pipe_anchor_event_count`: そのときの `events.len()`。 truncate 時
+    //     「このセグメントで追加された events のみ」を対象に絞るために使う。
+    //
+    // Anchor state for `|` snap:
+    //   - `pipe_anchor_tick`: absolute tick at the most recent `|` / start
+    //     of this element list.
+    //   - `pipe_anchor_event_count`: `events.len()` at that anchor. Used to
+    //     limit truncation to events emitted in the current segment so that
+    //     events emitted by previous segments stay intact.
+    let mut pipe_anchor_tick: u64 = *current_tick;
+    let mut pipe_anchor_event_count: usize = events.len();
     for element in elements {
         match element {
             PitchedElement::Note(note_event, articulation) => match note_event {
@@ -617,6 +630,55 @@ fn compile_elements(
                 }
                 let bar_ticks = clock.ticks_per_bar();
                 *current_tick = (jump.bar_number as u64 - 1) * bar_ticks;
+                // BarJump で絶対位置にスナップした後は、 `|` のアンカーも
+                // 新位置にリセットする (= 新セグメント開始扱い)。
+                // After absolute snap, reset the `|` anchor to start a new segment.
+                pipe_anchor_tick = *current_tick;
+                pipe_anchor_event_count = events.len();
+            }
+            PitchedElement::PipeSnap => {
+                // `|` 拍境界スナップ。
+                //   - ticks_since_pipe <= ticks_per_beat: 不足 → 次拍境界 (= anchor + tpb) まで進める
+                //   - ticks_since_pipe > ticks_per_beat: 超過 → 直前拍境界 (= anchor + floor(ts/tpb)*tpb) に戻し、
+                //     anchor 以降に追加された events のうちオンセットが境界以降のものを削除する。
+                //
+                // Snap to a beat boundary. Pad short segments by advancing
+                // `current_tick`, truncate overruns by rewinding `current_tick`
+                // and dropping events from this segment whose onset moved past
+                // the boundary.
+                let tpb = clock.ticks_per_beat();
+                let ticks_since_pipe = current_tick.saturating_sub(pipe_anchor_tick);
+                if ticks_since_pipe <= tpb {
+                    // 不足ケース。 次拍境界まで進めるだけ (events に変更なし)。
+                    // Short: advance to the next beat boundary, no events removed.
+                    *current_tick = pipe_anchor_tick + tpb;
+                } else {
+                    // 超過ケース。
+                    // Overrun: rewind to previous beat boundary and drop events.
+                    let beats = ticks_since_pipe / tpb;
+                    let target_tick = pipe_anchor_tick + beats * tpb;
+                    // このセグメントで追加された events (index >= pipe_anchor_event_count)
+                    // のうち、 tick >= target_tick の物を削除する。
+                    // それより前 (= 別セグメント) の events や、まだ境界内に収まる
+                    // events は触らない。
+                    //
+                    // Remove events added in this segment whose tick falls
+                    // at or past the truncation target. Earlier-segment events
+                    // and events still within the previous beat boundary stay.
+                    let mut i = pipe_anchor_event_count;
+                    while i < events.len() {
+                        if events[i].tick >= target_tick {
+                            events.remove(i);
+                        } else {
+                            i += 1;
+                        }
+                    }
+                    *current_tick = target_tick;
+                }
+                // 次のセグメントのために anchor を更新。
+                // Update anchors for the next segment.
+                pipe_anchor_tick = *current_tick;
+                pipe_anchor_event_count = events.len();
             }
         }
     }
@@ -785,11 +847,18 @@ fn apply_min_gate_off(note_ticks: u64, gate_percent: u8, clock: &Clock) -> u64 {
 }
 
 /// CCオートメーション列をMIDI CCイベントにコンパイルする
-/// Compile CC automations into MIDI ControlChange events
+///
+/// `bars` には clip の `[bars N]` 指定があれば値を渡す。step 方式の
+/// `>N` / `|` 解決と最終長は `bars` を踏まえて行われる。
+///
+/// Compile CC automations into MIDI ControlChange events. `bars` carries
+/// the clip's `[bars N]` constraint (if any) and drives the final
+/// step-length resolution for `>N` / `|` meta tokens.
 fn compile_cc_automations(
     automations: &[CcAutomation],
     clock: &Clock,
     registry: &Registry,
+    bars: Option<u32>,
 ) -> Result<Vec<MidiEvent>, EngineError> {
     let mut events = Vec::new();
 
@@ -820,7 +889,38 @@ fn compile_cc_automations(
                 // ステップ方式は仕様上 resolution=16 のドラム解像度を共有
                 // デフォルト16分音符
                 let ticks_per_step = clock.duration_to_ticks(16, false);
-                for (i, &value) in step.values.iter().enumerate() {
+                let bar_ticks = clock.ticks_per_bar();
+                // 1 step = 16 分音符。1 小節あたりのセル数 (= steps_per_bar) は
+                // bar_ticks / ticks_per_step で求まる。
+                // Cells per bar at this resolution.
+                let steps_per_bar = (bar_ticks / ticks_per_step.max(1)).max(1) as usize;
+                // `|` 拍境界は 4 セル (= 1 拍 = 16 分音符 4 つ) 単位。
+                // `|` snaps to a beat boundary; 1 beat == 4 sixteenths.
+                let beats_per_step = 4usize;
+                // bars 指定があれば total_steps = bars * steps_per_bar、
+                // 無ければ None (= 自動 = steps_per_bar の倍数に切り上げ)。
+                // total_steps from `bars` if present, else auto rounding.
+                let total_steps = bars.map(|n| (n as usize).saturating_mul(steps_per_bar));
+                // `|` / `>N` を解決し、Option<u8> の平坦な列に展開する。
+                // Resolve `|` then `>N` into a flat `Option<u8>` sequence.
+                let piped = crate::parser::cell_normalize::expand_pipe_cells(
+                    &step.cells,
+                    beats_per_step,
+                    &None,
+                );
+                let resolved = crate::parser::cell_normalize::expand_bar_jump_cells(
+                    &piped,
+                    steps_per_bar,
+                    total_steps,
+                    &None,
+                )
+                .map_err(EngineError::CompileError)?;
+                for (i, cell) in resolved.iter().enumerate() {
+                    // `None` (= `.`) はこの step では CC を送出しない
+                    // `None` cells emit nothing for this step.
+                    let Some(value) = *cell else {
+                        continue;
+                    };
                     events.push(MidiEvent::new(
                         i as u64 * ticks_per_step,
                         MidiMessage::ControlChange {
@@ -938,6 +1038,7 @@ fn compile_drum(
     body: &crate::ast::clip::DrumClipBody,
     clock: &Clock,
     registry: &Registry,
+    bars: Option<u32>,
 ) -> Result<(Vec<MidiEvent>, Vec<DrumProbabilityGroup>, u64), EngineError> {
     let kit = registry
         .get_kit(&body.kit)
@@ -1019,7 +1120,7 @@ fn compile_drum(
     }
 
     // ドラムクリップのCCオートメーションコンパイル
-    let cc_events = compile_cc_automations(&body.cc_automations, clock, registry)?;
+    let cc_events = compile_cc_automations(&body.cc_automations, clock, registry, bars)?;
     events.extend(cc_events);
     Ok((events, groups, logical_end_ticks))
 }
@@ -1774,6 +1875,206 @@ mod tests {
 
         let result = compile_clip(&clip, &clock, &registry);
         assert!(result.is_ok());
+    }
+
+    // ============================================================
+    // PipeSnap (`|` 拍境界スナップ) のテスト
+    // PipeSnap (`|` beat-boundary snap) tests.
+    // ============================================================
+
+    /// 拍ぴったり (= 8分2個) の後に `|` が来てもイベントに変化が無い。
+    /// `|` after exactly one beat is a no-op.
+    #[test]
+    fn pipe_snap_exact_beat_is_noop() {
+        let registry = make_registry_with_bass();
+        let clock = Clock::new(120.0);
+        // bass c:3:8 c | → 8 分 × 2 = 1 拍 = 480 tick ピッタリ
+        let clip = make_pitched_clip(
+            "test",
+            None,
+            vec![PitchedLine {
+                instrument: "bass".to_string(),
+                elements: vec![
+                    single_note(NoteName::C, Some(3), Some(8), false),
+                    single_note(NoteName::C, None, None, false),
+                    PitchedElement::PipeSnap,
+                ],
+                is_layer_start: true,
+            }],
+        );
+
+        let compiled = compile_clip(&clip, &clock, &registry).unwrap();
+        let note_ons: Vec<_> = compiled
+            .events
+            .iter()
+            .filter(|e| matches!(e.message, MidiMessage::NoteOn { .. }))
+            .collect();
+        // 2 つのノートが残り、 truncate されない
+        assert_eq!(note_ons.len(), 2);
+        assert_eq!(note_ons[0].tick, 0);
+        assert_eq!(note_ons[1].tick, 240);
+    }
+
+    /// 不足ケース (= 8分1個 = 半拍) の後の `|` で次拍境界まで進む。
+    /// `|` after only half a beat pads to the next beat boundary.
+    #[test]
+    fn pipe_snap_pads_short_to_next_beat() {
+        let registry = make_registry_with_bass();
+        let clock = Clock::new(120.0);
+        // bass c:3:8 | c → 1 個目 8 分 (240 tick) の後 `|` で 480 まで進める
+        //   → 2 個目 c のオンセットは tick 480
+        let clip = make_pitched_clip(
+            "test",
+            None,
+            vec![PitchedLine {
+                instrument: "bass".to_string(),
+                elements: vec![
+                    single_note(NoteName::C, Some(3), Some(8), false),
+                    PitchedElement::PipeSnap,
+                    single_note(NoteName::C, None, None, false),
+                ],
+                is_layer_start: true,
+            }],
+        );
+
+        let compiled = compile_clip(&clip, &clock, &registry).unwrap();
+        let note_ons: Vec<_> = compiled
+            .events
+            .iter()
+            .filter(|e| matches!(e.message, MidiMessage::NoteOn { .. }))
+            .collect();
+        assert_eq!(note_ons.len(), 2);
+        assert_eq!(note_ons[0].tick, 0);
+        // `|` で次拍境界 (480) に揃える
+        assert_eq!(note_ons[1].tick, 480);
+    }
+
+    /// 超過ケース (= 8分5個 = 1.25 拍) の後の `|` で前拍境界まで戻り、
+    /// 5 個目の音を削除する。
+    /// `|` after 5 eighth notes (1.25 beats) truncates the 5th note.
+    #[test]
+    fn pipe_snap_truncates_overrun_to_previous_beat() {
+        let registry = make_registry_with_bass();
+        let clock = Clock::new(120.0);
+        // bass c:3:8 c c c c c | → 5 個 (= 1200 tick) → 拍境界 (= 480) に戻して
+        //   音 1-4 だけ残す (= 4 個)
+        let clip = make_pitched_clip(
+            "test",
+            None,
+            vec![PitchedLine {
+                instrument: "bass".to_string(),
+                elements: vec![
+                    single_note(NoteName::C, Some(3), Some(8), false),
+                    single_note(NoteName::C, None, None, false),
+                    single_note(NoteName::C, None, None, false),
+                    single_note(NoteName::C, None, None, false),
+                    single_note(NoteName::C, None, None, false),
+                    PitchedElement::PipeSnap,
+                ],
+                is_layer_start: true,
+            }],
+        );
+
+        let compiled = compile_clip(&clip, &clock, &registry).unwrap();
+        let note_ons: Vec<_> = compiled
+            .events
+            .iter()
+            .filter(|e| matches!(e.message, MidiMessage::NoteOn { .. }))
+            .collect();
+        // 5 個目はカットされて 4 個残る
+        // 5th note is truncated, 4 notes remain
+        assert_eq!(note_ons.len(), 4);
+    }
+
+    /// 上のテストの正確な期待値を確認するための tick 並び。
+    /// (テストファースト用に separate な確認テスト)
+    /// Verifies exact tick ordering after pipe-snap truncate.
+    #[test]
+    fn pipe_snap_truncate_keeps_first_beat_notes() {
+        let registry = make_registry_with_bass();
+        let clock = Clock::new(120.0);
+        let clip = make_pitched_clip(
+            "test",
+            None,
+            vec![PitchedLine {
+                instrument: "bass".to_string(),
+                elements: vec![
+                    single_note(NoteName::C, Some(3), Some(8), false),
+                    single_note(NoteName::C, None, None, false),
+                    single_note(NoteName::C, None, None, false),
+                    single_note(NoteName::C, None, None, false),
+                    single_note(NoteName::C, None, None, false),
+                    PitchedElement::PipeSnap,
+                ],
+                is_layer_start: true,
+            }],
+        );
+
+        let compiled = compile_clip(&clip, &clock, &registry).unwrap();
+        let mut note_on_ticks: Vec<u64> = compiled
+            .events
+            .iter()
+            .filter(|e| matches!(e.message, MidiMessage::NoteOn { .. }))
+            .map(|e| e.tick)
+            .collect();
+        note_on_ticks.sort();
+        // 0, 240, 480, 720 が残り (1.5 拍まで)、ではなく
+        // 0, 240 (1拍 = 480 ticks), then... ?
+        //
+        // 8 分音符 (= 240 tick) × 4 個 = 960 tick = 2 拍。 これは拍境界。
+        // 5 個目 (tick 960) → ticks_since_pipe = 1200 > 480。 直前拍境界 = 1200 / 480 * 480 = 960。
+        // 5 個目のオンセットが 960 だが、これは 960 >= 960 なので削除対象。
+        // 結果、 0, 240, 480, 720 の 4 個。
+        assert_eq!(note_on_ticks, vec![0, 240, 480, 720]);
+    }
+
+    /// 複数の `|` が連続するときに、各セグメントが独立に評価される。
+    /// Multiple `|` segments are evaluated independently.
+    #[test]
+    fn pipe_snap_multiple_segments_are_independent() {
+        let registry = make_registry_with_bass();
+        let clock = Clock::new(120.0);
+        // bass c:3:8 | c c c c c | → 前半: 不足 1個 → 480 まで埋め
+        //  後半: 5 個 (1200 tick) → 拍境界 480 に切り落とし → 後半は 4 個
+        // 合計 NoteOn = 1 + 4 = 5
+        let clip = make_pitched_clip(
+            "test",
+            None,
+            vec![PitchedLine {
+                instrument: "bass".to_string(),
+                elements: vec![
+                    single_note(NoteName::C, Some(3), Some(8), false),
+                    PitchedElement::PipeSnap,
+                    single_note(NoteName::C, None, None, false),
+                    single_note(NoteName::C, None, None, false),
+                    single_note(NoteName::C, None, None, false),
+                    single_note(NoteName::C, None, None, false),
+                    single_note(NoteName::C, None, None, false),
+                    PitchedElement::PipeSnap,
+                ],
+                is_layer_start: true,
+            }],
+        );
+
+        let compiled = compile_clip(&clip, &clock, &registry).unwrap();
+        let mut note_on_ticks: Vec<u64> = compiled
+            .events
+            .iter()
+            .filter(|e| matches!(e.message, MidiMessage::NoteOn { .. }))
+            .map(|e| e.tick)
+            .collect();
+        note_on_ticks.sort();
+        // 1 個目: tick 0
+        // `|` で 480 まで pad
+        // 2-5 個目: tick 480, 720, 960, 1200 (5 個目までは pad しない)
+        // 6 個目: tick 1440 (= 480 + 240*4 = 1440, これは 480+960 = 1440, 拍境界では無い)
+        //   → ticks_since_pipe2 = 1440 - 480 = 960 (= 2 拍)。 5個入れたら 1200。
+        // 待った: 5 個入れたら累積 ticks_since_pipe = 5 * 240 = 1200。 1200 > 480 なので truncate。
+        // 直前拍境界 = 1200 / 480 * 480 = 960。
+        // 5 個目 (= 6 番目のグローバルノート) は anchor_tick + 960 = 480 + 960 = 1440 がオンセット。
+        // この 5 個目を削る (= 4 個残る)。
+        // 結果: 1 + 4 = 5 NoteOn
+        assert_eq!(note_on_ticks, vec![0, 480, 720, 960, 1200]);
     }
 
     #[test]
@@ -2758,7 +3059,12 @@ mod tests {
                         instrument: "bass".to_string(),
                         param: "cutoff".to_string(),
                     },
-                    values: vec![0, 32, 64, 127],
+                    cells: vec![
+                        crate::parser::cell_normalize::CellToken::Cell(Some(0)),
+                        crate::parser::cell_normalize::CellToken::Cell(Some(32)),
+                        crate::parser::cell_normalize::CellToken::Cell(Some(64)),
+                        crate::parser::cell_normalize::CellToken::Cell(Some(127)),
+                    ],
                 })],
             }),
         };
@@ -2890,7 +3196,10 @@ mod tests {
                         instrument: "bass".to_string(),
                         param: "cutoff".to_string(),
                     },
-                    values: vec![64, 127],
+                    cells: vec![
+                        crate::parser::cell_normalize::CellToken::Cell(Some(64)),
+                        crate::parser::cell_normalize::CellToken::Cell(Some(127)),
+                    ],
                 })],
             }),
         };
@@ -2908,6 +3217,213 @@ mod tests {
             assert_eq!(value, 64);
         } else {
             panic!("expected ControlChange");
+        }
+    }
+
+    // ---------------------------------------------------------------------
+    // CC step メタトークン (`.` `|` `>N`) 統合テスト
+    // CC-step meta-token integration tests.
+    // ---------------------------------------------------------------------
+
+    /// `.` (None) セルは MIDI イベントを生成しない
+    /// `None` cells produce no MIDI event.
+    #[test]
+    fn cc_step_dot_skips_emission() {
+        use crate::parser::cell_normalize::CellToken;
+        let registry = make_registry_with_bass_cc();
+        let clock = Clock::new(120.0);
+        let clip = ClipDef {
+            name: "test".to_string(),
+            options: ClipOptions::default(),
+            body: ClipBody::Pitched(PitchedClipBody {
+                lines: vec![PitchedLine {
+                    instrument: "bass".to_string(),
+                    elements: vec![single_note(NoteName::C, Some(4), Some(4), false)],
+                    is_layer_start: true,
+                }],
+                cc_automations: vec![CcAutomation::Step(CcStepValues {
+                    target: CcTarget {
+                        instrument: "bass".to_string(),
+                        param: "cutoff".to_string(),
+                    },
+                    // 4 step: Some(0), None, Some(64), None
+                    cells: vec![
+                        CellToken::Cell(Some(0)),
+                        CellToken::Cell(None),
+                        CellToken::Cell(Some(64)),
+                        CellToken::Cell(None),
+                    ],
+                })],
+            }),
+        };
+
+        let compiled = compile_clip(&clip, &clock, &registry).unwrap();
+        let cc_events: Vec<_> = compiled
+            .events
+            .iter()
+            .filter(|e| matches!(e.message, MidiMessage::ControlChange { .. }))
+            .collect();
+        // None 2 つはスキップされ、CC イベントは 2 つだけ
+        assert_eq!(cc_events.len(), 2);
+        // 1 つ目は step 0 (tick 0) の 0、2 つ目は step 2 (tick = 2 * 16分音符)
+        let ticks_per_step = clock.duration_to_ticks(16, false);
+        assert_eq!(cc_events[0].tick, 0);
+        assert_eq!(cc_events[1].tick, 2 * ticks_per_step);
+        if let MidiMessage::ControlChange { value, .. } = cc_events[1].message {
+            assert_eq!(value, 64);
+        } else {
+            panic!("expected ControlChange");
+        }
+    }
+
+    /// `|` で 1 拍 (= 4 step) 境界に揃える: 不足は `.` で埋め
+    /// `|` snaps to a beat boundary (= 4 steps); shorts are padded.
+    #[test]
+    fn cc_step_pipe_pads_to_beat_boundary() {
+        use crate::parser::cell_normalize::CellToken;
+        let registry = make_registry_with_bass_cc();
+        let clock = Clock::new(120.0);
+        // 2 step + | (拍 = 4 step) → padding 2 step → 計 4 step
+        // 続けて 0, 127 を追加して、bar 1 の 5,6 step 目になる
+        let cells = vec![
+            CellToken::Cell(Some(10)),
+            CellToken::Cell(Some(20)),
+            CellToken::Pipe,
+            CellToken::Cell(Some(64)),
+            CellToken::Cell(Some(127)),
+        ];
+        let clip = ClipDef {
+            name: "test".to_string(),
+            options: ClipOptions::default(),
+            body: ClipBody::Pitched(PitchedClipBody {
+                lines: vec![PitchedLine {
+                    instrument: "bass".to_string(),
+                    elements: vec![single_note(NoteName::C, Some(4), Some(4), false)],
+                    is_layer_start: true,
+                }],
+                cc_automations: vec![CcAutomation::Step(CcStepValues {
+                    target: CcTarget {
+                        instrument: "bass".to_string(),
+                        param: "cutoff".to_string(),
+                    },
+                    cells,
+                })],
+            }),
+        };
+        let compiled = compile_clip(&clip, &clock, &registry).unwrap();
+        let cc_events: Vec<_> = compiled
+            .events
+            .iter()
+            .filter(|e| matches!(e.message, MidiMessage::ControlChange { .. }))
+            .collect();
+        // padding は None なので発火しない: 4 イベント (step 0, 1, 4, 5)
+        assert_eq!(cc_events.len(), 4);
+        let ticks_per_step = clock.duration_to_ticks(16, false);
+        assert_eq!(cc_events[0].tick, 0);
+        assert_eq!(cc_events[1].tick, ticks_per_step);
+        assert_eq!(cc_events[2].tick, 4 * ticks_per_step);
+        assert_eq!(cc_events[3].tick, 5 * ticks_per_step);
+    }
+
+    /// `|` 超過時は前境界まで切り落とし
+    /// `|` truncates overruns back to the previous beat boundary.
+    #[test]
+    fn cc_step_pipe_truncates_overrun() {
+        use crate::parser::cell_normalize::CellToken;
+        let registry = make_registry_with_bass_cc();
+        let clock = Clock::new(120.0);
+        // 5 step + | (拍 = 4 step) → 4 step に切り落とし
+        let cells = vec![
+            CellToken::Cell(Some(1)),
+            CellToken::Cell(Some(2)),
+            CellToken::Cell(Some(3)),
+            CellToken::Cell(Some(4)),
+            CellToken::Cell(Some(5)),
+            CellToken::Pipe,
+        ];
+        let clip = ClipDef {
+            name: "test".to_string(),
+            options: ClipOptions::default(),
+            body: ClipBody::Pitched(PitchedClipBody {
+                lines: vec![PitchedLine {
+                    instrument: "bass".to_string(),
+                    elements: vec![single_note(NoteName::C, Some(4), Some(4), false)],
+                    is_layer_start: true,
+                }],
+                cc_automations: vec![CcAutomation::Step(CcStepValues {
+                    target: CcTarget {
+                        instrument: "bass".to_string(),
+                        param: "cutoff".to_string(),
+                    },
+                    cells,
+                })],
+            }),
+        };
+        let compiled = compile_clip(&clip, &clock, &registry).unwrap();
+        let cc_events: Vec<_> = compiled
+            .events
+            .iter()
+            .filter(|e| matches!(e.message, MidiMessage::ControlChange { .. }))
+            .collect();
+        // 5 番目 (value=5) は切り落とされる
+        assert_eq!(cc_events.len(), 4);
+        for (i, ev) in cc_events.iter().enumerate() {
+            if let MidiMessage::ControlChange { value, .. } = ev.message {
+                assert_eq!(value, (i + 1) as u8);
+            }
+        }
+    }
+
+    /// `>N` で小節 N の頭にジャンプ
+    /// `>N` snaps the cursor to bar N's start.
+    #[test]
+    fn cc_step_bar_jump_jumps_to_bar() {
+        use crate::parser::cell_normalize::CellToken;
+        let registry = make_registry_with_bass_cc();
+        let clock = Clock::new(120.0);
+        // 1 step + >3 + 1 step  (steps_per_bar = 16 in 4/4)
+        // 期待: step 0 と step 32 (= bar3 頭) に CC が出る
+        let cells = vec![
+            CellToken::Cell(Some(10)),
+            CellToken::BarJump(3),
+            CellToken::Cell(Some(99)),
+        ];
+        let clip = ClipDef {
+            name: "test".to_string(),
+            // bars=4 にすると total_steps=64 で十分
+            options: ClipOptions {
+                bars: Some(4),
+                time_sig: None,
+                scale: None,
+            },
+            body: ClipBody::Pitched(PitchedClipBody {
+                lines: vec![PitchedLine {
+                    instrument: "bass".to_string(),
+                    elements: vec![single_note(NoteName::C, Some(4), Some(4), false)],
+                    is_layer_start: true,
+                }],
+                cc_automations: vec![CcAutomation::Step(CcStepValues {
+                    target: CcTarget {
+                        instrument: "bass".to_string(),
+                        param: "cutoff".to_string(),
+                    },
+                    cells,
+                })],
+            }),
+        };
+        let compiled = compile_clip(&clip, &clock, &registry).unwrap();
+        let cc_events: Vec<_> = compiled
+            .events
+            .iter()
+            .filter(|e| matches!(e.message, MidiMessage::ControlChange { .. }))
+            .collect();
+        assert_eq!(cc_events.len(), 2);
+        let ticks_per_step = clock.duration_to_ticks(16, false);
+        assert_eq!(cc_events[0].tick, 0);
+        // bar3 頭 = step 32
+        assert_eq!(cc_events[1].tick, 32 * ticks_per_step);
+        if let MidiMessage::ControlChange { value, .. } = cc_events[1].message {
+            assert_eq!(value, 99);
         }
     }
 

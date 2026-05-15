@@ -1,36 +1,166 @@
 use crate::ast::clip_drum::HitSymbol;
+use crate::parser::cell_normalize::CellToken;
 
-/// ドラムパターン文字列中の `|` 省略記法を展開する。
+/// ドラムパターン文字列 (前段で `(...)*N` 等は展開済) を `CellToken<HitSymbol>` 列に
+/// トークナイズする。
 ///
-/// `|` は次の拍境界まで `.` で埋める（拍境界は `beats_per_step` で決定）。
-/// 4/4拍子・分解能16の場合、`beats_per_step` は 4。
+/// 認識するもの:
+///   - `x` `X` `o` `.` → `CellToken::Cell(HitSymbol)`
+///   - `|` → `CellToken::Pipe`
+///   - `>N` → `CellToken::BarJump(N)` (1 文字以上の連続数字)
+///   - 空白 (`' '` `'\t'`) → 無視
 ///
-/// Expand `|` shorthand in a drum pattern string.
+/// `(...)*N` 繰り返しは `expand_repetition` で **string 段で** 既に展開されている前提。
 ///
-/// `|` fills with `.` up to the next beat boundary (determined by `beats_per_step`).
-/// For resolution 16 in 4/4 time, `beats_per_step` is 4.
+/// Tokenize a drum pattern string into a `CellToken<HitSymbol>` sequence.
+/// Whitespace is ignored. `(...)*N` is expected to have been expanded by
+/// `expand_repetition` at the string layer beforehand.
 ///
 /// # Arguments
-/// * `pattern` - ドラムパターン文字列 / drum pattern string
-/// * `beats_per_step` - 1拍あたりのステップ数 / number of steps per beat
+/// * `input` - 展開済みのパターン文字列 / pre-expanded pattern string
 ///
 /// # Returns
-/// 展開済みのパターン文字列 / expanded pattern string
-pub fn expand_pipe(pattern: &str, beats_per_step: usize) -> String {
-    let mut result = String::new();
-    for ch in pattern.chars() {
-        if ch == '|' {
-            let current_pos = result.len();
-            let next_boundary = ((current_pos / beats_per_step) + 1) * beats_per_step;
-            let fill = next_boundary - current_pos;
-            for _ in 0..fill {
-                result.push('.');
+/// `Ok(Vec<CellToken<HitSymbol>>)` — 成功時のトークン列 / token sequence on success
+///
+/// # Errors
+/// 未知の文字が含まれる場合エラーを返す。
+/// `>` の直後に数字が無い場合もエラー。
+/// Returns an error on unknown characters, or when `>` is not followed by digits.
+pub fn tokenize_drum_pattern(input: &str) -> Result<Vec<CellToken<HitSymbol>>, String> {
+    let bytes = input.as_bytes();
+    let mut out: Vec<CellToken<HitSymbol>> = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        let ch = bytes[i] as char;
+        match ch {
+            ' ' | '\t' => {
+                i += 1;
             }
-        } else {
-            result.push(ch);
+            'x' => {
+                out.push(CellToken::Cell(HitSymbol::Normal));
+                i += 1;
+            }
+            'X' => {
+                out.push(CellToken::Cell(HitSymbol::Accent));
+                i += 1;
+            }
+            'o' => {
+                out.push(CellToken::Cell(HitSymbol::Ghost));
+                i += 1;
+            }
+            '.' => {
+                out.push(CellToken::Cell(HitSymbol::Rest));
+                i += 1;
+            }
+            '|' => {
+                out.push(CellToken::Pipe);
+                i += 1;
+            }
+            '>' => {
+                // `>` の後ろの空白を読み飛ばし、続く数字列を BarJump に変換する。
+                // Skip whitespace after `>` and parse the following digits.
+                let (n, consumed) = parse_bar_jump_digits(&bytes[i + 1..])?;
+                out.push(CellToken::BarJump(n));
+                i += 1 + consumed;
+            }
+            other => {
+                return Err(format!("unknown hit symbol: '{}'", other));
+            }
         }
     }
-    result
+    Ok(out)
+}
+
+/// 確率行 (前段で `(...)*N` 等は展開済) を `CellToken<u8>` 列に
+/// トークナイズする。
+///
+/// 認識するもの:
+///   - `0` → `Cell(0)` (発音しない)
+///   - `1`-`9` → `Cell(10)`〜`Cell(90)`
+///   - `.` → `Cell(100)` (常に発音)
+///   - `|` → `Pipe`
+///   - `>N` → `BarJump(N)`
+///   - 空白 → 無視
+///
+/// `.` の意味は「100 (常に発音)」なので drum 行とは異なる。padding 値も別に
+/// 与える必要がある (= `expand_pipe_cells` の `skip_cell` には 100 を渡す)。
+///
+/// Tokenize a probability row into `CellToken<u8>`. Same meta-token grammar as
+/// drums, but `.` means 100 (always-fire) and digits map `0` → 0, `1`-`9` → 10-90.
+///
+/// # Arguments
+/// * `input` - 展開済みの確率行文字列 / pre-expanded probability row string
+///
+/// # Returns
+/// `Ok(Vec<CellToken<u8>>)` — 成功時のトークン列 / token sequence on success
+///
+/// # Errors
+/// 未知の文字が含まれる場合エラーを返す。
+/// Returns an error on unknown characters.
+pub fn tokenize_probability_pattern(input: &str) -> Result<Vec<CellToken<u8>>, String> {
+    let bytes = input.as_bytes();
+    let mut out: Vec<CellToken<u8>> = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        let ch = bytes[i] as char;
+        match ch {
+            ' ' | '\t' => {
+                i += 1;
+            }
+            '.' => {
+                out.push(CellToken::Cell(100));
+                i += 1;
+            }
+            '0' => {
+                out.push(CellToken::Cell(0));
+                i += 1;
+            }
+            '1'..='9' => {
+                out.push(CellToken::Cell((ch as u8 - b'0') * 10));
+                i += 1;
+            }
+            '|' => {
+                out.push(CellToken::Pipe);
+                i += 1;
+            }
+            '>' => {
+                let (n, consumed) = parse_bar_jump_digits(&bytes[i + 1..])?;
+                out.push(CellToken::BarJump(n));
+                i += 1 + consumed;
+            }
+            other => {
+                return Err(format!("unknown probability symbol: '{}'", other));
+            }
+        }
+    }
+    Ok(out)
+}
+
+/// `>` 直後のバイト列から、空白を読み飛ばして連続する ASCII 数字を `u32` として
+/// 解釈し、`(n, consumed)` を返す。
+///
+/// `consumed` は `>` の **直後から** 数字末尾までに進めたバイト数 (= 空白 + 数字)。
+///
+/// Parse digits after a `>` token (skipping leading whitespace). Returns the
+/// parsed bar number and how many bytes were consumed after `>`.
+fn parse_bar_jump_digits(after_gt: &[u8]) -> Result<(u32, usize), String> {
+    let mut idx = 0;
+    while idx < after_gt.len() && (after_gt[idx] == b' ' || after_gt[idx] == b'\t') {
+        idx += 1;
+    }
+    let digits_start = idx;
+    while idx < after_gt.len() && after_gt[idx].is_ascii_digit() {
+        idx += 1;
+    }
+    if digits_start == idx {
+        return Err("'>' の後ろに小節番号が必要です (例: `>3`)".to_string());
+    }
+    let digits = std::str::from_utf8(&after_gt[digits_start..idx])
+        .map_err(|e| format!("'>N' の数字パースに失敗: {}", e))?;
+    let n: u32 = digits
+        .parse()
+        .map_err(|e| format!("'>N' の数字パースに失敗: {}", e))?;
+    Ok((n, idx))
 }
 
 /// 展開済み（`|` なし）のパターン文字列を `HitSymbol` のベクタにパースする。
@@ -261,22 +391,153 @@ mod tests {
         assert_eq!(expand_repetition("(x.x.)"), "x.x.");
     }
 
-    // --- expand_pipe tests ---
+    // --- tokenize_drum_pattern tests ---
 
+    /// 通常セルだけのトークナイズ。
+    /// Tokenize plain cells (no meta tokens).
     #[test]
-    fn expand_pipe_basic_four_beats() {
-        assert_eq!(expand_pipe("x|x|x|x|", 4), "x...x...x...x...");
+    fn tokenize_drum_plain_cells() {
+        let out = tokenize_drum_pattern("x.x.").unwrap();
+        assert_eq!(
+            out,
+            vec![
+                CellToken::Cell(HitSymbol::Normal),
+                CellToken::Cell(HitSymbol::Rest),
+                CellToken::Cell(HitSymbol::Normal),
+                CellToken::Cell(HitSymbol::Rest),
+            ]
+        );
     }
 
+    /// 空白は無視される (任意の数 OK)。
+    /// Whitespace is ignored.
     #[test]
-    fn expand_pipe_leading_pipe() {
-        // `|x` → 4 dots then x
-        assert_eq!(expand_pipe("|x", 4), "....x");
+    fn tokenize_drum_ignores_whitespace() {
+        let out = tokenize_drum_pattern("x. x .").unwrap();
+        assert_eq!(
+            out,
+            vec![
+                CellToken::Cell(HitSymbol::Normal),
+                CellToken::Cell(HitSymbol::Rest),
+                CellToken::Cell(HitSymbol::Normal),
+                CellToken::Cell(HitSymbol::Rest),
+            ]
+        );
     }
 
+    /// `|` は `Pipe` トークンになる。
+    /// `|` becomes a `Pipe` token.
     #[test]
-    fn expand_pipe_sparse() {
-        assert_eq!(expand_pipe("|x||x|", 4), "....x.......x...");
+    fn tokenize_drum_pipe() {
+        let out = tokenize_drum_pattern("x|x").unwrap();
+        assert_eq!(
+            out,
+            vec![
+                CellToken::Cell(HitSymbol::Normal),
+                CellToken::Pipe,
+                CellToken::Cell(HitSymbol::Normal),
+            ]
+        );
+    }
+
+    /// `>N` は `BarJump(N)` トークンになる。
+    /// `>N` becomes a `BarJump(N)` token.
+    #[test]
+    fn tokenize_drum_bar_jump_single_digit() {
+        let out = tokenize_drum_pattern("x>3x").unwrap();
+        assert_eq!(
+            out,
+            vec![
+                CellToken::Cell(HitSymbol::Normal),
+                CellToken::BarJump(3),
+                CellToken::Cell(HitSymbol::Normal),
+            ]
+        );
+    }
+
+    /// 複数桁 + 空白を挟んだ `>N` も受け付ける。
+    /// Multi-digit `>N` and surrounding whitespace are accepted.
+    #[test]
+    fn tokenize_drum_bar_jump_multi_digit_with_spaces() {
+        let out = tokenize_drum_pattern("x> 12 x").unwrap();
+        assert_eq!(
+            out,
+            vec![
+                CellToken::Cell(HitSymbol::Normal),
+                CellToken::BarJump(12),
+                CellToken::Cell(HitSymbol::Normal),
+            ]
+        );
+    }
+
+    /// 未知文字はエラー。
+    /// Unknown chars return an error.
+    #[test]
+    fn tokenize_drum_unknown_char_errors() {
+        let err = tokenize_drum_pattern("xyx").unwrap_err();
+        assert!(err.contains("unknown hit symbol: 'y'"));
+    }
+
+    /// 空入力は空 Vec。
+    /// Empty input returns an empty Vec.
+    #[test]
+    fn tokenize_drum_empty_input() {
+        let out = tokenize_drum_pattern("").unwrap();
+        assert!(out.is_empty());
+    }
+
+    /// `>` の直後に数字が無いとエラー。
+    /// `>` without digits returns an error.
+    #[test]
+    fn tokenize_drum_bare_gt_errors() {
+        let err = tokenize_drum_pattern("x>x").unwrap_err();
+        assert!(err.contains("小節番号"));
+    }
+
+    // --- tokenize_probability_pattern tests ---
+
+    /// 確率行のセルトークナイズ基本ケース。
+    /// Basic probability row tokenization.
+    #[test]
+    fn tokenize_probability_basic() {
+        let out = tokenize_probability_pattern("..5...7.").unwrap();
+        assert_eq!(
+            out,
+            vec![
+                CellToken::Cell(100),
+                CellToken::Cell(100),
+                CellToken::Cell(50),
+                CellToken::Cell(100),
+                CellToken::Cell(100),
+                CellToken::Cell(100),
+                CellToken::Cell(70),
+                CellToken::Cell(100),
+            ]
+        );
+    }
+
+    /// 確率行で `|` と `>N` が認識される。
+    /// Probability row recognises `|` and `>N`.
+    #[test]
+    fn tokenize_probability_with_pipe_and_bar_jump() {
+        let out = tokenize_probability_pattern("5|>2 7").unwrap();
+        assert_eq!(
+            out,
+            vec![
+                CellToken::Cell(50),
+                CellToken::Pipe,
+                CellToken::BarJump(2),
+                CellToken::Cell(70),
+            ]
+        );
+    }
+
+    /// 確率行の未知文字はエラー。
+    /// Unknown chars in probability row return an error.
+    #[test]
+    fn tokenize_probability_unknown_char_errors() {
+        let err = tokenize_probability_pattern("..a..").unwrap_err();
+        assert!(err.contains("unknown probability symbol: 'a'"));
     }
 
     // --- parse_hit_symbols tests ---
@@ -332,28 +593,6 @@ mod tests {
         assert!(err.contains("unknown probability symbol: 'a'"));
     }
 
-    // --- expand_pipe: 確率行テスト / probability row tests ---
-
-    /// 確率行の `|` ショートカットが正しく展開されることを検証する。
-    /// `.5|.7|` (beats_per_step=4) → `.5..` で4文字境界、`.7..` で次の境界。
-    ///
-    /// Verify `|` shorthand expansion for probability rows.
-    /// `.5|.7|` (beats_per_step=4) → `.5..` to 4-char boundary, `.7..` to next boundary.
-    #[test]
-    fn expand_pipe_probability_with_digits() {
-        assert_eq!(expand_pipe(".5|.7|", 4), ".5...7..");
-    }
-
-    /// 先頭パイプ付き確率行の展開を検証する。
-    /// `|5|7|` (beats_per_step=4) → 先頭 `|` で4文字分パディング。
-    ///
-    /// Verify expansion of probability row with leading pipe.
-    /// `|5|7|` (beats_per_step=4) → leading `|` pads to 4 chars.
-    #[test]
-    fn expand_pipe_probability_leading_pipe() {
-        assert_eq!(expand_pipe("|5|7|", 4), "....5...7...");
-    }
-
     // --- expand_repetition: 確率行テスト / probability row tests ---
 
     /// 確率行の `()*N` 繰り返しが正しく展開されることを検証する。
@@ -364,17 +603,6 @@ mod tests {
     #[test]
     fn expand_repetition_probability() {
         assert_eq!(expand_repetition("(..5.)*4"), "..5...5...5...5.");
-    }
-
-    /// 確率行の繰り返し展開後にパイプ展開をチェーンする。
-    ///
-    /// Chain repetition expansion then pipe expansion for probability rows.
-    #[test]
-    fn expand_repetition_probability_with_pipe() {
-        let expanded = expand_repetition("(.5)*4");
-        assert_eq!(expanded, ".5.5.5.5");
-        let final_result = expand_pipe(&expanded, 4);
-        assert_eq!(final_result, ".5.5.5.5");
     }
 
     // --- スペース除去後のパーステスト ---

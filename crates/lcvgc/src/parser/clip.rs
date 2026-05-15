@@ -1,12 +1,13 @@
 use nom::{bytes::complete::tag, character::complete::char, combinator::opt, IResult};
 
 use crate::ast::clip::*;
+use crate::parser::cell_normalize::{expand_bar_jump_cells, expand_pipe_cells, CellToken};
 use crate::parser::clip_arpeggio::parse_arpeggio;
 use crate::parser::clip_articulation::parse_articulation;
 use crate::parser::clip_bar_jump::parse_bar_jump;
 use crate::parser::clip_cc::{parse_cc_step, parse_cc_target, parse_cc_time};
 use crate::parser::clip_drum::{
-    expand_pipe, expand_repetition, parse_hit_symbols, parse_probability_row,
+    expand_repetition, tokenize_drum_pattern, tokenize_probability_pattern,
 };
 use crate::parser::clip_note::parse_note_event;
 use crate::parser::clip_options::parse_clip_options;
@@ -175,6 +176,20 @@ fn parse_pitched_body(mut input: &str) -> IResult<&str, PitchedClipBody> {
                 };
                 if !note_token_ok {
                     break;
+                }
+            }
+
+            // `|` 拍境界スナップを試行
+            // Try `|` beat-boundary snap. 単独トークン (=次が空白/改行/EOF/}) のみ受理。
+            // Only accept a standalone `|` token (followed by whitespace, newline,
+            // EOF, or closing brace) so future `||` (or similar) syntax stays open.
+            if current.starts_with('|') {
+                let after = &current[1..];
+                let next_ch = after.chars().next();
+                if matches!(next_ch, None | Some(' ' | '\t' | '\r' | '\n' | '}')) {
+                    elements.push(PitchedElement::PipeSnap);
+                    current = after;
+                    continue;
                 }
             }
 
@@ -449,33 +464,39 @@ fn parse_drum_body(input: &str) -> IResult<&str, DrumClipBody> {
                 continue;
             }
 
-            // 確率行かどうかを確認（すべての文字が0-9、`.`、`|`、`(`、`)`、`*`、スペース）
-            // Check if this could be a probability row (all chars are 0-9, `.`, `|`, `(`, `)`, `*`, space)
-            let is_prob = pattern
-                .chars()
-                .all(|c| c.is_ascii_digit() || matches!(c, '.' | '|' | '(' | ')' | '*' | ' '));
+            // 確率行かどうかを確認（すべての文字が0-9、`.`、`|`、`>`、`(`、`)`、`*`、スペース）
+            // Check if this could be a probability row (all chars are 0-9, `.`, `|`, `>`,
+            // `(`, `)`, `*`, space)
+            let is_prob = pattern.chars().all(|c| {
+                c.is_ascii_digit() || matches!(c, '.' | '|' | '>' | '(' | ')' | '*' | ' ')
+            });
 
             if is_prob && !rows.is_empty() {
-                // 直前のドラム行に対する確率行 — スペース除去してから繰り返し・パイプ展開・パース
-                // Probability row for the last drum row — strip spaces, then expand repetition/pipe before parsing
-                let stripped: String = pattern.chars().filter(|c| *c != ' ').collect();
-                let after_rep = expand_repetition(&stripped);
-                let expanded = expand_pipe(&after_rep, beats_per_step);
-                let prob = parse_probability_row(&expanded).map_err(|_| {
-                    nom::Err::Failure(nom::error::Error::new(current, nom::error::ErrorKind::Char))
-                })?;
+                // 直前のドラム行に対する確率行 — `(...)*N` 展開 → トークナイズ →
+                // `|` 解決 → `>N` 解決 → flat な確率値列
+                // Probability row for the previous drum row.
+                let prob = build_probability_row(pattern, beats_per_step, resolution as usize)
+                    .map_err(|_| {
+                        nom::Err::Failure(nom::error::Error::new(
+                            current,
+                            nom::error::ErrorKind::Char,
+                        ))
+                    })?;
                 if let Some(last) = rows.last_mut() {
                     last.probability = Some(prob);
                 }
             } else {
-                // ヒットパターン行 — スペース除去してから繰り返し・パイプ展開・パース
-                // Hit pattern row — strip spaces, then expand repetition/pipe before parsing
-                let stripped: String = pattern.chars().filter(|c| *c != ' ').collect();
-                let after_rep = expand_repetition(&stripped);
-                let expanded = expand_pipe(&after_rep, beats_per_step);
-                let hits = parse_hit_symbols(&expanded).map_err(|_| {
-                    nom::Err::Failure(nom::error::Error::new(current, nom::error::ErrorKind::Char))
-                })?;
+                // ヒットパターン行 — `(...)*N` 展開 → トークナイズ → `|` 解決 →
+                // `>N` 解決 → flat な HitSymbol 列
+                // Hit pattern row.
+                let hits = build_drum_hits(pattern, beats_per_step, resolution as usize).map_err(
+                    |_| {
+                        nom::Err::Failure(nom::error::Error::new(
+                            current,
+                            nom::error::ErrorKind::Char,
+                        ))
+                    },
+                )?;
                 rows.push(crate::ast::clip_drum::DrumRow {
                     instrument: inst_name.to_string(),
                     hits,
@@ -495,21 +516,22 @@ fn parse_drum_body(input: &str) -> IResult<&str, DrumClipBody> {
                 continue;
             }
 
-            // 確率行かどうかを確認（すべての文字が0-9、`.`、`|`、`(`、`)`、`*`、スペース）
-            // Check if all chars are probability-compatible (0-9, `.`, `|`, `(`, `)`, `*`, space)
-            let is_prob = pattern
-                .chars()
-                .all(|c| c.is_ascii_digit() || matches!(c, '.' | '|' | '(' | ')' | '*' | ' '));
+            // 確率行かどうかを確認（すべての文字が0-9、`.`、`|`、`>`、`(`、`)`、`*`、スペース）
+            // Check if all chars are probability-compatible.
+            let is_prob = pattern.chars().all(|c| {
+                c.is_ascii_digit() || matches!(c, '.' | '|' | '>' | '(' | ')' | '*' | ' ')
+            });
 
             if is_prob && !rows.is_empty() {
-                // スペース除去してから繰り返し・パイプ展開・パース
-                // Strip spaces, then expand repetition/pipe before parsing
-                let stripped: String = pattern.chars().filter(|c| *c != ' ').collect();
-                let after_rep = expand_repetition(&stripped);
-                let expanded = expand_pipe(&after_rep, beats_per_step);
-                let prob = parse_probability_row(&expanded).map_err(|_| {
-                    nom::Err::Failure(nom::error::Error::new(current, nom::error::ErrorKind::Char))
-                })?;
+                // パイプ・小節ジャンプ含めて新パイプラインで解決
+                // Resolve via the new cell-token pipeline (incl. `|` / `>N`).
+                let prob = build_probability_row(pattern, beats_per_step, resolution as usize)
+                    .map_err(|_| {
+                        nom::Err::Failure(nom::error::Error::new(
+                            current,
+                            nom::error::ErrorKind::Char,
+                        ))
+                    })?;
                 if let Some(last) = rows.last_mut() {
                     last.probability = Some(prob);
                 }
@@ -535,6 +557,86 @@ fn parse_drum_body(input: &str) -> IResult<&str, DrumClipBody> {
     ))
 }
 
+/// ドラム行 (string) を新パイプラインで `Vec<HitSymbol>` まで解決する。
+///
+/// パイプライン:
+///   1. `expand_repetition` で `(...)*N` を string 段で展開する。
+///   2. `tokenize_drum_pattern` で `CellToken<HitSymbol>` 列に変換する。
+///   3. `expand_pipe_cells` で `|` を拍境界スナップに変換する (skip = `Rest`)。
+///   4. `expand_bar_jump_cells` で `>N` を絶対位置スナップに変換する。
+///      `steps_per_bar` は `resolution` を 1 小節分のセル数として使う。
+///      長さの padding/truncate は呼び出し側 (= シーケンサ) に任せるため、
+///      `total_steps = None` を指定する。
+///
+/// Resolve a drum row string into a flat `Vec<HitSymbol>` via the new
+/// cell-token pipeline.
+///
+/// # Arguments
+/// * `pattern` - ドラム行の生文字列 / raw drum row text
+/// * `beats_per_step` - 1 拍あたりのセル数 / cells per beat
+/// * `steps_per_bar` - 1 小節あたりのセル数 (= resolution) / cells per bar
+///
+/// # Returns
+/// `Ok(Vec<HitSymbol>)` — 展開済みのヒット列 / expanded hit sequence
+///
+/// # Errors
+/// 未知のシンボル文字、`>` の後ろの数字欠落、`BarJump(0)` などでエラーを返す。
+/// Returns an error on unknown symbols, `>` without digits, or `BarJump(0)`.
+fn build_drum_hits(
+    pattern: &str,
+    beats_per_step: usize,
+    steps_per_bar: usize,
+) -> Result<Vec<crate::ast::clip_drum::HitSymbol>, String> {
+    let after_rep = expand_repetition(pattern);
+    let tokens = tokenize_drum_pattern(&after_rep)?;
+    let piped = expand_pipe_cells(
+        &tokens,
+        beats_per_step,
+        &crate::ast::clip_drum::HitSymbol::Rest,
+    );
+    let flat = expand_bar_jump_cells(
+        &piped,
+        steps_per_bar,
+        None,
+        &crate::ast::clip_drum::HitSymbol::Rest,
+    )?;
+    Ok(flat)
+}
+
+/// 確率行 (string) を新パイプラインで `Vec<u8>` まで解決する。
+///
+/// `tokenize_probability_pattern` を使う以外は `build_drum_hits` と同じ流れ。
+/// `expand_pipe_cells` / `expand_bar_jump_cells` の `skip_cell` には
+/// 確率行の意味で「常に発音」を表す 100 を渡す (= drum 行 `Rest` に相当)。
+///
+/// Resolve a probability row string into a flat `Vec<u8>` via the new
+/// cell-token pipeline.
+///
+/// # Arguments
+/// * `pattern` - 確率行の生文字列 / raw probability row text
+/// * `beats_per_step` - 1 拍あたりのセル数 / cells per beat
+/// * `steps_per_bar` - 1 小節あたりのセル数 (= resolution) / cells per bar
+///
+/// # Returns
+/// `Ok(Vec<u8>)` — 展開済みの確率値列 / expanded probability sequence
+///
+/// # Errors
+/// 未知のシンボル、`>N` 不正でエラーを返す。
+/// Returns an error on unknown symbols or invalid `>N`.
+fn build_probability_row(
+    pattern: &str,
+    beats_per_step: usize,
+    steps_per_bar: usize,
+) -> Result<Vec<u8>, String> {
+    let after_rep = expand_repetition(pattern);
+    let tokens: Vec<CellToken<u8>> = tokenize_probability_pattern(&after_rep)?;
+    // 確率行の `skip_cell` は「ステップなし = 常に発音 (100)」。
+    // これは drum 行で `.` = Rest と扱うのと同じ「埋め役」。
+    let piped = expand_pipe_cells(&tokens, beats_per_step, &100u8);
+    let flat = expand_bar_jump_cells(&piped, steps_per_bar, None, &100u8)?;
+    Ok(flat)
+}
+
 /// 繰り返し content 文字列をピッチド要素列にパースする。
 /// Repetition の content（括弧の中身）を PitchedElement のリストに変換する。
 ///
@@ -549,6 +651,18 @@ pub fn parse_repetition_content(content: &str) -> Result<Vec<PitchedElement>, St
 
         if current.is_empty() {
             break;
+        }
+
+        // `|` 拍境界スナップを試行
+        // Try `|` beat-boundary snap (standalone token only)
+        if current.starts_with('|') {
+            let after = &current[1..];
+            let next_ch = after.chars().next();
+            if matches!(next_ch, None | Some(' ' | '\t' | '\r' | '\n')) {
+                elements.push(PitchedElement::PipeSnap);
+                current = after;
+                continue;
+            }
         }
 
         // 小節ジャンプを試行
@@ -788,7 +902,12 @@ mod tests {
                     crate::ast::clip_cc::CcAutomation::Step(step) => {
                         assert_eq!(step.target.instrument, "vbass");
                         assert_eq!(step.target.param, "cutoff");
-                        assert_eq!(step.values, vec![0, 10, 20, 30]);
+                        let expected: Vec<crate::parser::cell_normalize::CellToken<Option<u8>>> =
+                            [0u8, 10, 20, 30]
+                                .iter()
+                                .map(|v| crate::parser::cell_normalize::CellToken::Cell(Some(*v)))
+                                .collect();
+                        assert_eq!(step.cells, expected);
                     }
                     other => panic!("expected Step CC, got {:?}", other),
                 }
@@ -825,6 +944,46 @@ mod tests {
         }
     }
 
+    /// `|` 拍境界スナップが PitchedElement::PipeSnap としてパースされる
+    /// `|` parses as PitchedElement::PipeSnap.
+    #[test]
+    fn test_pitched_pipe_snap() {
+        let input = r#"clip bass_pipe [bars 1] {
+  bass c:3:8 c | c c
+}"#;
+        let (rest, clip) = parse_clip(input).unwrap();
+        assert_eq!(rest, "");
+        match &clip.body {
+            ClipBody::Pitched(body) => {
+                assert_eq!(body.lines.len(), 1);
+                let elems = &body.lines[0].elements;
+                // c c | c c → 5 要素
+                assert_eq!(elems.len(), 5);
+                assert!(matches!(elems[2], PitchedElement::PipeSnap));
+            }
+            _ => panic!("expected pitched"),
+        }
+    }
+
+    /// 末尾の `|` も認識される
+    /// Trailing `|` is recognized.
+    #[test]
+    fn test_pitched_trailing_pipe_snap() {
+        let input = r#"clip bass_pipe [bars 1] {
+  bass c:3:8 c |
+}"#;
+        let (rest, clip) = parse_clip(input).unwrap();
+        assert_eq!(rest, "");
+        match &clip.body {
+            ClipBody::Pitched(body) => {
+                let elems = &body.lines[0].elements;
+                assert_eq!(elems.len(), 3);
+                assert!(matches!(elems[2], PitchedElement::PipeSnap));
+            }
+            _ => panic!("expected pitched"),
+        }
+    }
+
     #[test]
     fn test_multiline_pitched() {
         let input = r#"clip bass_a [bars 2] {
@@ -840,6 +999,87 @@ mod tests {
                 assert_eq!(body.lines[1].instrument, "bass");
             }
             _ => panic!("expected pitched"),
+        }
+    }
+
+    /// drum 行に新仕様 `|` (拍境界スナップ) を入れた場合の挙動を検証する。
+    /// 行の途中で `|` を入れて 1 拍だけ書き、その先を `>3` で 3 小節目頭に
+    /// ジャンプして 2 音だけ書く。 resolution = 16 (1 小節 16 セル) なので
+    /// 全体は最終的に 3 小節目末尾までで 48 セル相当 (= bar 3 末尾 = step 47)
+    /// が埋まる…のではなく、 `expand_bar_jump_cells` の `total_steps = None`
+    /// は `steps_per_bar` (= 16) の倍数に切り上げるため、最終長は 48 セル。
+    ///
+    /// Verify drum row supports new `|` (beat-boundary snap) and `>N`
+    /// (bar-absolute jump).
+    #[test]
+    fn test_drum_row_with_pipe_and_bar_jump() {
+        let input = r#"clip drums_b [bars 4] {
+  use tr808
+  resolution 16
+  bd    x.| >3 xx
+}"#;
+        let (rest, clip) = parse_clip(input).unwrap();
+        assert_eq!(rest, "");
+        match &clip.body {
+            ClipBody::Drum(body) => {
+                assert_eq!(body.rows.len(), 1);
+                let hits = &body.rows[0].hits;
+                // 期待:
+                //   step 0..2  = [Normal, Rest]   (x.)
+                //   step 2..4  = [Rest, Rest]      (| で 4 セル境界まで埋め)
+                //   step 4..32 = 全 Rest          (bar 2 = `.` 埋め)
+                //   step 32..34 = [Normal, Normal] (>3 で bar 3 頭、xx)
+                //   step 34..48 = 全 Rest          (bar 3 末尾までの埋め)
+                // total_steps = None なので 48 (= 3 bar 分) で揃う。
+                assert_eq!(hits.len(), 48, "3 bar (48 セル) に切り上げられるはず");
+                use crate::ast::clip_drum::HitSymbol::*;
+                assert_eq!(hits[0], Normal);
+                assert_eq!(hits[1], Rest);
+                assert_eq!(hits[2], Rest);
+                assert_eq!(hits[3], Rest);
+                // bar 1 末尾と bar 2 は全 Rest。
+                for (i, h) in hits.iter().enumerate().take(32).skip(4) {
+                    assert_eq!(*h, Rest, "bar1 末尾 / bar2 は Rest のはず (idx={i})");
+                }
+                assert_eq!(hits[32], Normal);
+                assert_eq!(hits[33], Normal);
+                for (i, h) in hits.iter().enumerate().take(48).skip(34) {
+                    assert_eq!(*h, Rest, "bar3 末尾は Rest のはず (idx={i})");
+                }
+            }
+            _ => panic!("expected drum"),
+        }
+    }
+
+    /// `|` 超過時の切り落とし: 1 拍 = 4 セルなのに `x x x x x |` と 5 セル書いて
+    /// `|` で 1 拍境界に強制スナップすると、末尾 1 セルが切り落とされる。
+    /// Truncation on overrun: 5 cells + `|` → 4 cells.
+    #[test]
+    fn test_drum_row_pipe_truncates_overrun() {
+        let input = r#"clip drums_c [bars 1] {
+  use tr808
+  resolution 16
+  bd    xxxxx|
+}"#;
+        let (rest, clip) = parse_clip(input).unwrap();
+        assert_eq!(rest, "");
+        match &clip.body {
+            ClipBody::Drum(body) => {
+                let hits = &body.rows[0].hits;
+                // 5 セル → 4 セルに切り落とし。`total_steps = None` で
+                // steps_per_bar (= 16) の倍数に切り上げ → 最終 16 セル。
+                assert_eq!(hits.len(), 16);
+                use crate::ast::clip_drum::HitSymbol::*;
+                assert_eq!(hits[0], Normal);
+                assert_eq!(hits[1], Normal);
+                assert_eq!(hits[2], Normal);
+                assert_eq!(hits[3], Normal);
+                // 5 セル目はカット。残りは Rest 埋め。
+                for (i, h) in hits.iter().enumerate().take(16).skip(4) {
+                    assert_eq!(*h, Rest, "idx={i} は Rest のはず");
+                }
+            }
+            _ => panic!("expected drum"),
         }
     }
 }

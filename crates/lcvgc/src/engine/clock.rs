@@ -113,6 +113,17 @@ impl Clock {
             / u64::from(self.time_sig.denominator)
     }
 
+    /// 1拍のティック数 = ppq * (4 / denominator)
+    ///
+    /// 拍子分母に応じた「1 拍」のティック数を返す。
+    /// 4/4 では 4 分音符 = ppq、6/8 では 8 分音符 = ppq/2 となる。
+    ///
+    /// Ticks per beat = ppq * (4 / denominator). One "beat" depends on the
+    /// time signature denominator (quarter for 4/4, eighth for 6/8, etc.).
+    pub fn ticks_per_beat(&self) -> u64 {
+        u64::from(self.ppq) * 4 / u64::from(self.time_sig.denominator)
+    }
+
     /// 音価と付点からティック数を計算する
     /// Converts a note duration and dotted flag to tick count
     ///
@@ -183,6 +194,24 @@ mod tests {
             denominator: 8,
         });
         assert_eq!(c.ticks_per_bar(), 1440);
+    }
+
+    #[test]
+    fn ticks_per_beat_4_4() {
+        let c = Clock::new(120.0);
+        // 4/4: 1 拍 = 4 分音符 = ppq = 480
+        assert_eq!(c.ticks_per_beat(), 480);
+    }
+
+    #[test]
+    fn ticks_per_beat_6_8() {
+        let mut c = Clock::new(120.0);
+        c.set_time_sig(TimeSignature {
+            numerator: 6,
+            denominator: 8,
+        });
+        // 6/8: 1 拍 = 8 分音符 = ppq/2 = 240
+        assert_eq!(c.ticks_per_beat(), 240);
     }
 
     #[test]

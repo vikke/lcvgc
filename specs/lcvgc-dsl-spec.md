@@ -42,15 +42,17 @@
         * [Minimum Gate Off Duration](#minimum-gate-off-duration)
     * [7.8 Multi-line Notation](#78-multi-line-notation)
     * [7.9 Bar Jump (`>N`)](#79-bar-jump-n)
-    * [7.10 Chords (Bracket Notation)](#710-chords-bracket-notation)
-    * [7.11 Chord Name Notation](#711-chord-name-notation)
-    * [7.12 Arpeggio](#712-arpeggio)
-    * [7.13 Drums (Step Sequencer Notation)](#713-drums-step-sequencer-notation)
+    * [7.10 `|` Beat Boundary Snap (Pitched Instruments)](#710--beat-boundary-snap-pitched-instruments)
+    * [7.11 Chords (Bracket Notation)](#711-chords-bracket-notation)
+    * [7.12 Chord Name Notation](#712-chord-name-notation)
+    * [7.13 Arpeggio](#713-arpeggio)
+    * [7.14 Drums (Step Sequencer Notation)](#714-drums-step-sequencer-notation)
         * [Hit Symbols](#hit-symbols)
-        * [`|` Shortcut](#-shortcut)
+        * [`|` Beat Boundary Snap](#-beat-boundary-snap)
+        * [`>N` Bar Jump](#n-bar-jump)
         * [Repetition](#repetition)
         * [Probability Row](#probability-row)
-    * [7.14 CC Automation](#714-cc-automation)
+    * [7.15 CC Automation](#715-cc-automation)
         * [Step Mode](#step-mode)
         * [Time-based Mode](#time-based-mode)
         * [Exponential Curve Interpolation](#exponential-curve-interpolation)
@@ -603,7 +605,7 @@ clip lead_a [bars 1] {
 ```
 
 - Note names: `c c# db d d# eb e f f# gb g g# ab a a# bb b` (all lowercase)
-- Chord names: `cm7`, `fM7`, `g7`, etc. (see Section 7.11 for the suffix list)
+- Chord names: `cm7`, `fM7`, `g7`, etc. (see Section 7.12 for the suffix list)
 - Octave: `0-9` — specified with `:` separator. Omission carries over the previous value
 - Duration: `1`=whole note, `2`=half note, `4`=quarter, `8`=eighth, `16`=sixteenth; dotted notes append `.` like `4.` or `8.`. Omission carries over the previous value
 - Rest: `r[:duration]` (duration carries over if omitted)
@@ -895,7 +897,7 @@ Rules:
 - If the current position is past bar N → truncate the excess
 - `>N` outside the bars range is a parse error (e.g., `>5` with `[bars 4]`)
 
-Can also be used with the drum step sequencer notation. It is a different symbol from `|` (beat-head shortcut), so there is no confusion.
+Can be used with pitched instruments, drums, and the CC step mode alike. It is a different symbol from `|` (beat boundary snap), so there is no confusion.
 
 ```
 clip drums_a [bars 4] {
@@ -907,7 +909,28 @@ clip drums_a [bars 4] {
 }
 ```
 
-### 7.10 Chords (Bracket Notation)
+### 7.10 `|` Beat Boundary Snap (Pitched Instruments)
+
+Clip lines for pitched instruments (chord / lead / bass, etc.) can also use `|` to align to beat boundaries. The accumulated length (in ticks) up to the `|` is inspected and one of the following is performed:
+
+- Accumulated length < 1 beat → **pad the gap with rests** and advance to the next beat boundary
+- Accumulated length > 1 beat → **roll back to the previous beat boundary** (trim the trailing notes already emitted by the excess)
+
+The internal implementation differs from the cell-based snap used by drums and CC (which works in `beats_per_step` units), but the user-visible meaning is identical.
+
+```
+// Underflow: an 8th note × 1 = half a beat. `|` pads with rests up to the next beat boundary.
+//      → the following d:3 sounds from the start of beat 2
+bass c:3:8 | d:3:4
+
+// Overflow: 8th × 5 = 1.5 beats. `|` rolls back to the previous beat boundary, dropping the 5th c.
+//      → effectively plays as four c's (one beat) and d:3 sounds from the start of beat 2
+bass c:3:8 c c c c c | d:3:4
+```
+
+`|` only aligns in 1-beat units (the beat length specified by `time`). Combined with multi-line notation (Section 7.8), it is also useful for snapping the end of a line exactly to a beat boundary.
+
+### 7.11 Chords (Bracket Notation)
 
 Enclosing notes in square brackets makes them sound simultaneously. Multiple Note On messages are sent on the same MIDI channel.
 
@@ -925,7 +948,7 @@ clip fifths [bars 1] {
 }
 ```
 
-### 7.11 Chord Name Notation
+### 7.12 Chord Name Notation
 
 Format: `instrument_name chord_name:octave:duration`
 
@@ -980,7 +1003,7 @@ clip chords_mixed [bars 2] {
 }
 ```
 
-### 7.12 Arpeggio
+### 7.13 Arpeggio
 
 Append `arp(direction)` or `arp(direction, note_resolution)` after a chord. The second argument is optional. **The chord can be either a ChordBracket (`[c eb g]`) or a chord name (`cm`, `cm7`, etc.)**; for chord names the chord tones are expanded and arpeggiated.
 
@@ -1025,7 +1048,7 @@ clip arp_f [bars 1] {
 - `random` reshuffles the order on every loop iteration.
 - `updown` is a ping-pong that does not repeat the endpoints (e.g. `[c e g]` → `c, e, g, e`).
 
-### 7.13 Drums (Step Sequencer Notation)
+### 7.14 Drums (Step Sequencer Notation)
 
 Use `use` to specify a kit and `resolution` to set the note resolution per character.
 
@@ -1058,9 +1081,14 @@ bd    x.  x.  x.  x.  x.  x.  x.  x.
 bd    x...  x...  x...  x...
 ```
 
-#### `|` Shortcut
+#### `|` Beat Boundary Snap
 
-`|` fills from the current position to the next beat boundary (every 4 characters at resolution 16) with rests `.`.
+`|` aligns the current position to a beat boundary (every 4 cells at resolution 16, every 2 cells at resolution 8). The number of cells from the most recent `|` (or the start of the line) up to but not including this `|` is converted via `beats_per_step` and handled as follows:
+
+- Cell count ≤ 1 beat → **pad the gap with `.` (rests)** and advance to the next beat boundary
+- Cell count > 1 beat → **truncate down to the previous beat boundary** (the excess cells are discarded)
+
+The underflow-only case matches the previous behavior:
 
 ```
 bd    x|x|x|x
@@ -1072,6 +1100,35 @@ snare |x||x
 
 - A leading `|` makes the first beat entirely rests
 - Consecutive `||` skips an entire beat
+
+In the overflow case, the cells before `|` are rolled back to the beat boundary:
+
+```
+bd    x.x.x.x.x. |
+// 5 cells (1 beat + 1 cell) → rolled back to the previous beat boundary, leaving 4 cells
+// Expands to: x.x.x.x.
+
+bd    xxxxx |
+// Likewise, the 1 excess cell is rolled back, leaving 4 cells
+// Expands to: xxxx
+```
+
+#### `>N` Bar Jump
+
+The `>N` from Section 7.9 is also available on drum rows. Whitespace around it is optional.
+
+```
+clip drums_jump [bars 4] {
+  use tr808
+  resolution 16
+
+  // Same meaning whether or not spaces are inserted
+  bd    x. x. >3 xx xx
+  snare x.x.>3xxxx
+}
+```
+
+`|` (beat boundary snap) and `>N` (bar jump) are distinct symbols and can be freely combined on the same row.
 
 #### Repetition
 
@@ -1105,7 +1162,8 @@ clip drums_a [bars 1] {
 - Digits at positions without hits are ignored
 - If the probability row is omitted, everything is 100%
 - The probability check is performed on every loop iteration
-- `|` shorthand is supported. `|` fills with `.` (100%) up to the next beat boundary. Same expansion rules as hit rows
+- `|` beat boundary snap is supported. Underflow is padded with `.` (100%) and overflow is truncated down to the previous beat boundary. Same expansion rules as hit rows
+- `>N` bar jump is supported. Same expansion rules as hit rows
 - `()*N` repetition is supported. Same expansion rules as hit rows
 - Spaces within the pattern string are ignored. You can freely insert spaces just like in hit rows
 
@@ -1124,7 +1182,7 @@ clip drums_a [bars 1] {
 }
 ```
 
-### 7.14 CC Automation
+### 7.15 CC Automation
 
 Uses CC aliases defined on an instrument to send MIDI Control Change messages within a clip. There are two modes: step mode and time-based + interpolation mode.
 
@@ -1144,6 +1202,45 @@ clip bass_a [bars 1] {
 ```
 
 Step mode cannot be used in clips with only pitched instruments and no resolution specified (use time-based mode instead).
+
+Step mode accepts the same cell-column meta tokens as drum rows:
+
+| Symbol | Meaning |
+|--------|---------|
+| `0`-`127` | Emit the CC value at that step |
+| `.` | **Do not emit a CC message at that step** (the host-side value is retained) |
+| `\|` | Beat boundary snap. Underflow is padded with `.` (= no emission); overflow is truncated to the previous beat boundary |
+| `>N` | Jump to the start of bar N. Same semantics as drums |
+| `(...)*N` | Grouping and repetition |
+
+Using `.` makes it natural to express "move CC only at the note positions."
+
+```
+clip bass_sync [bars 1] {
+  resolution 16
+  bass    c:3:8 c eb f::4 g::2
+
+  // Modulate cutoff in sync with note onsets (= place values only where notes are)
+  bass.cutoff 30 . . 60 . . . . 90 . . . . . . .
+  //          ^^^^^^^ 30 at beat 1, 60 at step 4, 90 at step 9
+  //          At the `.` steps no message is sent, so the host-side value is retained
+}
+```
+
+Repetition and bar jumps can be combined as well:
+
+```
+clip bass_pattern [bars 4] {
+  resolution 16
+  bass (c:3:8 c eb f::4 g::2)*4
+
+  // Repeat a single-bar pattern four times
+  bass.cutoff (30 . . 60 . . . . 90 . . . . . . .)*4
+
+  // Skip directly to a different pattern in bar 3
+  bass.resonance 40 . . . 60 . . . >3 80 . . . 127 . . .
+}
+```
 
 #### Time-based Mode
 

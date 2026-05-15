@@ -1,3 +1,6 @@
+/// セル列正規化モジュール (drum/CC/pitched で共通の `.` `|` `>N` 処理)
+/// Cell-sequence normalization (shared `.`/`|`/`>N` handling).
+pub mod cell_normalize;
 /// クリップパーサーモジュール
 /// Clip parser module
 pub mod clip;
