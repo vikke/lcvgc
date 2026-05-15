@@ -10,16 +10,27 @@ pub struct CcTarget {
     pub param: String,
 }
 
-/// ステップ方式: スペース区切りの値リスト
-/// Step mode: space-separated value list
+/// ステップ方式: 正規化前のセル列 (メタトークン含む)
+/// Step mode: not-yet-normalized cell sequence (with meta tokens).
+///
+/// 値 `Some(0..=127)` は 1 step で送出する CC 値、`None` は「この step では
+/// CC メッセージを送出しない」(セル単位 skip) を表す。`|` (`CellToken::Pipe`)
+/// と `>N` (`CellToken::BarJump`) のメタトークンも保持し、コンパイル時に
+/// clip 全体の resolution / bars を踏まえて `expand_pipe_cells` および
+/// `expand_bar_jump_cells` で展開する。
+///
+/// Each cell is `Some(0..=127)` (a CC value to send for that step) or
+/// `None` (skip — emit nothing for that step). Meta tokens `Pipe` and
+/// `BarJump(N)` are preserved and resolved at compile time using the
+/// clip's resolution and bars.
 #[derive(Debug, Clone, PartialEq)]
 pub struct CcStepValues {
     /// 対象CCターゲット
     /// Target CC destination
     pub target: CcTarget,
-    /// ステップ値のリスト (0-127)
-    /// List of step values (0-127)
-    pub values: Vec<u8>, // 0-127
+    /// 正規化前の生セル列 (`Pipe` / `BarJump` を含む可能性あり)
+    /// Raw cell sequence (may include `Pipe` / `BarJump`).
+    pub cells: Vec<crate::parser::cell_normalize::CellToken<Option<u8>>>,
 }
 
 /// 時間指定のポイント

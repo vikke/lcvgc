@@ -122,7 +122,7 @@ pub fn compile_clip(
                 (evts, Vec::new(), randoms, end)
             }
             ClipBody::Drum(body) => {
-                let (evts, drums, end) = compile_drum(body, clock, registry)?;
+                let (evts, drums, end) = compile_drum(body, clock, registry, clip.options.bars)?;
                 (evts, drums, Vec::new(), end)
             }
         };
@@ -309,7 +309,7 @@ fn compile_pitched(
     }
 
     // CCオートメーションのコンパイル
-    let cc_events = compile_cc_automations(&body.cc_automations, clock, registry)?;
+    let cc_events = compile_cc_automations(&body.cc_automations, clock, registry, bars)?;
     events.extend(cc_events);
     Ok((events, random_choice_groups, logical_end_ticks))
 }
@@ -847,11 +847,18 @@ fn apply_min_gate_off(note_ticks: u64, gate_percent: u8, clock: &Clock) -> u64 {
 }
 
 /// CCオートメーション列をMIDI CCイベントにコンパイルする
-/// Compile CC automations into MIDI ControlChange events
+///
+/// `bars` には clip の `[bars N]` 指定があれば値を渡す。step 方式の
+/// `>N` / `|` 解決と最終長は `bars` を踏まえて行われる。
+///
+/// Compile CC automations into MIDI ControlChange events. `bars` carries
+/// the clip's `[bars N]` constraint (if any) and drives the final
+/// step-length resolution for `>N` / `|` meta tokens.
 fn compile_cc_automations(
     automations: &[CcAutomation],
     clock: &Clock,
     registry: &Registry,
+    bars: Option<u32>,
 ) -> Result<Vec<MidiEvent>, EngineError> {
     let mut events = Vec::new();
 
@@ -882,7 +889,38 @@ fn compile_cc_automations(
                 // ステップ方式は仕様上 resolution=16 のドラム解像度を共有
                 // デフォルト16分音符
                 let ticks_per_step = clock.duration_to_ticks(16, false);
-                for (i, &value) in step.values.iter().enumerate() {
+                let bar_ticks = clock.ticks_per_bar();
+                // 1 step = 16 分音符。1 小節あたりのセル数 (= steps_per_bar) は
+                // bar_ticks / ticks_per_step で求まる。
+                // Cells per bar at this resolution.
+                let steps_per_bar = (bar_ticks / ticks_per_step.max(1)).max(1) as usize;
+                // `|` 拍境界は 4 セル (= 1 拍 = 16 分音符 4 つ) 単位。
+                // `|` snaps to a beat boundary; 1 beat == 4 sixteenths.
+                let beats_per_step = 4usize;
+                // bars 指定があれば total_steps = bars * steps_per_bar、
+                // 無ければ None (= 自動 = steps_per_bar の倍数に切り上げ)。
+                // total_steps from `bars` if present, else auto rounding.
+                let total_steps = bars.map(|n| (n as usize).saturating_mul(steps_per_bar));
+                // `|` / `>N` を解決し、Option<u8> の平坦な列に展開する。
+                // Resolve `|` then `>N` into a flat `Option<u8>` sequence.
+                let piped = crate::parser::cell_normalize::expand_pipe_cells(
+                    &step.cells,
+                    beats_per_step,
+                    &None,
+                );
+                let resolved = crate::parser::cell_normalize::expand_bar_jump_cells(
+                    &piped,
+                    steps_per_bar,
+                    total_steps,
+                    &None,
+                )
+                .map_err(EngineError::CompileError)?;
+                for (i, cell) in resolved.iter().enumerate() {
+                    // `None` (= `.`) はこの step では CC を送出しない
+                    // `None` cells emit nothing for this step.
+                    let Some(value) = *cell else {
+                        continue;
+                    };
                     events.push(MidiEvent::new(
                         i as u64 * ticks_per_step,
                         MidiMessage::ControlChange {
@@ -1000,6 +1038,7 @@ fn compile_drum(
     body: &crate::ast::clip::DrumClipBody,
     clock: &Clock,
     registry: &Registry,
+    bars: Option<u32>,
 ) -> Result<(Vec<MidiEvent>, Vec<DrumProbabilityGroup>, u64), EngineError> {
     let kit = registry
         .get_kit(&body.kit)
@@ -1081,7 +1120,7 @@ fn compile_drum(
     }
 
     // ドラムクリップのCCオートメーションコンパイル
-    let cc_events = compile_cc_automations(&body.cc_automations, clock, registry)?;
+    let cc_events = compile_cc_automations(&body.cc_automations, clock, registry, bars)?;
     events.extend(cc_events);
     Ok((events, groups, logical_end_ticks))
 }
@@ -3020,7 +3059,12 @@ mod tests {
                         instrument: "bass".to_string(),
                         param: "cutoff".to_string(),
                     },
-                    values: vec![0, 32, 64, 127],
+                    cells: vec![
+                        crate::parser::cell_normalize::CellToken::Cell(Some(0)),
+                        crate::parser::cell_normalize::CellToken::Cell(Some(32)),
+                        crate::parser::cell_normalize::CellToken::Cell(Some(64)),
+                        crate::parser::cell_normalize::CellToken::Cell(Some(127)),
+                    ],
                 })],
             }),
         };
@@ -3152,7 +3196,10 @@ mod tests {
                         instrument: "bass".to_string(),
                         param: "cutoff".to_string(),
                     },
-                    values: vec![64, 127],
+                    cells: vec![
+                        crate::parser::cell_normalize::CellToken::Cell(Some(64)),
+                        crate::parser::cell_normalize::CellToken::Cell(Some(127)),
+                    ],
                 })],
             }),
         };
@@ -3170,6 +3217,213 @@ mod tests {
             assert_eq!(value, 64);
         } else {
             panic!("expected ControlChange");
+        }
+    }
+
+    // ---------------------------------------------------------------------
+    // CC step メタトークン (`.` `|` `>N`) 統合テスト
+    // CC-step meta-token integration tests.
+    // ---------------------------------------------------------------------
+
+    /// `.` (None) セルは MIDI イベントを生成しない
+    /// `None` cells produce no MIDI event.
+    #[test]
+    fn cc_step_dot_skips_emission() {
+        use crate::parser::cell_normalize::CellToken;
+        let registry = make_registry_with_bass_cc();
+        let clock = Clock::new(120.0);
+        let clip = ClipDef {
+            name: "test".to_string(),
+            options: ClipOptions::default(),
+            body: ClipBody::Pitched(PitchedClipBody {
+                lines: vec![PitchedLine {
+                    instrument: "bass".to_string(),
+                    elements: vec![single_note(NoteName::C, Some(4), Some(4), false)],
+                    is_layer_start: true,
+                }],
+                cc_automations: vec![CcAutomation::Step(CcStepValues {
+                    target: CcTarget {
+                        instrument: "bass".to_string(),
+                        param: "cutoff".to_string(),
+                    },
+                    // 4 step: Some(0), None, Some(64), None
+                    cells: vec![
+                        CellToken::Cell(Some(0)),
+                        CellToken::Cell(None),
+                        CellToken::Cell(Some(64)),
+                        CellToken::Cell(None),
+                    ],
+                })],
+            }),
+        };
+
+        let compiled = compile_clip(&clip, &clock, &registry).unwrap();
+        let cc_events: Vec<_> = compiled
+            .events
+            .iter()
+            .filter(|e| matches!(e.message, MidiMessage::ControlChange { .. }))
+            .collect();
+        // None 2 つはスキップされ、CC イベントは 2 つだけ
+        assert_eq!(cc_events.len(), 2);
+        // 1 つ目は step 0 (tick 0) の 0、2 つ目は step 2 (tick = 2 * 16分音符)
+        let ticks_per_step = clock.duration_to_ticks(16, false);
+        assert_eq!(cc_events[0].tick, 0);
+        assert_eq!(cc_events[1].tick, 2 * ticks_per_step);
+        if let MidiMessage::ControlChange { value, .. } = cc_events[1].message {
+            assert_eq!(value, 64);
+        } else {
+            panic!("expected ControlChange");
+        }
+    }
+
+    /// `|` で 1 拍 (= 4 step) 境界に揃える: 不足は `.` で埋め
+    /// `|` snaps to a beat boundary (= 4 steps); shorts are padded.
+    #[test]
+    fn cc_step_pipe_pads_to_beat_boundary() {
+        use crate::parser::cell_normalize::CellToken;
+        let registry = make_registry_with_bass_cc();
+        let clock = Clock::new(120.0);
+        // 2 step + | (拍 = 4 step) → padding 2 step → 計 4 step
+        // 続けて 0, 127 を追加して、bar 1 の 5,6 step 目になる
+        let cells = vec![
+            CellToken::Cell(Some(10)),
+            CellToken::Cell(Some(20)),
+            CellToken::Pipe,
+            CellToken::Cell(Some(64)),
+            CellToken::Cell(Some(127)),
+        ];
+        let clip = ClipDef {
+            name: "test".to_string(),
+            options: ClipOptions::default(),
+            body: ClipBody::Pitched(PitchedClipBody {
+                lines: vec![PitchedLine {
+                    instrument: "bass".to_string(),
+                    elements: vec![single_note(NoteName::C, Some(4), Some(4), false)],
+                    is_layer_start: true,
+                }],
+                cc_automations: vec![CcAutomation::Step(CcStepValues {
+                    target: CcTarget {
+                        instrument: "bass".to_string(),
+                        param: "cutoff".to_string(),
+                    },
+                    cells,
+                })],
+            }),
+        };
+        let compiled = compile_clip(&clip, &clock, &registry).unwrap();
+        let cc_events: Vec<_> = compiled
+            .events
+            .iter()
+            .filter(|e| matches!(e.message, MidiMessage::ControlChange { .. }))
+            .collect();
+        // padding は None なので発火しない: 4 イベント (step 0, 1, 4, 5)
+        assert_eq!(cc_events.len(), 4);
+        let ticks_per_step = clock.duration_to_ticks(16, false);
+        assert_eq!(cc_events[0].tick, 0);
+        assert_eq!(cc_events[1].tick, ticks_per_step);
+        assert_eq!(cc_events[2].tick, 4 * ticks_per_step);
+        assert_eq!(cc_events[3].tick, 5 * ticks_per_step);
+    }
+
+    /// `|` 超過時は前境界まで切り落とし
+    /// `|` truncates overruns back to the previous beat boundary.
+    #[test]
+    fn cc_step_pipe_truncates_overrun() {
+        use crate::parser::cell_normalize::CellToken;
+        let registry = make_registry_with_bass_cc();
+        let clock = Clock::new(120.0);
+        // 5 step + | (拍 = 4 step) → 4 step に切り落とし
+        let cells = vec![
+            CellToken::Cell(Some(1)),
+            CellToken::Cell(Some(2)),
+            CellToken::Cell(Some(3)),
+            CellToken::Cell(Some(4)),
+            CellToken::Cell(Some(5)),
+            CellToken::Pipe,
+        ];
+        let clip = ClipDef {
+            name: "test".to_string(),
+            options: ClipOptions::default(),
+            body: ClipBody::Pitched(PitchedClipBody {
+                lines: vec![PitchedLine {
+                    instrument: "bass".to_string(),
+                    elements: vec![single_note(NoteName::C, Some(4), Some(4), false)],
+                    is_layer_start: true,
+                }],
+                cc_automations: vec![CcAutomation::Step(CcStepValues {
+                    target: CcTarget {
+                        instrument: "bass".to_string(),
+                        param: "cutoff".to_string(),
+                    },
+                    cells,
+                })],
+            }),
+        };
+        let compiled = compile_clip(&clip, &clock, &registry).unwrap();
+        let cc_events: Vec<_> = compiled
+            .events
+            .iter()
+            .filter(|e| matches!(e.message, MidiMessage::ControlChange { .. }))
+            .collect();
+        // 5 番目 (value=5) は切り落とされる
+        assert_eq!(cc_events.len(), 4);
+        for (i, ev) in cc_events.iter().enumerate() {
+            if let MidiMessage::ControlChange { value, .. } = ev.message {
+                assert_eq!(value, (i + 1) as u8);
+            }
+        }
+    }
+
+    /// `>N` で小節 N の頭にジャンプ
+    /// `>N` snaps the cursor to bar N's start.
+    #[test]
+    fn cc_step_bar_jump_jumps_to_bar() {
+        use crate::parser::cell_normalize::CellToken;
+        let registry = make_registry_with_bass_cc();
+        let clock = Clock::new(120.0);
+        // 1 step + >3 + 1 step  (steps_per_bar = 16 in 4/4)
+        // 期待: step 0 と step 32 (= bar3 頭) に CC が出る
+        let cells = vec![
+            CellToken::Cell(Some(10)),
+            CellToken::BarJump(3),
+            CellToken::Cell(Some(99)),
+        ];
+        let clip = ClipDef {
+            name: "test".to_string(),
+            // bars=4 にすると total_steps=64 で十分
+            options: ClipOptions {
+                bars: Some(4),
+                time_sig: None,
+                scale: None,
+            },
+            body: ClipBody::Pitched(PitchedClipBody {
+                lines: vec![PitchedLine {
+                    instrument: "bass".to_string(),
+                    elements: vec![single_note(NoteName::C, Some(4), Some(4), false)],
+                    is_layer_start: true,
+                }],
+                cc_automations: vec![CcAutomation::Step(CcStepValues {
+                    target: CcTarget {
+                        instrument: "bass".to_string(),
+                        param: "cutoff".to_string(),
+                    },
+                    cells,
+                })],
+            }),
+        };
+        let compiled = compile_clip(&clip, &clock, &registry).unwrap();
+        let cc_events: Vec<_> = compiled
+            .events
+            .iter()
+            .filter(|e| matches!(e.message, MidiMessage::ControlChange { .. }))
+            .collect();
+        assert_eq!(cc_events.len(), 2);
+        let ticks_per_step = clock.duration_to_ticks(16, false);
+        assert_eq!(cc_events[0].tick, 0);
+        // bar3 頭 = step 32
+        assert_eq!(cc_events[1].tick, 32 * ticks_per_step);
+        if let MidiMessage::ControlChange { value, .. } = cc_events[1].message {
+            assert_eq!(value, 99);
         }
     }
 

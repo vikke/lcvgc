@@ -902,7 +902,12 @@ mod tests {
                     crate::ast::clip_cc::CcAutomation::Step(step) => {
                         assert_eq!(step.target.instrument, "vbass");
                         assert_eq!(step.target.param, "cutoff");
-                        assert_eq!(step.values, vec![0, 10, 20, 30]);
+                        let expected: Vec<crate::parser::cell_normalize::CellToken<Option<u8>>> =
+                            [0u8, 10, 20, 30]
+                                .iter()
+                                .map(|v| crate::parser::cell_normalize::CellToken::Cell(Some(*v)))
+                                .collect();
+                        assert_eq!(step.cells, expected);
                     }
                     other => panic!("expected Step CC, got {:?}", other),
                 }
