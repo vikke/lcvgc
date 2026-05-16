@@ -111,6 +111,7 @@ jobs:
           pkg_dir="lcvgc-${target}"
           mkdir "$pkg_dir"
           cp "target/${target}/release/lcvgc${bin_ext}" "$pkg_dir/"
+          cp "target/${target}/release/lcvgc-gen${bin_ext}" "$pkg_dir/"
           cp README.md "$pkg_dir/" 2>/dev/null || true
           cp LICENSE "$pkg_dir/" 2>/dev/null || true
 
