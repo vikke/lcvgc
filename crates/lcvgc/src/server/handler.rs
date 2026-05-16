@@ -512,4 +512,142 @@ mod tests {
             _ => panic!("Expected Diagnostics"),
         }
     }
+
+    // -----------------------------------------------------------------
+    // PR #83: LSP ハンドラ経由の preload は device 接続副作用を起こさない
+    //
+    // 各 LSP ハンドラは `preload_from_source` を経由して device ブロック
+    // を含むソースを解析するが、これは静的解析であり物理的な MIDI 接続
+    // を試みるべきでない。`Evaluator::set_device_event_tx` で仕掛けた
+    // tx に何も届かないこと（= `DeviceEvent::Upsert` が発火しないこと）
+    // を全 LSP ハンドラで確認する。
+    //
+    // Each LSP handler calls `preload_from_source` to analyse sources
+    // containing `device` blocks. Since the analysis is purely static,
+    // it must not attempt physical MIDI connections. We assert that the
+    // `DeviceEvent` channel set via `set_device_event_tx` stays empty.
+    // -----------------------------------------------------------------
+
+    /// LSP Diagnostics ハンドラ呼び出しで DeviceEvent が emit されない
+    /// LSP `Diagnostics` handler must not emit `DeviceEvent`.
+    #[tokio::test]
+    async fn handle_lsp_diagnostics_does_not_emit_device_event() {
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut ev_inner = Evaluator::new(120.0);
+        ev_inner.set_device_event_tx(tx);
+        let ev = Arc::new(Mutex::new(ev_inner));
+
+        let source = "device my_synth {\n  port IAC Driver\n}\n";
+        let req = Request::LspDiagnostics {
+            source: source.into(),
+            include_sources: None,
+        };
+        let resp = handle_request(&ev, req).await;
+        assert!(resp.success);
+
+        assert!(
+            rx.try_recv().is_err(),
+            "LspDiagnostics handler must not emit DeviceEvent"
+        );
+    }
+
+    /// LSP Completion ハンドラ呼び出しで DeviceEvent が emit されない
+    /// LSP `Completion` handler must not emit `DeviceEvent`.
+    #[tokio::test]
+    async fn handle_lsp_completion_does_not_emit_device_event() {
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut ev_inner = Evaluator::new(120.0);
+        ev_inner.set_device_event_tx(tx);
+        let ev = Arc::new(Mutex::new(ev_inner));
+
+        let source = "device my_synth {\n  port IAC Driver\n}\n";
+        let offset = source.len();
+        let req = Request::LspCompletion {
+            source: source.into(),
+            offset,
+            include_sources: None,
+        };
+        let resp = handle_request(&ev, req).await;
+        assert!(resp.success);
+
+        assert!(
+            rx.try_recv().is_err(),
+            "LspCompletion handler must not emit DeviceEvent"
+        );
+    }
+
+    /// LSP Hover ハンドラ呼び出しで DeviceEvent が emit されない
+    /// LSP `Hover` handler must not emit `DeviceEvent`.
+    #[tokio::test]
+    async fn handle_lsp_hover_does_not_emit_device_event() {
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut ev_inner = Evaluator::new(120.0);
+        ev_inner.set_device_event_tx(tx);
+        let ev = Arc::new(Mutex::new(ev_inner));
+
+        let source = "device my_synth {\n  port IAC Driver\n}\n";
+        // "device" の中の "v" 付近をホバー位置に
+        let offset = source.find("device").unwrap() + 3;
+        let req = Request::LspHover {
+            source: source.into(),
+            offset,
+            include_sources: None,
+        };
+        let resp = handle_request(&ev, req).await;
+        assert!(resp.success);
+
+        assert!(
+            rx.try_recv().is_err(),
+            "LspHover handler must not emit DeviceEvent"
+        );
+    }
+
+    /// LSP GotoDefinition ハンドラ呼び出しで DeviceEvent が emit されない
+    /// LSP `GotoDefinition` handler must not emit `DeviceEvent`.
+    #[tokio::test]
+    async fn handle_lsp_goto_definition_does_not_emit_device_event() {
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut ev_inner = Evaluator::new(120.0);
+        ev_inner.set_device_event_tx(tx);
+        let ev = Arc::new(Mutex::new(ev_inner));
+
+        let source = "device my_synth {\n  port IAC Driver\n}\ninstrument bass {\n  device my_synth\n  channel 1\n}\n";
+        // instrument 内の "my_synth" 参照位置
+        let offset = source.rfind("my_synth").unwrap();
+        let req = Request::LspGotoDefinition {
+            source: source.into(),
+            offset,
+            include_sources: None,
+        };
+        let resp = handle_request(&ev, req).await;
+        assert!(resp.success);
+
+        assert!(
+            rx.try_recv().is_err(),
+            "LspGotoDefinition handler must not emit DeviceEvent"
+        );
+    }
+
+    /// LSP DocumentSymbols ハンドラ呼び出しで DeviceEvent が emit されない
+    /// LSP `DocumentSymbols` handler must not emit `DeviceEvent`.
+    #[tokio::test]
+    async fn handle_lsp_document_symbols_does_not_emit_device_event() {
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut ev_inner = Evaluator::new(120.0);
+        ev_inner.set_device_event_tx(tx);
+        let ev = Arc::new(Mutex::new(ev_inner));
+
+        let source = "device my_synth {\n  port IAC Driver\n}\n";
+        let req = Request::LspDocumentSymbols {
+            source: source.into(),
+            include_sources: None,
+        };
+        let resp = handle_request(&ev, req).await;
+        assert!(resp.success);
+
+        assert!(
+            rx.try_recv().is_err(),
+            "LspDocumentSymbols handler must not emit DeviceEvent"
+        );
+    }
 }
