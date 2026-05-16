@@ -1,3 +1,5 @@
+use std::collections::HashSet;
+
 use crate::ast::clip::{ClipBody, ClipDef, PitchedClipBody, PitchedElement, PitchedLine};
 use crate::ast::clip_cc::{CcAutomation, Interpolation};
 use crate::ast::clip_drum::HitSymbol;
@@ -133,20 +135,72 @@ pub fn compile_clip(
     let total_ticks = if let Some(bars) = clip.options.bars {
         let bar_ticks = clock.ticks_per_bar();
         let max_ticks = bar_ticks * bars as u64;
-        // bars超過検出: 超過イベントがあればワーニング生成
-        // Detect bars overflow: generate warning if events exceed bar limit
-        let overflow_count = events.iter().filter(|e| e.tick >= max_ticks).count();
-        if overflow_count > 0 {
+
+        // clip 内に Note On が存在する (channel, note, device) を集める。
+        // この集合に属する Note Off で tick >= max_ticks のものはクランプ対象、
+        // それ以外の超過イベントは切り捨て対象とする。
+        //
+        // Collect (channel, note, device) tuples whose NoteOn falls inside the
+        // clip. A NoteOff for such a tuple that would land at/after max_ticks
+        // gets clamped to max_ticks - 1, ensuring every sounded note is
+        // closed and external MIDI gear never hangs.
+        let inside_note_ons: HashSet<(MidiChannel, u8, String)> = events
+            .iter()
+            .filter_map(|e| {
+                if e.tick >= max_ticks {
+                    return None;
+                }
+                if let MidiMessage::NoteOn { channel, note, .. } = e.message {
+                    Some((channel, note, e.device.clone()))
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        let clamp_target_tick = max_ticks.saturating_sub(1);
+        let mut clamp_count = 0usize;
+        let mut drop_count = 0usize;
+        // 切り捨て対象判定: 該当イベントを削除する場合は true、保持 (クランプ含む) なら false。
+        // Returns true when the event should be dropped; clamping is treated
+        // as keeping the event (with its tick rewritten in place below).
+        let kept_indices: Vec<bool> = events
+            .iter_mut()
+            .map(|e| {
+                if e.tick < max_ticks {
+                    return true;
+                }
+                // overflow: NoteOff で対応する NoteOn が clip 内ならクランプして残す
+                if let MidiMessage::NoteOff { channel, note, .. } = e.message {
+                    let key = (channel, note, e.device.clone());
+                    if inside_note_ons.contains(&key) {
+                        e.tick = clamp_target_tick;
+                        clamp_count += 1;
+                        return true;
+                    }
+                }
+                drop_count += 1;
+                false
+            })
+            .collect();
+
+        if clamp_count > 0 {
             warnings.push(format!(
-                "clip '{}': bars={} を超過するイベントが {}個あり、切り捨てられました",
-                clip.name, bars, overflow_count
+                "clip '{}': bars={} を超過する Note Off が {}個あり、clip 末尾へクランプしました",
+                clip.name, bars, clamp_count
             ));
         }
-        // 超過イベントを切り捨て、対応する drum_mask_groups / random_choice_groups の
-        // index も整理する。
-        // Drop overflow events and prune matching index sets so remaining
+        if drop_count > 0 {
+            warnings.push(format!(
+                "clip '{}': bars={} を超過するイベントが {}個あり、切り捨てられました",
+                clip.name, bars, drop_count
+            ));
+        }
+
+        // 削除対象を反映しつつ、drum_mask_groups / random_choice_groups の
+        // index を整理する。
+        // Drop deletion targets and prune matching index sets so remaining
         // indices stay consistent.
-        let kept_indices: Vec<bool> = events.iter().map(|e| e.tick < max_ticks).collect();
         let mut old_to_new: Vec<Option<usize>> = Vec::with_capacity(events.len());
         let mut new_idx: usize = 0;
         for keep in &kept_indices {
@@ -157,7 +211,8 @@ pub fn compile_clip(
                 old_to_new.push(None);
             }
         }
-        events.retain(|e| e.tick < max_ticks);
+        let mut keep_iter = kept_indices.iter();
+        events.retain(|_| *keep_iter.next().unwrap());
         for group in drum_mask_groups.iter_mut() {
             group.event_indices = group
                 .event_indices
@@ -1467,6 +1522,152 @@ mod tests {
         assert_eq!(compiled.total_ticks, 3840);
         // bars未超過時はワーニングなし
         assert!(compiled.warnings.is_empty());
+    }
+
+    /// bars 超過時、Note On が clip 内で対応する Note Off が clip 外のペアは、
+    /// Note Off の tick を max_ticks - 1 にクランプして clip 内に残す。
+    /// 外部 MIDI 機器のハングノート (CV 開きっぱなし) を防ぐための挙動。
+    ///
+    /// When a NoteOn falls inside the clip but its NoteOff would be after
+    /// `max_ticks`, the NoteOff is clamped to `max_ticks - 1` so the played
+    /// note is always closed. Prevents stuck notes on external MIDI gear.
+    #[test]
+    fn bars_overflow_clamps_note_off_when_note_on_inside_clip() {
+        let registry = make_registry_with_bass();
+        let clock = Clock::new(120.0);
+        // bars=1 (= 1920 tick). 4分 + 2分 + 2分 = 5 拍 = 2400 tick で超過する。
+        // C : On=0,    Off=384  (gate80% × 480 = 384)  - clip 内
+        // D : On=480,  Off=1248 (480 + 960*0.8)        - clip 内
+        // E : On=1440, Off=2208 (1440 + 960*0.8)       - On 内 / Off 外 → クランプ対象
+        let clip = make_pitched_clip(
+            "test",
+            Some(1),
+            vec![PitchedLine {
+                instrument: "bass".to_string(),
+                elements: vec![
+                    single_note(NoteName::C, Some(4), Some(4), false),
+                    single_note(NoteName::D, None, Some(2), false),
+                    single_note(NoteName::E, None, Some(2), false),
+                ],
+                is_layer_start: true,
+            }],
+        );
+
+        let compiled = compile_clip(&clip, &clock, &registry).unwrap();
+        assert_eq!(compiled.total_ticks, 1920);
+
+        // E (note 64) の NoteOn / NoteOff が共に残っていることを確認
+        let e_on = compiled
+            .events
+            .iter()
+            .find(|e| matches!(e.message, MidiMessage::NoteOn { note: 64, .. }))
+            .expect("E NoteOn は clip 内なので残るはず");
+        assert_eq!(e_on.tick, 1440);
+
+        let e_off = compiled
+            .events
+            .iter()
+            .find(|e| matches!(e.message, MidiMessage::NoteOff { note: 64, .. }))
+            .expect("E NoteOff はクランプされて残るはず");
+        assert_eq!(
+            e_off.tick, 1919,
+            "NoteOff は max_ticks - 1 にクランプされる"
+        );
+
+        // クランプを示す warning が出る
+        assert!(
+            compiled.warnings.iter().any(|w| w.contains("クランプ")),
+            "クランプ警告が含まれるべき: {:?}",
+            compiled.warnings
+        );
+    }
+
+    /// bars 超過時、Note On 自体が clip 外のペアは丸ごと切り捨てる。
+    /// 「鳴らさない音は鳴らさないまま」が原則。
+    ///
+    /// When a NoteOn falls outside `max_ticks`, both NoteOn and its NoteOff
+    /// are dropped — the note never sounds in the first place.
+    #[test]
+    fn bars_overflow_drops_pair_when_note_on_outside_clip() {
+        let registry = make_registry_with_bass();
+        let clock = Clock::new(120.0);
+        // bars=1 (= 1920 tick). 全音符 + 全音符 で 2 小節分。
+        // C : On=0,    Off=1536 - clip 内
+        // D : On=1920, Off=3456 - On も Off も clip 外 → ペアごと削除
+        let clip = make_pitched_clip(
+            "test",
+            Some(1),
+            vec![PitchedLine {
+                instrument: "bass".to_string(),
+                elements: vec![
+                    single_note(NoteName::C, Some(4), Some(1), false),
+                    single_note(NoteName::D, None, None, false),
+                ],
+                is_layer_start: true,
+            }],
+        );
+
+        let compiled = compile_clip(&clip, &clock, &registry).unwrap();
+        assert_eq!(compiled.total_ticks, 1920);
+
+        let d_events: Vec<_> = compiled
+            .events
+            .iter()
+            .filter(|e| {
+                matches!(
+                    e.message,
+                    MidiMessage::NoteOn { note: 62, .. } | MidiMessage::NoteOff { note: 62, .. }
+                )
+            })
+            .collect();
+        assert!(
+            d_events.is_empty(),
+            "D の NoteOn / NoteOff は両方削除される"
+        );
+
+        // 切り捨てを示す warning が出る
+        assert!(
+            compiled.warnings.iter().any(|w| w.contains("切り捨て")),
+            "切り捨て警告が含まれるべき: {:?}",
+            compiled.warnings
+        );
+    }
+
+    /// クランプ対象と切り捨て対象が混在する場合、warning が 2 種類とも出る。
+    /// When both clamp and drop happen, both warnings are emitted separately.
+    #[test]
+    fn bars_overflow_emits_both_warnings_when_mixed() {
+        let registry = make_registry_with_bass();
+        let clock = Clock::new(120.0);
+        // bars=1 (= 1920 tick).
+        // C 4分:  On=0,    Off=384  - 内
+        // D 2分:  On=480,  Off=1248 - 内
+        // E 2分:  On=1440, Off=2208 - On 内 / Off 外 → クランプ
+        // F 4分:  On=2400, Off=2784 - On も Off も外 → 削除
+        let clip = make_pitched_clip(
+            "test",
+            Some(1),
+            vec![PitchedLine {
+                instrument: "bass".to_string(),
+                elements: vec![
+                    single_note(NoteName::C, Some(4), Some(4), false),
+                    single_note(NoteName::D, None, Some(2), false),
+                    single_note(NoteName::E, None, Some(2), false),
+                    single_note(NoteName::F, None, Some(4), false),
+                ],
+                is_layer_start: true,
+            }],
+        );
+
+        let compiled = compile_clip(&clip, &clock, &registry).unwrap();
+
+        let clamp_warn = compiled.warnings.iter().find(|w| w.contains("クランプ"));
+        let drop_warn = compiled.warnings.iter().find(|w| w.contains("切り捨て"));
+        assert!(
+            clamp_warn.is_some() && drop_warn.is_some(),
+            "クランプと切り捨ての warning が両方含まれるべき: {:?}",
+            compiled.warnings
+        );
     }
 
     #[test]
