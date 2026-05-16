@@ -1,6 +1,6 @@
 [package]
 name = "lcvgc"
-version = "0.14.5"
+version = "0.15.0"
 edition = "2021"
 # cargo-binstall の `pkg-url` テンプレートで `{ repo }` を展開するため必須。
 # 未指定だと "missing key `repo`" で binstall が source build に fallback する。
@@ -16,11 +16,16 @@ path = "src/lib.rs"
 name = "lcvgc"
 path = "src/main.rs"
 
+[[bin]]
+name = "lcvgc-gen"
+path = "src/bin/lcvgc-gen.rs"
+
 [dependencies]
 clap = { version = "4", features = ["derive"] }
 ctrlc = "3"
 dirs = "5"
 midir = "0.10"
+midly = "0.5"
 nom = "7"
 notify = "7"
 rand = "0.8"

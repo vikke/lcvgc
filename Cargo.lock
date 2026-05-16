@@ -618,13 +618,14 @@ checksum = "bbd2bcb4c963f2ddae06a2efc7e9f3591312473c50c6685e1f298068316e66fe"
 
 [[package]]
 name = "lcvgc"
-version = "0.14.5"
+version = "0.15.0"
 dependencies = [
  "clap",
  "criterion",
  "ctrlc",
  "dirs",
  "midir",
+ "midly",
  "nom",
  "notify",
  "pretty_assertions",
@@ -714,6 +715,15 @@ dependencies = [
  "wasm-bindgen",
  "web-sys",
  "windows",
+]
+
+[[package]]
+name = "midly"
+version = "0.5.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "207d755f4cb882d20c4da58d707ca9130a0c9bc5061f657a4f299b8e36362b7a"
+dependencies = [
+ "rayon",
 ]
 
 [[package]]

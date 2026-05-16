@@ -22,6 +22,9 @@ pub mod engine;
 /// パースエラー定義モジュール
 /// Parse error definition module
 pub mod error;
+/// 外部音楽フォーマット → lcvgc DSL ジェネレーター。
+/// External music format → lcvgc DSL generator.
+pub mod generator;
 /// LSP機能モジュール（補完・ホバー・診断・定義ジャンプ・シンボル）
 /// LSP feature module (completion, hover, diagnostics, go-to-definition, symbols)
 pub mod lsp;
