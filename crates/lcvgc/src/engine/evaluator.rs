@@ -1146,8 +1146,57 @@ impl Evaluator {
         Ok(results)
     }
 
+    /// `eval_source_preload` を `DeviceEvent` 非送出モードで実行する。
+    ///
+    /// LSP の preload 経路（diagnostics / completion 等のソース解析）は
+    /// 副作用のない静的解析を意図しており、`Block::Device` 評価時に
+    /// `DeviceEvent::Upsert` を receiver 側へ発火させたくない。本メソッドは
+    /// 評価の間だけ `device_event_tx` を一時退避し、終了後に元に戻す事で
+    /// silent な preload 評価を提供する（PR #83）。
+    ///
+    /// Runs `eval_source_preload` with `DeviceEvent` emission suppressed.
+    /// The LSP preload path performs side-effect-free static analysis,
+    /// so evaluating `Block::Device` should not push `DeviceEvent::Upsert`
+    /// through to the receiver. This helper temporarily takes the
+    /// `device_event_tx`, runs the preload, and restores it afterwards.
+    ///
+    /// # Arguments
+    /// * `source` - 評価する DSL ソース / DSL source to evaluate
+    ///
+    /// # Returns
+    /// preload 評価結果（play/stop はスキップ済み）
+    ///
+    /// # Errors
+    /// - `EngineError::ParseError` - パースエラー / Parse error
+    fn eval_source_preload_silent_devices(
+        &mut self,
+        source: &str,
+    ) -> Result<Vec<EvalResult>, EngineError> {
+        // device_event_tx を一時退避して silent な評価を行う。
+        // panic 発生時には Mutex が poisoned になる前提のため、手動 restore
+        // で十分（drop guard で `&mut self` を保持できないため）。
+        //
+        // Temporarily take the tx so evaluation stays silent. A panic
+        // poisons the wrapping mutex anyway, so manual restore (no drop
+        // guard, which can't co-exist with `&mut self`) is sufficient.
+        let saved_tx = self.device_event_tx.take();
+        let result = self.eval_source_preload(source);
+        self.device_event_tx = saved_tx;
+        result
+    }
+
     /// registryが空の場合にソースからregistryを自動構築する
     /// Auto-populates registry from source when registry is empty
+    ///
+    /// LSP 解析経路から呼ばれるため、内部では `eval_source_preload_silent_devices`
+    /// を用いて `DeviceEvent::Upsert` の発火を抑制する。明示的に device 接続
+    /// を起動させたい場合は呼び出し側で `eval_source_preload` を直接使うこと
+    /// (`Request::Preload` ハンドラ参照)。
+    ///
+    /// Called from LSP analysis paths, so it uses
+    /// `eval_source_preload_silent_devices` internally to suppress
+    /// `DeviceEvent::Upsert`. Callers that want device connections must use
+    /// `eval_source_preload` directly (see the `Request::Preload` handler).
     ///
     /// # Arguments
     /// * `source` - メインのDSLソース文字列 / Main DSL source string
@@ -1159,15 +1208,15 @@ impl Evaluator {
         if !self.registry.is_empty() {
             return false;
         }
-        // メインソースをプリロード評価
-        // Preload-evaluate main source
-        if self.eval_source_preload(source).is_err() {
+        // メインソースをプリロード評価（DeviceEvent は抑制）
+        // Preload-evaluate main source (suppressing DeviceEvent)
+        if self.eval_source_preload_silent_devices(source).is_err() {
             return false;
         }
-        // 追加ソース（include分）をプリロード評価
-        // Preload-evaluate additional sources (from includes)
+        // 追加ソース（include分）をプリロード評価（DeviceEvent は抑制）
+        // Preload-evaluate additional sources from includes (suppressing DeviceEvent)
         for additional in additional_sources {
-            if self.eval_source_preload(additional).is_err() {
+            if self.eval_source_preload_silent_devices(additional).is_err() {
                 return false;
             }
         }
@@ -3532,6 +3581,120 @@ instrument bass {
         // 存在しない device を clear しても panic せず空のまま
         ev.clear_device_connection_error("ghost");
         assert!(ev.device_connection_errors().is_empty());
+    }
+
+    // ---------------------------------------------------------------------
+    // PR #83: preload silent devices tests
+    //
+    // LSP の preload 経路（diagnostics 等）は副作用のないソース解析を意図
+    // するため、device ブロック評価時にも `DeviceEvent::Upsert` を発火させ
+    // ない。`preload_from_source` 経由では silent、`eval_source_preload`
+    // を直接呼ぶ Request::Preload 経路は従来通り発火、という分離をテスト
+    // で固定する。
+    //
+    // The LSP preload path (used by diagnostics etc.) is meant to perform
+    // side-effect-free source analysis, so `Block::Device` evaluation must
+    // not emit `DeviceEvent::Upsert`. We pin the separation here:
+    // `preload_from_source` is silent; calling `eval_source_preload`
+    // directly (Request::Preload) keeps emitting events as before.
+    // ---------------------------------------------------------------------
+
+    /// preload_from_source 経由で device を評価しても DeviceEvent が emit されない
+    /// `preload_from_source` does not emit `DeviceEvent` even with device blocks.
+    #[test]
+    fn preload_from_source_does_not_emit_device_event() {
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut ev = Evaluator::new(120.0);
+        ev.set_device_event_tx(tx);
+
+        let source = "device mb {\n  port Mutant Brain\n}\n";
+        let result = ev.preload_from_source(source, &[]);
+        assert!(result, "preload should succeed on empty registry");
+        // registry には登録される
+        assert!(ev.registry().get_device("mb").is_some());
+        // しかし DeviceEvent は emit されない
+        assert!(
+            rx.try_recv().is_err(),
+            "expected no DeviceEvent from preload_from_source"
+        );
+    }
+
+    /// eval_source_preload を直接呼ぶ場合は従来通り DeviceEvent が emit される
+    /// Calling `eval_source_preload` directly still emits `DeviceEvent` (regression guard).
+    #[test]
+    fn eval_source_preload_still_emits_device_event() {
+        use crate::engine::device_event::DeviceEvent;
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut ev = Evaluator::new(120.0);
+        ev.set_device_event_tx(tx);
+
+        let _ = ev
+            .eval_source_preload("device foo {\n  port px\n}\n")
+            .expect("eval_source_preload should succeed");
+
+        let received = rx
+            .try_recv()
+            .expect("expected DeviceEvent from eval_source_preload");
+        assert_eq!(
+            received,
+            DeviceEvent::Upsert {
+                name: "foo".into(),
+                port: "px".into(),
+            }
+        );
+        assert!(rx.try_recv().is_err(), "no further events expected");
+    }
+
+    /// preload_from_source は registry を埋めつつ DeviceEvent は emit しない
+    /// `preload_from_source` populates the registry while staying silent on events.
+    #[test]
+    fn preload_from_source_populates_registry_without_device_event() {
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut ev = Evaluator::new(120.0);
+        ev.set_device_event_tx(tx);
+
+        assert!(ev.registry().is_empty(), "registry must start empty");
+
+        let source = "device synth {\n  port IAC\n}\ndevice drum {\n  port LPK25\n}\n";
+        let result = ev.preload_from_source(source, &[]);
+        assert!(result);
+
+        assert!(ev.registry().get_device("synth").is_some());
+        assert!(ev.registry().get_device("drum").is_some());
+
+        assert!(
+            rx.try_recv().is_err(),
+            "expected no DeviceEvent even with multiple devices"
+        );
+    }
+
+    /// preload_from_source の処理後に device_event_tx が復元されている（次回 eval で発火する）
+    /// After `preload_from_source`, the device_event_tx is restored so subsequent direct
+    /// evaluations emit events again.
+    #[test]
+    fn preload_from_source_restores_device_event_tx() {
+        use crate::engine::device_event::DeviceEvent;
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut ev = Evaluator::new(120.0);
+        ev.set_device_event_tx(tx);
+
+        // 1回目: preload_from_source（silent）
+        let result = ev.preload_from_source("device a {\n  port pa\n}\n", &[]);
+        assert!(result);
+        assert!(rx.try_recv().is_err(), "preload_from_source must be silent");
+
+        // 2回目: eval_block 経由（registry 非空でも eval は走る）。tx 復元の検証
+        eval_src(&mut ev, "device b {\n  port pb\n}\n");
+        let received = rx
+            .try_recv()
+            .expect("tx should be restored after preload_from_source");
+        assert_eq!(
+            received,
+            DeviceEvent::Upsert {
+                name: "b".into(),
+                port: "pb".into(),
+            }
+        );
     }
 
     // §8.6: scene 内 `mute` 前置による初期 mute の E2E テスト
