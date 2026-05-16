@@ -221,106 +221,116 @@ fn parse_mml(data: &[u8]) -> (Vec<Event>, Vec<u8>) {
                 cursor_tick += duration;
                 i += 2;
             }
+            // コマンド長は mdxtools/mdx_decompiler.c の実装に従う。
+            // The lengths below follow the actual mdxtools decompiler — the
+            // docs/MDX.md tables are inconsistent with the player and would
+            // mis-parse real songs.
             0xE7 => {
-                // Fade out: 2 byte (param1, param2)
-                i += 3;
+                // Fade out: 0 byte (no output)
+                i += 1;
             }
             0xE8 => {
                 // PCM8 enable: 0 byte
                 i += 1;
             }
             0xE9 => {
-                // LFO key-on delay: 1 byte
+                // Modulation delay (LFO key-on delay): 1 byte
                 i += 2;
             }
-            0xEA..=0xEC => {
-                // LFO 各種: 1-5 byte。switch byte で判別
+            0xEA => {
+                // OPM LFO (MH): switch byte が 0x80/0x81 なら 2 byte (ON/OFF)、
+                // それ以外は opcode + 6 params = 7 byte。
                 if i + 1 >= data.len() {
                     break;
                 }
                 let sw = data[i + 1];
-                let n = match sw {
-                    0x80 | 0x81 => 2, // OFF / ON
-                    _ => 5,           // 値設定 (waveform, freq, ampl, etc.)
-                };
+                let n = if sw == 0x80 || sw == 0x81 { 2 } else { 7 };
+                i += n;
+            }
+            0xEB | 0xEC => {
+                // Modulation amplitude (MA) / Modulation pitch (MP):
+                // switch byte が 0x80/0x81 なら 2 byte、それ以外は 4 byte (opcode + 3 params)。
+                if i + 1 >= data.len() {
+                    break;
+                }
+                let sw = data[i + 1];
+                let n = if sw == 0x80 || sw == 0x81 { 2 } else { 4 };
                 i += n;
             }
             0xED => {
-                // ADPCM/noise freq: 1 byte
+                // ADPCM/Waveform set: 1 byte
                 i += 2;
             }
             0xEE => {
-                // Sync wait: 0 byte
+                // PCM wait (W): 0 byte
                 i += 1;
             }
             0xEF => {
-                // Sync send: 1 byte
+                // Sample select (S): 1 byte
                 i += 2;
             }
             0xF0 => {
-                // Note key-on delay: 1 byte
+                // Key code (k) / key-on delay: 1 byte
                 i += 2;
             }
             0xF1 => {
-                // Performance end (0x00) or loop offset (signed)
-                // 引数 1 byte。0x00 = 演奏終了として break
-                if i + 1 < data.len() && data[i + 1] == 0x00 {
-                    break;
-                }
-                i += 2;
+                // End marker / loop pointer: 0x00 で曲終了、その他は曲全体
+                // ループの戻り先マーカー。本 reader はループ展開を扱わない
+                // (チャネル末端を意味する) ため、いずれの場合も break する。
+                // (mdx_decompiler.c も `0xF1` 以降の MML を出力しない)
+                break;
             }
             0xF2 => {
-                // Portamento: 2 byte
+                // Portamento: 2 byte (opcode + signed 16-bit)
                 i += 3;
             }
             0xF3 => {
-                // Detune: 2 byte
+                // Detune: 2 byte (opcode + signed 16-bit)
                 i += 3;
             }
             0xF4 => {
-                // Repeat escape: 2 byte
-                i += 3;
+                // Sync `/`: 0 byte
+                i += 1;
             }
             0xF5 => {
-                // Loop end: 2 byte signed offset
-                if loop_frames.is_empty() {
-                    i += 3;
-                    continue;
+                // Loop end `]nn`: 2 byte (signed 16-bit back-offset)
+                // 対応する 0xF6 (loop start) のフレームがあれば、ループブロック
+                // としてまとめる。仕様で「任意回数のループは 2 回固定」と
+                // 決めているため、count = 2 を常に採用する。
+                if let Some(frame) = loop_frames.pop() {
+                    let inner: Vec<Event> = events.drain(frame.events_start..).collect();
+                    let one_iter_len = cursor_tick - frame.cursor_start;
+                    events.push(Event::LoopBlock {
+                        start_tick: frame.cursor_start,
+                        events: inner,
+                        count: 2,
+                    });
+                    cursor_tick = frame.cursor_start + one_iter_len * 2;
                 }
-                let frame = loop_frames.pop().unwrap();
-                // 仕様の「任意回数のループは 2 回固定」: ループブロックを作って包む
-                let inner: Vec<Event> = events.drain(frame.events_start..).collect();
-                let one_iter_len = cursor_tick - frame.cursor_start;
-                events.push(Event::LoopBlock {
-                    start_tick: frame.cursor_start,
-                    events: inner,
-                    count: 2,
-                });
-                cursor_tick = frame.cursor_start + one_iter_len * 2;
                 i += 3;
             }
             0xF6 => {
-                // Loop start: 2 byte (count, 0x00)
+                // Loop start `[`: 0 byte (marker only)
                 loop_frames.push(LoopFrame {
                     events_start: events.len(),
                     cursor_start: cursor_tick,
                 });
-                i += 3;
+                i += 1;
             }
             0xF7 => {
-                // Legato: 0 byte
+                // Key off flag (sets next_key_off): 0 byte
                 i += 1;
             }
             0xF8 => {
-                // Staccato length: 1 byte
+                // Gate time (q): 1 byte
                 i += 2;
             }
             0xF9 => {
-                // Volume up: 0 byte
+                // Macro close `)`: 0 byte
                 i += 1;
             }
             0xFA => {
-                // Volume down: 0 byte
+                // Macro open `(`: 0 byte
                 i += 1;
             }
             0xFB => {
@@ -336,7 +346,7 @@ fn parse_mml(data: &[u8]) -> (Vec<Event>, Vec<u8>) {
                 i += 2;
             }
             0xFE => {
-                // OPM register write: 2 byte
+                // LFO `y`: 2 byte
                 i += 3;
             }
             0xFF => {
@@ -346,9 +356,12 @@ fn parse_mml(data: &[u8]) -> (Vec<Event>, Vec<u8>) {
                 }
                 i += 2;
             }
+            // 0xE0-0xE6 は mdx_decompiler でも未定義。出会ったらこのチャネルの
+            // パースを中断する (フォールスルーで音符として誤読しないため)。
+            // Anything in 0xE0-0xE6 is undefined per mdxtools — stop parsing
+            // this channel rather than risk mis-aligning the byte stream.
             _ => {
-                // 未知コマンドは 1 byte 進める (推測でしか進められないので破壊的だが安全側に倒す)
-                i += 1;
+                break;
             }
         }
     }
@@ -496,21 +509,22 @@ mod tests {
 
     #[test]
     fn loop_block_with_count_2_is_emitted_for_any_loop() {
-        // F6 cnt 00 ... F5 nn nn を「2 回固定」で LoopBlock に包むことを確認
+        // 0xF6 (`[`、1 byte) ... 0xF5 nn nn (`]`、3 byte) を「2 回固定」で
+        // LoopBlock に包むことを確認する。本実装は mdxtools の実装に従い
+        // 0xF6 を 1 byte command として扱う (docs/MDX.md と実装が食い違うので
+        // 注意)。
         let mut out: Vec<u8> = Vec::new();
         out.extend_from_slice(b"L");
         out.extend_from_slice(&[0x0d, 0x0a, 0x1a]);
         out.push(0x00);
         out.extend_from_slice(&4u16.to_be_bytes());
         out.extend_from_slice(&4u16.to_be_bytes());
-        // ループ開始: F6 04 00 (4 回ループを依頼するが、本実装では「2 回固定」)
+        // ループ開始: F6 (1 byte)
         out.push(0xF6);
-        out.push(0x04);
-        out.push(0x00);
         // 中身: C (note 0x80, dur 48)
         out.push(0x80);
         out.push(48);
-        // ループ終了: F5 -3 (offset)
+        // ループ終了: F5 -3 (offset, 3 byte)
         out.push(0xF5);
         out.push(0xFF);
         out.push(0xFD);
