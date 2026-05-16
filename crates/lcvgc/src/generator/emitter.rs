@@ -129,12 +129,18 @@ fn emit_clips(score: &Score, out: &mut String) -> Result<(), GeneratorError> {
     Ok(())
 }
 
+/// Melodic / Drum 共通で「8 小節ごとに改行を入れる」しきい値。
+/// ループブロック内部の再帰呼び出しでは改行を入れたくないので、
+/// 外側からのみ `Some(BARS_PER_WRAP)` を渡し、内側は `None` を渡す。
+const BARS_PER_WRAP: u32 = 8;
+
 /// 1 つの Melodic clip を書き出す。
 ///
 /// 同時発音 (同 start_tick) のノートは `[a b c]:dur` に集約する。
 /// `LoopBlock` は `(...)*count` で展開する。
+/// 8 小節境界では改行 + インデントを挿入し、可読性を保つ。
 ///
-/// Emits a single melodic clip.
+/// Emits a single melodic clip. Wraps every 8 bars for readability.
 fn emit_melodic_clip(
     clip_name: &str,
     track: &Track,
@@ -146,7 +152,14 @@ fn emit_melodic_clip(
     let mut cursor: u64 = 0;
     let mut body = String::new();
     body.push_str(&format!("  {}", track.name));
-    emit_event_sequence(&track.events, score, &mut cursor, &mut body, &track.name)?;
+    emit_event_sequence(
+        &track.events,
+        score,
+        &mut cursor,
+        &mut body,
+        &track.name,
+        Some(BARS_PER_WRAP),
+    )?;
     body.push('\n');
     out.push_str(&body);
     out.push_str("}\n\n");
@@ -185,14 +198,50 @@ fn emit_drum_clip(
     out.push_str(&format!("clip {} [bars {}] {{\n", clip_name, bars));
     out.push_str("  use gen_kit\n");
     out.push_str("  resolution 16\n");
+    let steps_per_wrap = (steps_per_bar * BARS_PER_WRAP) as usize;
     for (midi_note, row) in per_note {
         if let Some(label) = gm_drum_label(midi_note) {
             let row_str: String = row.into_iter().collect();
-            out.push_str(&format!("  {} {}\n", label, row_str));
+            out.push_str(&format!(
+                "  {} {}\n",
+                label,
+                wrap_drum_row(&row_str, steps_per_wrap)
+            ));
         }
     }
     out.push_str("}\n\n");
     Ok(())
+}
+
+/// drum row 文字列を `chunk_size` ごとに `\` + 改行 + インデントで折り返す。
+///
+/// 長さが `chunk_size` 以下ならそのまま返す。それ以上なら、最初のチャンクの
+/// 末尾に ` \\\n      ` を挿入し、残りを再帰的に折り返す。
+/// 末尾のチャンクには `\` を付けない。
+///
+/// Wraps a drum-row pattern string every `chunk_size` characters using a
+/// backslash continuation that the parser accepts as a single logical row.
+fn wrap_drum_row(row: &str, chunk_size: usize) -> String {
+    if chunk_size == 0 || row.len() <= chunk_size {
+        return row.to_string();
+    }
+    let mut out = String::with_capacity(row.len() + row.len() / chunk_size * 9);
+    let mut remaining = row;
+    let mut first = true;
+    while !remaining.is_empty() {
+        if !first {
+            // 継続行のインデント (8 spaces — drum row 内のステップ列と視覚的に揃える)
+            out.push_str("      ");
+        }
+        let take = remaining.len().min(chunk_size);
+        out.push_str(&remaining[..take]);
+        remaining = &remaining[take..];
+        if !remaining.is_empty() {
+            out.push_str(" \\\n");
+        }
+        first = false;
+    }
+    out
 }
 
 /// 量子化したヒット symbol を返す。
@@ -216,21 +265,50 @@ fn velocity_to_hit_symbol(velocity: u8) -> char {
 /// (`[a b c]`) としてまとめる。`LoopBlock` は `(...)*count` で展開し、内部の
 /// 並びにも同じロジックを再帰適用する。
 ///
-/// Serializes a sequence of melodic events into the clip body.
+/// `wrap_every_n_bars` が `Some(n)` のとき、n 小節境界をまたぐ前に改行と
+/// インデントを挿入する。`LoopBlock` 内部の再帰では `None` を渡し、
+/// `(...)*N` 表記内に改行を入れない。
+///
+/// Serializes a sequence of melodic events into the clip body. When
+/// `wrap_every_n_bars` is `Some(n)`, inserts a newline + indent each time the
+/// bar cursor crosses an n-bar boundary. Pass `None` for recursive
+/// LoopBlock expansion so the `(...)*N` payload stays on a single line.
 fn emit_event_sequence(
     events: &[Event],
     score: &Score,
     cursor: &mut u64,
     out: &mut String,
     _track_name: &str,
+    wrap_every_n_bars: Option<u32>,
 ) -> Result<(), GeneratorError> {
     // 1) ノートと LoopBlock を時系列で取り出す
     let mut items: Vec<&Event> = events.iter().collect();
     items.sort_by_key(|e| e.start_tick());
 
+    let bar_t = bar_ticks(score);
+
+    // 直前のトークン書き出し時に、これから書く要素の start_tick が前回処理
+    // した bar チャンクと異なれば改行 + インデントを挿入する。
+    let wrap_chunk_of = |tick: u64| -> Option<u64> {
+        let wrap_n = wrap_every_n_bars? as u64;
+        if bar_t == 0 || wrap_n == 0 {
+            return None;
+        }
+        Some(tick / bar_t / wrap_n)
+    };
+    let mut last_wrap_chunk: Option<u64> = wrap_chunk_of(*cursor);
+
     // 2) 同 tick のノートをまとめながら順に書き出す
     let mut i = 0;
     while i < items.len() {
+        let elem_tick = items[i].start_tick();
+        // 8 小節境界をまたいだら改行 + インデントを挿入
+        if let (Some(prev), Some(cur)) = (last_wrap_chunk, wrap_chunk_of(elem_tick)) {
+            if cur > prev {
+                out.push_str("\n   ");
+                last_wrap_chunk = Some(cur);
+            }
+        }
         match items[i] {
             Event::Note { start_tick, .. } => {
                 // 休符で隙間を埋める
@@ -271,10 +349,18 @@ fn emit_event_sequence(
                     write_rest(out, gap, score.ppq);
                     *cursor = *start_tick;
                 }
-                // 内部イベントを文字列化して `( ... )*N` で囲む
+                // 内部イベントを文字列化して `( ... )*N` で囲む。
+                // 内部では改行を入れないため None を渡す。
                 let mut inner_out = String::new();
                 let mut inner_cursor: u64 = *start_tick;
-                emit_event_sequence(inner, score, &mut inner_cursor, &mut inner_out, _track_name)?;
+                emit_event_sequence(
+                    inner,
+                    score,
+                    &mut inner_cursor,
+                    &mut inner_out,
+                    _track_name,
+                    None,
+                )?;
                 let one_iter_ticks = inner_cursor.saturating_sub(*start_tick);
                 out.push_str(" (");
                 out.push_str(inner_out.trim_start());
@@ -640,5 +726,167 @@ mod tests {
         let (name, oct) = midi_to_note_name(69);
         assert_eq!(name, "a");
         assert_eq!(oct, 4);
+    }
+
+    /// melodic clip は 8 小節ごとに改行が入る。
+    /// 16 小節ぶんの 4 分音符を流し込み、ちょうど 8 小節境界 (= 32 ノート目
+    /// の手前) で `\n` が挿入されることを確認する。
+    ///
+    /// Melodic output wraps to a new line every 8 bars.
+    #[test]
+    fn melodic_wraps_every_8_bars() {
+        // 16 小節 = 64 拍の 4 分音符
+        let ppq: u32 = 480;
+        let mut events = Vec::new();
+        for i in 0..64u64 {
+            events.push(Event::Note {
+                start_tick: i * ppq as u64,
+                end_tick: (i + 1) * ppq as u64,
+                midi_note: 60,
+                velocity: 100,
+            });
+        }
+        let s = Score {
+            tracks: vec![Track {
+                name: "lead".into(),
+                midi_channel: 1,
+                kind: TrackKind::Melodic,
+                events,
+            }],
+            ..one_note_score()
+        };
+        let dsl = emit(&s).unwrap();
+
+        // melodic clip 本体 (lead の clip ブロック) を抜き出して、改行数を数える
+        let clip_start = dsl.find("clip lead_clip").expect("clip 開始位置");
+        let after_open = dsl[clip_start..].find('{').unwrap() + clip_start + 1;
+        let after_close_rel = dsl[after_open..].find('}').unwrap();
+        let body = &dsl[after_open..after_open + after_close_rel];
+
+        // body 内の改行数 = (開きブレース直後の 1 個) + (8 小節境界の 1 個) + (本体末尾の 1 個)
+        // 16 小節 / 8 = 2 ブロックに分かれるので、本体行は 2 行になる。
+        let newline_count = body.matches('\n').count();
+        assert!(
+            newline_count >= 3,
+            "8 小節境界で改行が入るべき: body=\n{}",
+            body
+        );
+    }
+
+    /// 8 小節ごとに改行された melodic clip も DSL パーサで読み戻せる。
+    /// Wrapped melodic clip survives a parser round-trip.
+    #[test]
+    fn melodic_wrapped_clip_round_trips_through_parser() {
+        let ppq: u32 = 480;
+        let mut events = Vec::new();
+        for i in 0..64u64 {
+            events.push(Event::Note {
+                start_tick: i * ppq as u64,
+                end_tick: (i + 1) * ppq as u64,
+                midi_note: 60,
+                velocity: 100,
+            });
+        }
+        let s = Score {
+            tracks: vec![Track {
+                name: "lead".into(),
+                midi_channel: 1,
+                kind: TrackKind::Melodic,
+                events,
+            }],
+            ..one_note_score()
+        };
+        let dsl = emit(&s).unwrap();
+        let clip_start = dsl.find("clip lead_clip").expect("melodic clip 開始");
+        let clip_end = clip_start + dsl[clip_start..].find("\n}").unwrap() + 2;
+        let clip_src = &dsl[clip_start..clip_end];
+
+        let (rest, _clip) = crate::parser::clip::parse_clip(clip_src)
+            .unwrap_or_else(|e| panic!("clip 再パース失敗: {:?}\n---\n{}", e, clip_src));
+        assert_eq!(rest, "");
+    }
+
+    /// drum row を `\` 継続で折り返した出力が DSL パーサで読み戻せる。
+    /// 16 小節ぶん (32 step ヒット) を emit し、結果の drum clip だけを
+    /// parse_clip に通して同じ row 長になることを確認する。
+    ///
+    /// Round-trip: the wrapped drum row can be re-parsed back into a single
+    /// row of the expected length.
+    #[test]
+    fn drum_wrapped_row_round_trips_through_parser() {
+        let ppq: u32 = 480;
+        let mut drum_events = Vec::new();
+        for i in 0..64u64 {
+            drum_events.push(Event::Note {
+                start_tick: i * ppq as u64,
+                end_tick: i * ppq as u64 + 120,
+                midi_note: 36,
+                velocity: 100,
+            });
+        }
+        let s = Score {
+            tracks: vec![Track {
+                name: "drums".into(),
+                midi_channel: 10,
+                kind: TrackKind::Drum,
+                events: drum_events,
+            }],
+            ..one_note_score()
+        };
+        let dsl = emit(&s).unwrap();
+        let clip_start = dsl.find("clip drums_clip").expect("drum clip 開始");
+        // 該当 clip ブロックの `}` までを抜き出す
+        let clip_end = clip_start + dsl[clip_start..].find("\n}").unwrap() + 2;
+        let clip_src = &dsl[clip_start..clip_end];
+
+        let (rest, clip) = crate::parser::clip::parse_clip(clip_src)
+            .unwrap_or_else(|e| panic!("clip 再パース失敗: {:?}\n---\n{}", e, clip_src));
+        assert_eq!(rest, "");
+        match clip.body {
+            crate::ast::clip::ClipBody::Drum(body) => {
+                assert_eq!(body.rows.len(), 1, "1 row として読み戻されるべき");
+                // 16 小節 × 16 step = 256 step
+                assert_eq!(body.rows[0].hits.len(), 256);
+            }
+            _ => panic!("expected drum body"),
+        }
+    }
+
+    /// drum clip も 8 小節ごとに `\` 行末継続で改行する。
+    /// Drum output wraps every 8 bars with backslash continuation.
+    #[test]
+    fn drum_wraps_every_8_bars_with_backslash() {
+        // 16 小節分の 4 分目ヒット (= 16*4 = 64 個の bd) を打つ。
+        let ppq: u32 = 480;
+        let mut events = Vec::new();
+        for i in 0..64u64 {
+            events.push(Event::Note {
+                start_tick: i * ppq as u64,
+                end_tick: i * ppq as u64 + 120,
+                midi_note: 36,
+                velocity: 100,
+            });
+        }
+        let s = Score {
+            tracks: vec![Track {
+                name: "drums".into(),
+                midi_channel: 10,
+                kind: TrackKind::Drum,
+                events,
+            }],
+            ..one_note_score()
+        };
+        let dsl = emit(&s).unwrap();
+        // drum clip 本体を抜き出して `\` が含まれることを確認する。
+        // 8 小節 = 128 step ごとに分割されるので、16 小節なら少なくとも 1 回。
+        let clip_start = dsl.find("clip drums_clip").expect("drum clip 開始位置");
+        let after_open = dsl[clip_start..].find('{').unwrap() + clip_start + 1;
+        let after_close_rel = dsl[after_open..].find("\n}").unwrap();
+        let body = &dsl[after_open..after_open + after_close_rel];
+        assert!(
+            body.contains('\\'),
+            "drum row 内に `\\` 継続マーカーが含まれるべき: body=\n{}",
+            body
+        );
     }
 }

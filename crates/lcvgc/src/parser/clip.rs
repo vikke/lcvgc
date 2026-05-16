@@ -400,6 +400,69 @@ fn parse_chord_bracket(input: &str) -> IResult<&str, PitchedElement> {
     ))
 }
 
+/// Drum row の論理 1 行を読み出す。
+///
+/// 行末が `\` (バックスラッシュ) + 改行のとき、次行を同 row の続きとして
+/// 連結する。`\` の後は行末まで空白のみを許容する。継続行先頭の空白は
+/// trim され、前の論理行の末尾とは半角スペース 1 個でつなぐ。
+///
+/// Reads a single *logical* drum-row line, joining backslash-continued
+/// physical lines. The trailing `\` plus optional whitespace and the newline
+/// are stripped; leading whitespace on the continuation is trimmed; the
+/// joined fragment is appended with a single space separator so the
+/// downstream tokenizer treats them as a single pattern string.
+///
+/// # Returns
+/// `(logical_line, rest)`:
+/// - `logical_line` ... 連結後のパターン文字列 (改行を含まない)
+/// - `rest`         ... 末尾の `\n` を消費した残りの input
+fn read_logical_drum_line(input: &str) -> (String, &str) {
+    let mut acc = String::new();
+    let mut cursor = input;
+    loop {
+        let line_end = cursor.find('\n').unwrap_or(cursor.len());
+        let line = &cursor[..line_end];
+
+        // 行末の `\` 継続マーカーを検出する。`\` の後ろは空白のみを許容。
+        // Detect a `\` continuation marker at end-of-line (trailing whitespace ok).
+        let trimmed_end = line.trim_end();
+        let has_continuation = trimmed_end.ends_with('\\');
+
+        if has_continuation {
+            // `\` を除いた本文を追加
+            let body = &trimmed_end[..trimmed_end.len() - 1];
+            if !acc.is_empty() {
+                acc.push(' ');
+            }
+            acc.push_str(body.trim_start());
+
+            if line_end == cursor.len() {
+                // EOF: `\` で終わったが次行がない → そのまま終了
+                cursor = &cursor[line_end..];
+                break;
+            }
+            // 改行を消費して次の物理行へ
+            cursor = &cursor[line_end + 1..];
+            continue;
+        }
+
+        if !acc.is_empty() {
+            acc.push(' ');
+            acc.push_str(line.trim());
+        } else {
+            acc.push_str(line);
+        }
+        // 末尾の改行も消費 (なければ EOF)
+        cursor = if line_end == cursor.len() {
+            &cursor[line_end..]
+        } else {
+            &cursor[line_end + 1..]
+        };
+        break;
+    }
+    (acc, cursor)
+}
+
 /// Parse the body of a drum clip.
 fn parse_drum_body(input: &str) -> IResult<&str, DrumClipBody> {
     let (input, _) = ws(input)?;
@@ -454,13 +517,13 @@ fn parse_drum_body(input: &str) -> IResult<&str, DrumClipBody> {
         if let Ok((r, inst_name)) = identifier(current) {
             let (r, _) = ws(r)?;
 
-            // 行末までパターンを読み取る
-            // Read the pattern until end of line
-            let line_end = r.find('\n').unwrap_or(r.len());
-            let pattern = r[..line_end].trim();
+            // 行末までパターンを読み取る (行末 `\` で次行に継続)
+            // Read the pattern until end of line (backslash-continued lines join)
+            let (pattern_owned, after_line) = read_logical_drum_line(r);
+            let pattern = pattern_owned.trim();
 
             if pattern.is_empty() {
-                current = &r[line_end..];
+                current = after_line;
                 continue;
             }
 
@@ -504,15 +567,15 @@ fn parse_drum_body(input: &str) -> IResult<&str, DrumClipBody> {
                 });
             }
 
-            current = &r[line_end..];
+            current = after_line;
         } else {
             // 楽器名がない行 — 確率行としてパース
             // Line without instrument name — parse as probability row
-            let line_end = current.find('\n').unwrap_or(current.len());
-            let pattern = current[..line_end].trim();
+            let (pattern_owned, after_line) = read_logical_drum_line(current);
+            let pattern = pattern_owned.trim();
 
             if pattern.is_empty() {
-                current = &current[line_end..];
+                current = after_line;
                 continue;
             }
 
@@ -542,7 +605,7 @@ fn parse_drum_body(input: &str) -> IResult<&str, DrumClipBody> {
                 )));
             }
 
-            current = &current[line_end..];
+            current = after_line;
         }
     }
 
@@ -1078,6 +1141,74 @@ mod tests {
                 for (i, h) in hits.iter().enumerate().take(16).skip(4) {
                     assert_eq!(*h, Rest, "idx={i} は Rest のはず");
                 }
+            }
+            _ => panic!("expected drum"),
+        }
+    }
+
+    /// drum row の行末 `\` で次行へ継続できる。
+    /// 8 小節分のステップを 2 行に分けて書いても、論理的には 1 row として
+    /// パースされる。
+    ///
+    /// Backslash-continuation lets a drum row span multiple physical lines.
+    #[test]
+    fn test_drum_row_backslash_continuation() {
+        // bars=2 / resolution 16 → 32 ステップを 16+16 で 2 行に分割。
+        let input = r#"clip drums_x [bars 2] {
+  use tr808
+  resolution 16
+  ch  xxxxxxxxxxxxxxxx \
+      xxxxxxxxxxxxxxxx
+}"#;
+        let (rest, clip) = parse_clip(input).unwrap();
+        assert_eq!(rest, "");
+        match &clip.body {
+            ClipBody::Drum(body) => {
+                assert_eq!(body.rows.len(), 1, "1 row として認識されるべき");
+                let row = &body.rows[0];
+                assert_eq!(row.instrument, "ch");
+                assert_eq!(row.hits.len(), 32, "32 ステップ連結されるべき");
+                use crate::ast::clip_drum::HitSymbol::Normal;
+                for (i, h) in row.hits.iter().enumerate() {
+                    assert_eq!(*h, Normal, "idx={i} は Normal のはず");
+                }
+            }
+            _ => panic!("expected drum"),
+        }
+    }
+
+    /// drum row の継続は 3 行以上にも対応する。
+    /// More than two physical lines also concatenate correctly.
+    #[test]
+    fn test_drum_row_backslash_continuation_three_lines() {
+        let input = r#"clip drums_x [bars 3] {
+  use tr808
+  resolution 16
+  ch  xxxxxxxxxxxxxxxx \
+      xxxxxxxxxxxxxxxx \
+      xxxxxxxxxxxxxxxx
+}"#;
+        let (rest, clip) = parse_clip(input).unwrap();
+        assert_eq!(rest, "");
+        match &clip.body {
+            ClipBody::Drum(body) => {
+                assert_eq!(body.rows.len(), 1);
+                assert_eq!(body.rows[0].hits.len(), 48);
+            }
+            _ => panic!("expected drum"),
+        }
+    }
+
+    /// `\` の後に余分な空白があっても継続する。
+    /// Trailing whitespace after `\` is permitted.
+    #[test]
+    fn test_drum_row_backslash_with_trailing_space() {
+        let input = "clip d [bars 2] {\n  use tr808\n  resolution 16\n  ch  xxxxxxxxxxxxxxxx \\   \n      xxxxxxxxxxxxxxxx\n}";
+        let (rest, clip) = parse_clip(input).unwrap();
+        assert_eq!(rest, "");
+        match &clip.body {
+            ClipBody::Drum(body) => {
+                assert_eq!(body.rows[0].hits.len(), 32);
             }
             _ => panic!("expected drum"),
         }

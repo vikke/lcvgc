@@ -147,3 +147,133 @@ pub fn generate_from_path(format: InputFormat, path: &Path) -> Result<String, Ge
         .to_string();
     generate(format, &bytes, &name)
 }
+
+/// ファイル内容と拡張子から入力フォーマットを自動判定する。
+///
+/// 判定優先順位:
+/// 1. 先頭 4 バイトが `MThd` (SMF magic) → `Smf`
+/// 2. 拡張子 `.mid` / `.midi` → `Smf` (ただし magic と不一致ならエラー)
+/// 3. 拡張子 `.mdx` → `Mdx`
+/// 4. それ以外 → `UnsupportedFormat`
+///
+/// Detect the input format from file contents and extension.
+///
+/// # Arguments
+/// * `bytes` - ファイル先頭部分 (最低 4 バイト推奨)
+/// * `path` - ファイルパス (拡張子参照用)
+pub fn detect_format(bytes: &[u8], path: &Path) -> Result<InputFormat, GeneratorError> {
+    const SMF_MAGIC: &[u8; 4] = b"MThd";
+
+    let has_smf_magic = bytes.len() >= 4 && &bytes[..4] == SMF_MAGIC;
+    if has_smf_magic {
+        return Ok(InputFormat::Smf);
+    }
+
+    let ext = path
+        .extension()
+        .and_then(|s| s.to_str())
+        .map(|s| s.to_ascii_lowercase());
+
+    match ext.as_deref() {
+        Some("mid") | Some("midi") => {
+            // 拡張子は SMF だが magic が無い → ファイル破損か別形式
+            Err(GeneratorError::UnsupportedFormat(format!(
+                "{} は .mid/.midi だが SMF magic (MThd) が見つからない",
+                path.display()
+            )))
+        }
+        Some("mdx") => Ok(InputFormat::Mdx),
+        Some(other) => Err(GeneratorError::UnsupportedFormat(format!(
+            "未対応の拡張子: .{}",
+            other
+        ))),
+        None => Err(GeneratorError::UnsupportedFormat(format!(
+            "拡張子なしのファイル: {}",
+            path.display()
+        ))),
+    }
+}
+
+/// パスを与え、フォーマットを自動判定して DSL 文字列を返すワンショット関数。
+///
+/// CLI の位置引数 1 個用エントリポイント。
+///
+/// Auto-detect entry point. Reads `path`, sniffs its format, and emits DSL.
+pub fn generate_from_path_auto(path: &Path) -> Result<String, GeneratorError> {
+    let bytes = std::fs::read(path)?;
+    let format = detect_format(&bytes, path)?;
+    let name = path
+        .file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or("input")
+        .to_string();
+    generate(format, &bytes, &name)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn detect_smf_by_magic() {
+        let bytes = b"MThd\x00\x00\x00\x06\x00\x00\x00\x01\x00\x60";
+        let path = Path::new("anything.bin");
+        assert_eq!(detect_format(bytes, path).unwrap(), InputFormat::Smf);
+    }
+
+    #[test]
+    fn detect_smf_magic_wins_over_mdx_extension() {
+        // 拡張子が .mdx でも先頭が MThd なら SMF として扱う (magic 優先)
+        let bytes = b"MThd\x00\x00\x00\x06\x00\x00\x00\x01\x00\x60";
+        let path = Path::new("weird.mdx");
+        assert_eq!(detect_format(bytes, path).unwrap(), InputFormat::Smf);
+    }
+
+    #[test]
+    fn detect_mdx_by_extension() {
+        // MDX には固定 magic がないので拡張子で判定する
+        let bytes = b"Some Shift-JIS title \x0d\x0a\x1a...";
+        let path = Path::new("song.mdx");
+        assert_eq!(detect_format(bytes, path).unwrap(), InputFormat::Mdx);
+    }
+
+    #[test]
+    fn detect_smf_by_extension_only_fails_without_magic() {
+        // .mid 拡張子だが magic が無い → 破損扱いでエラー
+        let bytes = b"\x00\x00\x00\x00";
+        let path = Path::new("broken.mid");
+        let err = detect_format(bytes, path).unwrap_err();
+        assert!(matches!(err, GeneratorError::UnsupportedFormat(_)));
+    }
+
+    #[test]
+    fn detect_unknown_extension_fails() {
+        let bytes = b"random";
+        let path = Path::new("data.txt");
+        let err = detect_format(bytes, path).unwrap_err();
+        assert!(matches!(err, GeneratorError::UnsupportedFormat(_)));
+    }
+
+    #[test]
+    fn detect_no_extension_fails() {
+        let bytes = b"random";
+        let path = Path::new("noextension");
+        let err = detect_format(bytes, path).unwrap_err();
+        assert!(matches!(err, GeneratorError::UnsupportedFormat(_)));
+    }
+
+    #[test]
+    fn detect_extension_is_case_insensitive() {
+        let bytes = b"x";
+        let path = Path::new("Song.MDX");
+        assert_eq!(detect_format(bytes, path).unwrap(), InputFormat::Mdx);
+    }
+
+    #[test]
+    fn detect_handles_short_file() {
+        // 4 バイト未満でも panic しないこと
+        let bytes = b"MT";
+        let path = Path::new("song.mdx");
+        assert_eq!(detect_format(bytes, path).unwrap(), InputFormat::Mdx);
+    }
+}
