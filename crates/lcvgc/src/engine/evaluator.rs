@@ -300,8 +300,13 @@ impl Evaluator {
     /// `transport = true` の device 名一覧を registry から取り出すヘルパー
     /// (Issue #50)。
     ///
+    /// PlaybackDriver は再生中の Timing Clock (0xF8) 送出時にこの関数を
+    /// 呼んで送信先 device を決定する。
+    ///
     /// Returns device names whose `transport` flag is `true` (Issue #50).
-    fn transport_enabled_devices(&self) -> Vec<String> {
+    /// Also called from the playback driver when emitting Timing Clock
+    /// (0xF8) to determine recipient devices.
+    pub fn transport_enabled_devices(&self) -> Vec<String> {
         self.registry
             .device_names()
             .into_iter()

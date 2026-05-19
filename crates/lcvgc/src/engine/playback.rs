@@ -180,7 +180,27 @@ impl PlaybackDriver {
         // Evaluator ロック中に AllNotesOff / Transport キューを吸い上げる（借用を短く保つ）
         // Issue #50: System Real-Time Start/Stop は Play/Stop 評価で積まれる。
         let pending_all_notes_off = ev.take_pending_all_notes_off();
-        let pending_transport = ev.take_pending_transport();
+        let mut pending_transport = ev.take_pending_transport();
+
+        // PR #88: 再生中の MIDI Timing Clock (0xF8) を 24 PPQN で送出。
+        // active_scene が Some のときだけ、`Clock::is_clock_tick(current_tick)`
+        // が真の tick で `transport = true` な device 全てに 0xF8 を積む。
+        // Start (0xFA) と同じ step で送出されるため、Play 直後の最初の step は
+        // Start + Clock(tick=0) が同時に流れる (MIDI 仕様: 最初の Clock が beat 0)。
+        //
+        // PR #88: emit MIDI Timing Clock (0xF8) at 24 PPQN while playing.
+        // When `active_scene` is Some and `Clock::is_clock_tick(current_tick)`
+        // is true, we queue a Clock for every transport-enabled device. The
+        // first step after Play therefore emits Start and Clock together,
+        // satisfying the MIDI spec that the first Clock marks beat 0.
+        if ev.active_scene().is_some() {
+            let clock_snapshot = ev.clock_snapshot();
+            if clock_snapshot.is_clock_tick(self.current_tick) {
+                for device in ev.transport_enabled_devices() {
+                    pending_transport.push((device, MidiMessage::Clock));
+                }
+            }
+        }
 
         let (routed, scene_len, has_active_scene) = match ev.active_scene_mut() {
             Some(scene) => {
@@ -1162,6 +1182,142 @@ mod tests {
 
         driver.step_once().await.unwrap();
         assert!(other.snapshot().is_empty());
+    }
+
+    // =========================================================================
+    // PR #88: MIDI Timing Clock (0xF8) 24 PPQN 周期送出
+    // PR #88: MIDI Timing Clock (0xF8) emission at 24 PPQN while playing
+    // =========================================================================
+
+    /// PR #88: play 後の最初の step_once (tick=0) で transport=true device に
+    /// MIDI Timing Clock (0xF8) が届く。Start (0xFA) と同じ step で送出され、
+    /// MIDI 仕様の「Start 直後の最初の Clock が beat 0」要件を満たす。
+    #[tokio::test]
+    async fn first_step_after_play_emits_clock_alongside_start() {
+        let evaluator = Arc::new(Mutex::new(Evaluator::new(120.0)));
+        eval(&evaluator, setup_src()).await;
+        eval(&evaluator, "play s1\n").await;
+
+        let (sinks, handle) = single_dev_sinks();
+        let mut driver = PlaybackDriver::with_sinks(evaluator.clone(), sinks);
+
+        driver.step_once().await.unwrap();
+        let sent = handle.snapshot();
+        assert!(
+            sent.iter().any(|m| matches!(m, MidiMessage::Start)),
+            "Start が送出されていない: {:?}",
+            sent
+        );
+        assert!(
+            sent.iter().any(|m| matches!(m, MidiMessage::Clock)),
+            "Start と同時に最初の Clock (0xF8) が送出されていない: {:?}",
+            sent
+        );
+    }
+
+    /// PR #88: PPQ=480 + BPM=120 で 1 拍 (480 ticks) 進めると Clock が 24 個流れる。
+    /// 24 PPQN の固定レート要件を検証する。
+    #[tokio::test]
+    async fn one_beat_emits_24_clocks() {
+        let evaluator = Arc::new(Mutex::new(Evaluator::new(120.0)));
+        eval(&evaluator, setup_src()).await;
+        eval(&evaluator, "play s1\n").await;
+
+        let (sinks, handle) = single_dev_sinks();
+        let mut driver = PlaybackDriver::with_sinks(evaluator.clone(), sinks);
+
+        // tick 0 .. 479 = 480 ticks 進める (1 拍)。Clock は tick 0, 20, ... 460 の
+        // 24 箇所で送出されるはず。
+        for _ in 0..480 {
+            driver.step_once().await.unwrap();
+        }
+        let sent = handle.snapshot();
+        let clock_count = sent
+            .iter()
+            .filter(|m| matches!(m, MidiMessage::Clock))
+            .count();
+        assert_eq!(
+            clock_count, 24,
+            "PPQ=480 で 1 拍 (480 ticks) 進めたとき Clock は 24 個でなければならない: {} 個 / 全送出 {:?}",
+            clock_count, sent
+        );
+    }
+
+    /// PR #88: stop 後の step_once では Clock が送出されない。
+    /// active_scene が None になった時点で 24 PPQN の周期送出は止まる。
+    #[tokio::test]
+    async fn stop_halts_clock_emission() {
+        let evaluator = Arc::new(Mutex::new(Evaluator::new(120.0)));
+        eval(&evaluator, setup_src()).await;
+        eval(&evaluator, "play s1\n").await;
+        let (sinks, handle) = single_dev_sinks();
+        let mut driver = PlaybackDriver::with_sinks(evaluator.clone(), sinks);
+
+        // 数 tick 進めて Clock が出ていることを確認
+        for _ in 0..40 {
+            driver.step_once().await.unwrap();
+        }
+        let before_stop = handle.snapshot();
+        assert!(
+            before_stop.iter().any(|m| matches!(m, MidiMessage::Clock)),
+            "stop 前に Clock が出ていない: {:?}",
+            before_stop
+        );
+
+        // stop してから handle をクリアし、さらに step を進める
+        eval(&evaluator, "stop\n").await;
+        driver.step_once().await.unwrap(); // Stop 送出される step
+        handle.clear();
+        for _ in 0..50 {
+            driver.step_once().await.unwrap();
+        }
+        let after_stop = handle.snapshot();
+        assert!(
+            !after_stop.iter().any(|m| matches!(m, MidiMessage::Clock)),
+            "stop 後に Clock が送出されている: {:?}",
+            after_stop
+        );
+    }
+
+    /// PR #88: transport=false の device には Clock が届かない (Start/Stop と同様)
+    #[tokio::test]
+    async fn transport_false_device_does_not_receive_clock() {
+        let evaluator = Arc::new(Mutex::new(Evaluator::new(120.0)));
+        let src = "\
+            device a { port pa\n  transport true\n}\n\
+            device b { port pb\n  transport false\n}\n\
+            instrument inst_a { device a\n  channel 1\n}\n\
+            clip c [bars 1] { inst_a c }\n\
+            scene s { c }\n";
+        eval(&evaluator, src).await;
+        eval(&evaluator, "play s\n").await;
+
+        let handle_a = SharedMockSink::new();
+        let handle_b = SharedMockSink::new();
+        let mut sinks: HashMap<String, BoxedSink> = HashMap::new();
+        sinks.insert("a".to_string(), Box::new(handle_a.clone()));
+        sinks.insert("b".to_string(), Box::new(handle_b.clone()));
+        let mut driver = PlaybackDriver::with_sinks(evaluator.clone(), sinks);
+
+        // tick 0 と tick 20 の 2 つの Clock 境界を踏む
+        for _ in 0..40 {
+            driver.step_once().await.unwrap();
+        }
+
+        assert!(
+            handle_a
+                .snapshot()
+                .iter()
+                .any(|m| matches!(m, MidiMessage::Clock)),
+            "transport=true の device a に Clock が届くべき"
+        );
+        assert!(
+            !handle_b
+                .snapshot()
+                .iter()
+                .any(|m| matches!(m, MidiMessage::Clock)),
+            "transport=false の device b には Clock が届くべきでない"
+        );
     }
 
     // =========================================================================

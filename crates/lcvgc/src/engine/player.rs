@@ -519,7 +519,7 @@ fn channel_of(msg: &crate::midi::message::MidiMessage) -> crate::midi::channel::
         | MidiMessage::NoteOff { channel, .. }
         | MidiMessage::ControlChange { channel, .. }
         | MidiMessage::ProgramChange { channel, .. } => *channel,
-        MidiMessage::Start | MidiMessage::Stop | MidiMessage::Continue => {
+        MidiMessage::Start | MidiMessage::Stop | MidiMessage::Continue | MidiMessage::Clock => {
             unreachable!("System Real-Time messages are not part of compiled clip events")
         }
     }

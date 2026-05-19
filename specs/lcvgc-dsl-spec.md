@@ -1562,8 +1562,13 @@ unmute drums_a
 > - Issue #50 **adds MIDI System Real-Time Start (0xFA) / Stop (0xFC) emission**.
 >   On `play` / `stop`, the messages are sent to every device whose `device`
 >   block declares `transport = true` (the default). See §10.5 for details.
-> - Continue (0xFB), Timing Clock (0xF8), and Song Position Pointer (0xF2)
->   emission are tracked for future issues.
+> - PR #88 **adds MIDI System Real-Time Timing Clock (0xF8) emission at 24 PPQN**.
+>   While the engine is between `play` and `stop`, every `transport = true`
+>   device receives 24 clocks per quarter note. The first Clock is emitted
+>   together with Start, so external gear can lock onto tempo right at
+>   beat 0 as required by the MIDI spec. See §10.5 for details.
+> - Continue (0xFB) and Song Position Pointer (0xF2) emission are tracked
+>   for future issues.
 
 lcvgc provides **three independent kinds of "stop" operations**, each with different effects on tick (time), sound, and phase (current position inside a loop).
 
@@ -1674,37 +1679,45 @@ drums_a: |1---2---3-[stopped]  ...  1---2---3---4---|
 
 ---
 
-### 10.5 MIDI Transport Message Emission (Start / Stop)
+### 10.5 MIDI Transport Message Emission (Start / Stop / Timing Clock)
 
-To synchronize external sequencers and drum machines from lcvgc, `play` / `stop` emit the corresponding MIDI System Real-Time messages to every device declared with `transport = true` (Issue #50).
+To synchronize external sequencers and drum machines from lcvgc, `play` / `stop` emit the corresponding MIDI System Real-Time messages to every device declared with `transport = true` (Issue #50). While between `play` and `stop`, MIDI Timing Clock (`0xF8`) is also emitted at **24 PPQN** so that external gear can lock onto tempo (PR #88).
 
 #### DSL command to byte mapping
 
-| DSL command | Byte emitted | Name |
-|---|---|---|
-| `play <scene/session>` | `0xFA` | Start |
-| `stop` / `stop <scene>` / `stop <session>` | `0xFC` | Stop |
+| DSL command | Byte emitted | Name | When |
+|---|---|---|---|
+| `play <scene/session>` | `0xFA` | Start | Once on `play` evaluation |
+| `stop` / `stop <scene>` / `stop <session>` | `0xFC` | Stop | Once on `stop` evaluation |
+| (while playing between `play` and `stop`) | `0xF8` | Timing Clock | 24 PPQN (24 per beat) |
 
-Continue (`0xFB`) for `pause` / `resume`, Timing Clock (`0xF8`), and Song Position Pointer (`0xF2`) are out of scope for this issue.
+Continue (`0xFB`) for `pause` / `resume` and Song Position Pointer (`0xF2`) are out of scope for this section.
 
 #### Meaning of the `transport` flag
 
-The `transport` field on a `device` block (§1) controls whether transport messages are sent to that device:
+The `transport` field on a `device` block (§1) controls whether transport messages (Start / Stop / Timing Clock) are sent to that device:
 
-- `transport true` (or omitted): on `play` / `stop` evaluation, Start / Stop is sent to that device's sink.
-- `transport false`: no transport messages are ever sent. Note and other regular events continue to be delivered.
+- `transport true` (or omitted): on `play` / `stop` evaluation, Start / Stop is sent to that device's sink; while playing, Timing Clock streams at 24 PPQN.
+- `transport false`: no transport messages are ever sent (including Clock). Note and other regular events continue to be delivered.
 
 #### Dispatch path
 
 1. On successful `play` evaluation (the scene/session was built without errors), `MidiMessage::Start` is queued for every device whose `transport` flag is `true`. Failed evaluation (e.g., unknown scene/session) queues nothing.
 2. On `stop` evaluation, `MidiMessage::Stop` is queued for every device whose `transport` flag is `true`, regardless of whether the optional name argument matched the active scene/session.
-3. `PlaybackDriver` drains the queue at the start of the next `step_once` and dispatches each message to the matching `MidiSink` using the device name as the key.
-4. Queue entries whose device name is not present in the sink map are logged as a warning and dropped — the engine never halts because of routing misses.
-5. Start is sent before any regular events scheduled at the same tick. Stop is dispatched alongside AllNotesOff as part of the stop-side cleanup path.
+3. At the top of every `PlaybackDriver::step_once`, when `active_scene` is `Some` and `Clock::is_clock_tick(current_tick)` is true, `MidiMessage::Clock` is queued for every `transport = true` device. Tick 0 satisfies the predicate, so the first step after `play` emits Start and the first Clock together — meeting the MIDI spec requirement that the first Clock marks beat 0.
+4. The queue is drained and dispatched to the matching `MidiSink` keyed by device name. Queue entries whose device name is not in the sink map are logged as a warning and dropped — the engine never halts because of routing misses.
+5. Start is sent before any regular events scheduled at the same tick. Stop is dispatched alongside AllNotesOff as part of the stop-side cleanup path. Clock rides on the same dispatch phase as Start.
+
+#### Timing Clock period
+
+- The number of internal ticks per Timing Clock is `internal PPQ ÷ 24` (`Clock::clock_period_ticks()`).
+- With the default PPQ of 480, the period is 20 ticks/clock. At BPM=120 that is roughly 20.83 ms between clocks.
+- If the internal PPQ is not a multiple of 24, `clock_period_ticks()` returns `0` and Clock emission is disabled. The default PPQ values (480, 96, 24, …) are all multiples of 24, so this is a non-issue in practice.
+- Tempo changes only affect wall-clock time per beat (still 24 clocks per beat). The driver reads `clock_snapshot()` every step, so tempo updates are reflected immediately on the next step.
 
 #### Backward compatibility
 
-- Because `transport` defaults to `true`, existing DSLs from before Issue #50 keep working unchanged: every registered device receives Start / Stop on `play` / `stop`. To opt a device out, write `transport false` explicitly.
+- Because `transport` defaults to `true`, existing DSLs from before PR #88 keep working unchanged: every registered device receives Start / Stop on `play` / `stop` and Timing Clock between them. To opt a device out, write `transport false` explicitly.
 
 ---
 
