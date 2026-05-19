@@ -139,6 +139,41 @@ impl Clock {
         }
     }
 
+    /// MIDI Timing Clock (0xF8) を 1 個送出するごとに進む内部 tick 数
+    ///
+    /// MIDI 1.0 規格では Timing Clock は 24 PPQN (Pulses Per Quarter Note) 固定。
+    /// 内部 PPQ を 24 で割った値が「Clock 1 個分の tick 数」になる。
+    /// 内部 PPQ が 24 の倍数でない場合は割り切れないため `0` を返し、
+    /// その状態では Timing Clock の送出は無効化される (`is_clock_tick` も
+    /// 常に false を返す)。実運用 (PPQ=480) では 20 を返す。
+    ///
+    /// Returns the number of internal ticks between two consecutive MIDI
+    /// Timing Clock pulses (24 PPQN). For non-multiple-of-24 PPQ values
+    /// the function returns `0`, which disables Clock emission entirely
+    /// via `is_clock_tick`.
+    pub fn clock_period_ticks(&self) -> u64 {
+        if self.ppq.is_multiple_of(24) {
+            u64::from(self.ppq) / 24
+        } else {
+            0
+        }
+    }
+
+    /// 指定 tick が MIDI Timing Clock (0xF8) を送出すべき境界か
+    ///
+    /// `clock_period_ticks()` が 0 の場合（PPQ が 24 の倍数でない場合）は
+    /// 常に false を返し、Clock 送出を無効化する。
+    ///
+    /// # 引数 / Arguments
+    /// * `tick` - 評価対象の tick 位置 / Tick position to test
+    ///
+    /// Tells whether the given `tick` is a Timing Clock boundary. Returns
+    /// false unconditionally when the PPQ is not a multiple of 24.
+    pub fn is_clock_tick(&self, tick: u64) -> bool {
+        let period = self.clock_period_ticks();
+        period != 0 && tick.is_multiple_of(period)
+    }
+
     /// テンポASTノードを適用してBPMを更新する
     /// Applies a Tempo AST node to update the BPM
     ///
@@ -250,5 +285,60 @@ mod tests {
         let mut c = Clock::new(120.0);
         c.apply_tempo(&Tempo::Relative(10));
         assert!((c.bpm() - 130.0).abs() < f64::EPSILON);
+    }
+
+    /// PPQ=480 → MIDI Timing Clock は 24 PPQN なので 1 clock = 20 ticks
+    /// PPQ=480 → MIDI Timing Clock at 24 PPQN means 1 clock per 20 ticks
+    #[test]
+    fn clock_period_ticks_ppq_480() {
+        let c = Clock::new(120.0);
+        assert_eq!(c.clock_period_ticks(), 20);
+    }
+
+    /// PPQ=24 → 1 clock = 1 tick (MIDI 規格の最小解像度)
+    /// PPQ=24 → 1 clock per 1 tick (minimum MIDI resolution)
+    #[test]
+    fn clock_period_ticks_ppq_24() {
+        let c = Clock::with_ppq(120.0, 24);
+        assert_eq!(c.clock_period_ticks(), 1);
+    }
+
+    /// PPQ=96 → 1 clock = 4 ticks
+    #[test]
+    fn clock_period_ticks_ppq_96() {
+        let c = Clock::with_ppq(120.0, 96);
+        assert_eq!(c.clock_period_ticks(), 4);
+    }
+
+    /// PPQ が 24 の倍数でない場合は 0 を返す (Clock 送出不可)
+    /// Non-multiple-of-24 PPQ returns 0 (Clock emission disabled)
+    #[test]
+    fn clock_period_ticks_ppq_100_is_zero() {
+        let c = Clock::with_ppq(120.0, 100);
+        assert_eq!(c.clock_period_ticks(), 0);
+    }
+
+    /// `is_clock_tick(tick)` は PPQ=480 で `tick % 20 == 0` のとき真
+    /// `is_clock_tick(tick)` is true iff `tick % 20 == 0` when PPQ=480
+    #[test]
+    fn is_clock_tick_ppq_480() {
+        let c = Clock::new(120.0);
+        assert!(c.is_clock_tick(0));
+        assert!(c.is_clock_tick(20));
+        assert!(c.is_clock_tick(40));
+        assert!(c.is_clock_tick(480)); // 1 拍境界 = 24 個目の clock
+        assert!(!c.is_clock_tick(1));
+        assert!(!c.is_clock_tick(19));
+        assert!(!c.is_clock_tick(21));
+    }
+
+    /// PPQ が 24 の倍数でない場合は `is_clock_tick` は常に false
+    /// Non-multiple-of-24 PPQ disables `is_clock_tick` entirely
+    #[test]
+    fn is_clock_tick_disabled_when_ppq_not_multiple_of_24() {
+        let c = Clock::with_ppq(120.0, 100);
+        assert!(!c.is_clock_tick(0));
+        assert!(!c.is_clock_tick(1));
+        assert!(!c.is_clock_tick(100));
     }
 }

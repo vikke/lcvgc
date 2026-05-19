@@ -62,6 +62,18 @@ pub enum MidiMessage {
     /// System Real-Time: Continue (0xFB) — 外部 device に再生再開を伝える
     /// System Real-Time: Continue (0xFB) — tells external devices to resume playback
     Continue,
+    /// System Real-Time: Timing Clock (0xF8) — 24 PPQN で外部 device にテンポを伝える
+    ///
+    /// 1 四分音符あたり 24 個の Timing Clock が送出される (MIDI 1.0 標準)。
+    /// `play` 後に `stop` までの間、`transport = true` な device に対し
+    /// `Clock::clock_period_ticks()` 周期で送出される。Start (0xFA) と
+    /// 同時に最初の 1 個も送出される (MIDI 仕様: 最初の Clock が beat 0)。
+    ///
+    /// System Real-Time: Timing Clock (0xF8). MIDI 1.0 mandates 24 pulses per
+    /// quarter note. While playing, this is emitted at `Clock::clock_period_ticks()`
+    /// intervals to every `transport = true` device. The first Clock is sent
+    /// together with Start (per MIDI spec: the first Clock marks beat 0).
+    Clock,
 }
 
 impl MidiMessage {
@@ -95,6 +107,7 @@ impl MidiMessage {
             MidiMessage::Start => vec![0xFA],
             MidiMessage::Stop => vec![0xFC],
             MidiMessage::Continue => vec![0xFB],
+            MidiMessage::Clock => vec![0xF8],
         }
     }
 }
@@ -205,5 +218,15 @@ mod tests {
     #[test]
     fn system_realtime_continue() {
         assert_eq!(MidiMessage::Continue.to_bytes(), vec![0xFB]);
+    }
+
+    /// MIDI System Real-Time Timing Clock (0xF8) は単一バイトの
+    /// `vec![0xF8]` にシリアライズされる。再生中に 24 PPQN で送出される。
+    ///
+    /// MIDI System Real-Time Timing Clock (0xF8) serializes to a single
+    /// byte `vec![0xF8]`. Sent at 24 PPQN while playing.
+    #[test]
+    fn system_realtime_clock() {
+        assert_eq!(MidiMessage::Clock.to_bytes(), vec![0xF8]);
     }
 }

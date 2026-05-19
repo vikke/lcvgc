@@ -1562,7 +1562,11 @@ unmute drums_a
 > - Issue #50 で **MIDI System Real-Time Start (0xFA) / Stop (0xFC) 送出を実装**。
 >   `play` / `stop` 実行時に、`device` ブロックで `transport = true`（既定値）
 >   と指定された device すべてへ送られる。詳細は §10.5 を参照。
-> - MIDI トランスポートメッセージのうち Continue (0xFB)、Timing Clock (0xF8)、
+> - PR #88 で **MIDI System Real-Time Timing Clock (0xF8) を 24 PPQN で送出**。
+>   `play` 〜 `stop` の間、`transport = true` な device に 1 拍 24 個のレートで
+>   流れる。Start (0xFA) と同じ step で最初の Clock が送出されるため、外部機材は
+>   仕様通り Start 直後から sync を開始できる。詳細は §10.5 を参照。
+> - MIDI トランスポートメッセージのうち Continue (0xFB)、
 >   Song Position Pointer (0xF2) 送出は今後の Issue で対応予定。
 
 lcvgc には「再生を止める」ための**独立した 3 種類の操作**がある。それぞれ tick（時間）・音・位相（ループ内の現在位置）への作用が異なる。
@@ -1676,37 +1680,45 @@ drums_a: |1---2---3-[停止]  ...  1---2---3---4---|
 
 ---
 
-### 10.5 MIDI トランスポートメッセージの送出（Start / Stop）
+### 10.5 MIDI トランスポートメッセージの送出（Start / Stop / Timing Clock）
 
-外部のシーケンサーやドラムマシンを lcvgc 起点で同期制御するため、`play` / `stop` 実行時に該当する MIDI System Real-Time メッセージを `transport = true` の device に送出する (Issue #50)。
+外部のシーケンサーやドラムマシンを lcvgc 起点で同期制御するため、`play` / `stop` 実行時に該当する MIDI System Real-Time メッセージを `transport = true` の device に送出する (Issue #50)。さらに `play` 〜 `stop` の間は MIDI Timing Clock (`0xF8`) を **24 PPQN** で送出し、外部機材がテンポ同期できるようにする (PR #88)。
 
 #### DSL コマンドと送出バイトの対応
 
-| DSL コマンド | 送出されるバイト | 名称 |
-|---|---|---|
-| `play <scene/session>` | `0xFA` | Start |
-| `stop` / `stop <scene>` / `stop <session>` | `0xFC` | Stop |
+| DSL コマンド | 送出されるバイト | 名称 | 送出タイミング |
+|---|---|---|---|
+| `play <scene/session>` | `0xFA` | Start | `play` 評価時に 1 回 |
+| `stop` / `stop <scene>` / `stop <session>` | `0xFC` | Stop | `stop` 評価時に 1 回 |
+| （`play` 後 `stop` まで） | `0xF8` | Timing Clock | 24 PPQN（1 拍 24 個） |
 
-`pause` / `resume` の Continue (`0xFB`)、Timing Clock (`0xF8`)、Song Position Pointer (`0xF2`) は本 Issue ではスコープ外。
+`pause` / `resume` の Continue (`0xFB`)、Song Position Pointer (`0xF2`) は本 §ではスコープ外。
 
 #### `transport` フラグの意味
 
-`device` ブロックの `transport` フィールド (§1) は、その device に対してトランスポートメッセージを送出するかどうかを制御する:
+`device` ブロックの `transport` フィールド (§1) は、その device に対してトランスポートメッセージ（Start / Stop / Timing Clock）を送出するかどうかを制御する:
 
-- `transport true` （または省略時）: `play` / `stop` 評価時に、その device の sink へ Start / Stop が送出される。
-- `transport false`: トランスポートメッセージは一切送出されない。ノート等の通常イベントは引き続き送出される。
+- `transport true` （または省略時）: `play` / `stop` 評価時に Start / Stop が送出され、再生中は 24 PPQN で Timing Clock が流れる。
+- `transport false`: トランスポートメッセージは一切送出されない（Clock も含む）。ノート等の通常イベントは引き続き送出される。
 
 #### 送出経路
 
 1. `play` 評価時: scene/session の構築に成功した直後、`transport = true` の全 device に対し `MidiMessage::Start` を「送出キュー」に積む。失敗した場合（未知の scene/session など）は積まない。
 2. `stop` 評価時: target の名前一致に依らず、`transport = true` の全 device に対し `MidiMessage::Stop` を「送出キュー」に積む。
-3. `PlaybackDriver` は次の tick の `step_once` 冒頭でキューを取り出し、device 名をキーに対応する `MidiSink` へ送出する。
-4. sink マップに存在しない device 名のキューエントリは warn ログを出してドロップする（エンジンは停止しない）。
-5. Start は同 tick の通常イベントより前に送出される。Stop は AllNotesOff と並ぶ stop 系の片付け処理として送られる。
+3. `PlaybackDriver::step_once` は冒頭で、`active_scene` が `Some` かつ内部 `Clock::is_clock_tick(current_tick)` が真の tick に対し、`transport = true` な全 device 宛に `MidiMessage::Clock` を送出キューに追加する。tick 0 でも真になるため、Play 直後の最初の step で Start と最初の Clock が同じ step で送出される（MIDI 仕様の「Start 直後の最初の Clock が beat 0」要件を満たす）。
+4. キュー全体を取り出し、device 名をキーに対応する `MidiSink` へ送出する。sink マップに存在しない device 名のキューエントリは warn ログを出してドロップする（エンジンは停止しない）。
+5. Start は同 tick の通常イベントより前に送出される。Stop は AllNotesOff と並ぶ stop 系の片付け処理として送られる。Clock は Start と同じ送出フェーズで流れる。
+
+#### Timing Clock の周期計算
+
+- 内部 PPQ を 24 で割った値が「Clock 1 個分の tick 数」になる（`Clock::clock_period_ticks()`）。
+- 既定 PPQ=480 のとき周期は 20 ticks/clock。BPM=120 なら約 20.83 ms 周期。
+- 内部 PPQ が 24 の倍数でない場合は割り切れないため、`clock_period_ticks()` は `0` を返し Clock 送出は無効化される。実運用ではこのケースは想定しない（既定 480 / 96 / 24 などはすべて 24 の倍数）。
+- テンポ変更は 1 拍あたりの実時間にしか影響しない（24 個/拍は不変）。`PlaybackDriver` は毎 step で `clock_snapshot()` を読むため、テンポ変更は次 step から自動反映される。
 
 #### 後方互換
 
-- `transport` 省略時の既定値は `true` のため、Issue #50 以前の DSL を変更なしで読み込んでも、登録済み device すべてに `play` / `stop` でトランスポートメッセージが送られる。送出させたくない device は明示的に `transport false` を指定する。
+- `transport` 省略時の既定値は `true` のため、PR #88 以前の DSL を変更なしで読み込んでも、登録済み device すべてに `play` / `stop` でトランスポートメッセージと再生中の Timing Clock が送られる。送出させたくない device は明示的に `transport false` を指定する。
 
 ---
 

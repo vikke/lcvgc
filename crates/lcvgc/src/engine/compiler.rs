@@ -297,7 +297,7 @@ fn event_sort_priority(msg: &MidiMessage) -> u8 {
         MidiMessage::ControlChange { .. } => 1,
         MidiMessage::NoteOff { .. } => 2,
         MidiMessage::ProgramChange { .. } => 1,
-        MidiMessage::Start | MidiMessage::Stop | MidiMessage::Continue => {
+        MidiMessage::Start | MidiMessage::Stop | MidiMessage::Continue | MidiMessage::Clock => {
             unreachable!("System Real-Time messages are not part of compiled clip events")
         }
     }
