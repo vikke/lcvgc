@@ -29,6 +29,7 @@
 
 use crate::generator::score::{Event, Score, Track, TrackKind};
 use crate::generator::{GeneratorError, ScoreReader};
+use encoding_rs::SHIFT_JIS;
 
 /// MDX の note value (0x80) を MIDI ノート番号に変換するときの加算値。
 ///
@@ -107,15 +108,14 @@ struct MdxHeader {
 /// MDX ヘッダをパースする。
 /// Parses the MDX header.
 fn parse_header(bytes: &[u8]) -> Result<MdxHeader, &'static str> {
-    // 1) タイトル: 0x0d 0x0a 0x1a で終端
+    // 1) タイトル: 0x0d 0x0a 0x1a で終端、本文は Shift-JIS
+    // MDX 仕様上タイトルは Shift-JIS で記録されている。UTF-8 として読むと
+    // 日本語タイトルが化けるので encoding_rs でデコードする。
     let mut i;
     let title_end = find_subseq(bytes, &[0x0d, 0x0a, 0x1a]).ok_or("missing title terminator")?;
     let title = if title_end > 0 {
-        Some(
-            String::from_utf8_lossy(&bytes[..title_end])
-                .trim()
-                .to_string(),
-        )
+        let (cow, _enc, _had_errors) = SHIFT_JIS.decode(&bytes[..title_end]);
+        Some(cow.trim().to_string())
     } else {
         None
     };
@@ -448,6 +448,28 @@ mod tests {
         assert_eq!(t.name, "fm_a");
         assert_eq!(t.kind, TrackKind::Melodic);
         assert_eq!(t.events.len(), 4);
+    }
+
+    /// MDX のタイトルは Shift-JIS で記録されているので、UTF-8 ではなく
+    /// Shift-JIS としてデコードした結果がタイトルになることを確認する。
+    /// Title bytes "テスト" (= 0x83 0x65 0x83 0x58 0x83 0x67 in Shift-JIS)
+    /// must be decoded to the UTF-8 string "テスト".
+    #[test]
+    fn parses_shift_jis_japanese_title() {
+        let mut out: Vec<u8> = Vec::new();
+        // "テスト" を Shift-JIS で
+        out.extend_from_slice(&[0x83, 0x65, 0x83, 0x58, 0x83, 0x67]);
+        out.extend_from_slice(&[0x0d, 0x0a, 0x1a]);
+        out.push(0x00); // PDX 終端
+        out.extend_from_slice(&4u16.to_be_bytes()); // voice off
+        out.extend_from_slice(&4u16.to_be_bytes()); // mml off
+        out.push(0x80);
+        out.push(48);
+        out.push(0xF1);
+        out.push(0x00);
+
+        let score = MdxReader.read(&out, "jp.mdx").unwrap();
+        assert_eq!(score.title.as_deref(), Some("テスト"));
     }
 
     #[test]
