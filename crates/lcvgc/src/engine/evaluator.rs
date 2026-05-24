@@ -307,16 +307,13 @@ impl Evaluator {
     /// Also called from the playback driver when emitting Timing Clock
     /// (0xF8) to determine recipient devices.
     pub fn transport_enabled_devices(&self) -> Vec<String> {
-        self.registry
-            .device_names()
-            .into_iter()
-            .filter(|name| {
-                self.registry
-                    .get_device(name)
-                    .map(|d| d.transport)
-                    .unwrap_or(false)
-            })
-            .collect()
+        // Registry 側で precompute されたキャッシュを clone するだけ。
+        // 毎 tick この経路を呼ぶ playback driver のために、HashMap 走査と
+        // get_device() lookup の繰り返しを避けている。
+        // Just clone Registry's precomputed cache; avoids the per-tick HashMap
+        // walk + repeated `get_device` lookups that the playback driver
+        // would otherwise pay for every tick.
+        self.registry.transport_enabled_device_names().to_vec()
     }
 
     /// 現在 play 中の ScenePlayer への不変参照
