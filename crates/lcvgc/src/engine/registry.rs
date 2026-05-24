@@ -22,6 +22,16 @@ pub struct Registry {
     /// デバイス定義のマップ（名前 → 定義）
     /// Map of device definitions (name -> definition)
     devices: HashMap<String, DeviceDef>,
+    /// `transport = true` を持つ device 名のキャッシュ（ソート済）。
+    /// `transport_enabled_device_names` 経由で再生ドライバが毎 tick 参照する
+    /// ため、device 登録時に `rebuild_transport_cache` で更新する。
+    /// 順序を決定論的にするためソート (HashMap iteration の不安定さを排除)。
+    ///
+    /// Cached list of devices whose `transport` flag is `true` (sorted).
+    /// The playback driver reads this every tick via
+    /// `transport_enabled_device_names`, so it is rebuilt whenever a device
+    /// is (re)registered. Sorted for deterministic ordering.
+    transport_enabled_cache: Vec<String>,
     /// インストゥルメント定義のマップ（名前 → 定義）
     /// Map of instrument definitions (name -> definition)
     instruments: HashMap<String, InstrumentDef>,
@@ -64,6 +74,7 @@ impl Registry {
         match block {
             Block::Device(d) => {
                 self.devices.insert(d.name.clone(), d);
+                self.rebuild_transport_cache();
                 true
             }
             Block::Instrument(i) => {
@@ -166,6 +177,38 @@ impl Registry {
     /// Returns a list of all registered device names
     pub fn device_names(&self) -> Vec<String> {
         self.devices.keys().cloned().collect()
+    }
+
+    /// `transport = true` を持つ device 名のキャッシュ済スライスを返す。
+    ///
+    /// 再生ドライバが毎 tick の Timing Clock 送出時に参照するため、
+    /// 線形走査 / 再 allocation を避ける目的で `register_block(Device)`
+    /// 経由で予め組み立てておいた結果を返す。
+    ///
+    /// Returns the cached slice of device names whose `transport` flag is
+    /// `true`. The playback driver hits this every tick when emitting Timing
+    /// Clock, so we expose a precomputed slice instead of rebuilding from
+    /// the HashMap each time.
+    pub fn transport_enabled_device_names(&self) -> &[String] {
+        &self.transport_enabled_cache
+    }
+
+    /// `transport_enabled_cache` を `devices` から再構築する内部ヘルパ。
+    /// device 登録 (`register_block`) 経由で呼ばれる。
+    /// 出力はソート済で決定論的。
+    ///
+    /// Rebuilds `transport_enabled_cache` from `devices`. Called from
+    /// `register_block` when a `Device` block is (re)registered. Output is
+    /// sorted for deterministic ordering.
+    fn rebuild_transport_cache(&mut self) {
+        let mut names: Vec<String> = self
+            .devices
+            .iter()
+            .filter(|(_, d)| d.transport)
+            .map(|(name, _)| name.clone())
+            .collect();
+        names.sort();
+        self.transport_enabled_cache = names;
     }
 
     /// 登録済みインストゥルメント名の一覧を返す
@@ -432,5 +475,75 @@ mod tests {
             path: "other.lcvgc".into(),
         }));
         assert!(!result);
+    }
+
+    /// transport=true の device 登録で transport_enabled_device_names に乗ること
+    #[test]
+    fn transport_cache_includes_transport_enabled_device() {
+        let mut reg = Registry::new();
+        reg.register_block(Block::Device(DeviceDef {
+            name: "synth".into(),
+            port: "port1".into(),
+            transport: true,
+        }));
+        assert_eq!(reg.transport_enabled_device_names(), &["synth".to_string()]);
+    }
+
+    /// transport=false の device は cache に含まれないこと
+    #[test]
+    fn transport_cache_excludes_transport_disabled_device() {
+        let mut reg = Registry::new();
+        reg.register_block(Block::Device(DeviceDef {
+            name: "drum".into(),
+            port: "port1".into(),
+            transport: false,
+        }));
+        assert!(reg.transport_enabled_device_names().is_empty());
+    }
+
+    /// 複数 device 登録で cache がソート済かつ全 transport=true device を含むこと
+    #[test]
+    fn transport_cache_is_sorted_and_complete() {
+        let mut reg = Registry::new();
+        reg.register_block(Block::Device(DeviceDef {
+            name: "zeta".into(),
+            port: "p1".into(),
+            transport: true,
+        }));
+        reg.register_block(Block::Device(DeviceDef {
+            name: "alpha".into(),
+            port: "p2".into(),
+            transport: true,
+        }));
+        reg.register_block(Block::Device(DeviceDef {
+            name: "drum".into(),
+            port: "p3".into(),
+            transport: false,
+        }));
+        assert_eq!(
+            reg.transport_enabled_device_names(),
+            &["alpha".to_string(), "zeta".to_string()]
+        );
+    }
+
+    /// 同名 device の上書き登録で cache が再計算されること
+    /// (transport=true → 同名で transport=false に上書き → cache から消える)
+    #[test]
+    fn transport_cache_rebuilds_on_device_overwrite() {
+        let mut reg = Registry::new();
+        reg.register_block(Block::Device(DeviceDef {
+            name: "synth".into(),
+            port: "port1".into(),
+            transport: true,
+        }));
+        assert_eq!(reg.transport_enabled_device_names(), &["synth".to_string()]);
+
+        // 同名で transport=false に上書き
+        reg.register_block(Block::Device(DeviceDef {
+            name: "synth".into(),
+            port: "port2".into(),
+            transport: false,
+        }));
+        assert!(reg.transport_enabled_device_names().is_empty());
     }
 }

@@ -1,7 +1,7 @@
 use crate::engine::compiler::{CompiledClip, MidiEvent};
 use crate::midi::probability::should_trigger;
 use rand::Rng;
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet};
 
 /// 2つの u64 の最大公約数
 /// Greatest common divisor of two u64 values.
@@ -56,6 +56,17 @@ pub struct ClipPlayer {
     /// iteration. Refreshed every loop boundary so each loop yields a
     /// fresh variation.
     masked_events: HashSet<usize>,
+    /// `tick → そのtickで発火する event の clip.events 内 index 列` の索引。
+    /// `events_at` を線形走査 (O(N)) から O(log N + k) に下げるための前計算結果。
+    /// clip swap 時 (`replace_clip` → `advance` 内で take) に `rebuild_events_index`
+    /// で再構築する。mask の有無は反映しない（mask は `events_at` 側で filter する）。
+    ///
+    /// Precomputed `tick → indices into clip.events` index that lets
+    /// `events_at` finish in O(log N + k) instead of O(N). Rebuilt whenever
+    /// the underlying clip is swapped (`replace_clip` followed by `advance`).
+    /// The mask state is intentionally not folded in — masks are applied at
+    /// query time inside `events_at`.
+    events_by_tick: BTreeMap<u64, Vec<usize>>,
 }
 
 impl ClipPlayer {
@@ -68,6 +79,7 @@ impl ClipPlayer {
     /// mask for the first loop iteration. Clips without probability rows
     /// roll an empty mask, which is a no-op.
     pub fn new(clip: CompiledClip, looping: bool) -> Self {
+        let events_by_tick = build_events_by_tick(&clip);
         let mut player = Self {
             clip,
             pending_clip: None,
@@ -76,6 +88,7 @@ impl ClipPlayer {
             muted: false,
             paused: false,
             masked_events: HashSet::new(),
+            events_by_tick,
         };
         player.reroll_masks(&mut rand::thread_rng());
         player
@@ -85,6 +98,7 @@ impl ClipPlayer {
     /// Test helper: build a ClipPlayer with a caller-supplied RNG.
     #[cfg(test)]
     pub fn new_with_rng<R: Rng>(clip: CompiledClip, looping: bool, rng: &mut R) -> Self {
+        let events_by_tick = build_events_by_tick(&clip);
         let mut player = Self {
             clip,
             pending_clip: None,
@@ -93,6 +107,7 @@ impl ClipPlayer {
             muted: false,
             paused: false,
             masked_events: HashSet::new(),
+            events_by_tick,
         };
         player.reroll_masks(rng);
         player
@@ -202,13 +217,18 @@ impl ClipPlayer {
             return Vec::new();
         }
         let effective = self.effective_tick(tick);
-        self.clip
-            .events
-            .iter()
-            .enumerate()
-            .filter(|(idx, e)| e.tick == effective && !self.masked_events.contains(idx))
-            .map(|(_, e)| e)
-            .collect()
+        // 索引 (`events_by_tick`) を引いて該当 tick の event index 列だけを舐める。
+        // mask は元の実装と同様に query 時に適用する。
+        // Look up the per-tick index and walk only the matching event indices;
+        // masking is applied at query time, matching the original semantics.
+        match self.events_by_tick.get(&effective) {
+            Some(indices) => indices
+                .iter()
+                .filter(|idx| !self.masked_events.contains(idx))
+                .map(|idx| &self.clip.events[*idx])
+                .collect(),
+            None => Vec::new(),
+        }
     }
 
     /// 現在の再生tick位置を取得
@@ -240,6 +260,10 @@ impl ClipPlayer {
             if new_loop > old_loop {
                 if self.pending_clip.is_some() {
                     self.clip = self.pending_clip.take().unwrap();
+                    // clip を差し替えたので、events_at が引く tick→indices 索引も
+                    // 新 clip のもので再構築する。
+                    // Rebuild the tick→indices map for the swapped-in clip.
+                    self.events_by_tick = build_events_by_tick(&self.clip);
                     // ループ頭からの相対位置を維持
                     // Maintain relative position from loop start
                     self.current_tick %= self.clip.total_ticks;
@@ -290,6 +314,23 @@ impl ClipPlayer {
         }
         tick % self.clip.total_ticks
     }
+}
+
+/// `CompiledClip.events` を走査して `tick → events 内 index 列` の索引を構築する。
+///
+/// `ClipPlayer::events_at` の毎 tick 線形走査を避けるための前計算。並び順は元の
+/// `events` 配列順を保つ（既存呼び出し側が依存する送出順を維持するため）。
+/// 同じ tick に複数 event がある場合は `Vec<usize>` で保持する。
+///
+/// Builds the `tick → indices into clip.events` map used by `events_at` to
+/// avoid a per-tick linear scan. Preserves the original `events` ordering so
+/// existing call sites observe the same dispatch order as before.
+fn build_events_by_tick(clip: &CompiledClip) -> BTreeMap<u64, Vec<usize>> {
+    let mut index: BTreeMap<u64, Vec<usize>> = BTreeMap::new();
+    for (i, e) in clip.events.iter().enumerate() {
+        index.entry(e.tick).or_default().push(i);
+    }
+    index
 }
 
 /// 複数クリップを並行管理するシーンプレイヤー
@@ -756,6 +797,70 @@ mod tests {
 
         // 切り替わった後はclip_bのイベント（note=72）
         assert!(!player.has_pending());
+        let events = player.events_at(player.current_tick());
+        assert_eq!(events.len(), 1);
+        assert!(matches!(
+            events[0].message,
+            MidiMessage::NoteOn { note: 72, .. }
+        ));
+    }
+
+    /// `build_events_by_tick` が tick 0 の連続 event を元 Vec 順で並べることを検証。
+    /// `events_at` の dispatch 順互換を担保するための直接テスト。
+    #[test]
+    fn build_events_by_tick_preserves_insertion_order_for_same_tick() {
+        let clip = make_clip(
+            vec![(0, note_on(60)), (0, note_on(64)), (0, note_on(67))],
+            480,
+        );
+        let index = build_events_by_tick(&clip);
+        let at_zero = index.get(&0).expect("tick 0 should exist");
+        // 索引内の event index は 0, 1, 2 の順で詰まっている必要がある
+        assert_eq!(at_zero, &vec![0, 1, 2]);
+        // 結果として events_at(0) も note 60, 64, 67 の順
+        let player = ClipPlayer::new(clip, false);
+        let events = player.events_at(0);
+        let notes: Vec<u8> = events
+            .iter()
+            .filter_map(|e| match e.message {
+                MidiMessage::NoteOn { note, .. } => Some(note),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(notes, vec![60, 64, 67]);
+    }
+
+    /// 索引が引かれない tick (= event 0 件の空 tick) では `events_at` が空 Vec を返し、
+    /// かつ BTreeMap への lookup が一度で済む (＝旧来の全走査が走らない) ことを
+    /// 間接的に担保するテスト。
+    #[test]
+    fn events_at_empty_tick_returns_empty() {
+        let clip = make_clip(vec![(0, note_on(60)), (240, note_on(64))], 480);
+        let player = ClipPlayer::new(clip, true);
+        assert!(player.events_at(1).is_empty());
+        assert!(player.events_at(239).is_empty());
+        assert!(player.events_at(479).is_empty());
+    }
+
+    /// `replace_clip` で swap 後、`events_by_tick` 索引も新 clip 由来に
+    /// 切り替わっていることを `events_at` 経由で確認する (旧 clip の event
+    /// (note=60) が新 clip swap 後の tick 0 で引かれないこと)。
+    #[test]
+    fn replace_clip_rebuilds_events_index() {
+        // 旧: tick 0 に note 60, 新: tick 0 に空, tick 120 に note 72
+        let clip_a = make_clip(vec![(0, note_on(60))], 480);
+        let clip_b = make_clip(vec![(120, note_on(72))], 480);
+        let mut player = ClipPlayer::new(clip_a, true);
+
+        player.replace_clip(clip_b);
+        player.advance(480); // ループ境界越え → swap 発火
+
+        // 新 clip の tick 0 には event が無い (= 旧 clip の note=60 が
+        // 索引に残っているなら誤って返ってしまう)
+        assert!(player.events_at(player.current_tick()).is_empty());
+
+        // 120 tick 進めれば新 clip の note=72 が出てくる
+        player.advance(120);
         let events = player.events_at(player.current_tick());
         assert_eq!(events.len(), 1);
         assert!(matches!(
