@@ -309,6 +309,7 @@ impl DiagnosticProvider {
                                     ..
                                 },
                                 _,
+                                _,
                             ) = element
                             {
                                 if duration.is_none() && arp.resolution.is_none() {
@@ -835,6 +836,7 @@ mod tests {
                         dotted: false,
                         articulation: Articulation::Normal,
                         arpeggio: arp,
+                        velocity: None,
                     }],
                     is_layer_start: true,
                 }],
@@ -929,6 +931,7 @@ mod tests {
                             arpeggio: arp,
                         },
                         Articulation::Normal,
+                        None,
                     )],
                     is_layer_start: true,
                 }],

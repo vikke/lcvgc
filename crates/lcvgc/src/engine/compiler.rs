@@ -15,6 +15,10 @@ use crate::parser::clip_arpeggio::ArpeggioDirection;
 use crate::parser::clip_articulation::Articulation;
 use crate::parser::clip_shorthand::CarryOverState;
 
+/// メロディノートに `vN` 指定が無いときに用いる既定の MIDI velocity (Note On)。
+/// Default MIDI velocity (Note On) for pitched notes without an explicit `vN` suffix.
+const DEFAULT_NOTE_ON_VELOCITY: u8 = 100;
+
 /// tickベースMIDIイベント
 ///
 /// Issue #49 対応: `device` フィールドで送出先デバイスの論理名を保持する。
@@ -456,7 +460,7 @@ fn compile_elements(
     let mut pipe_anchor_event_count: usize = events.len();
     for element in elements {
         match element {
-            PitchedElement::Note(note_event, articulation) => match note_event {
+            PitchedElement::Note(note_event, articulation, velocity_override) => match note_event {
                 NoteEvent::Single {
                     name,
                     octave,
@@ -470,13 +474,14 @@ fn compile_elements(
                     let gate_percent =
                         resolve_gate_percent(articulation, gate_normal, gate_staccato);
                     let gate_ticks = apply_min_gate_off(note_ticks, gate_percent, clock);
+                    let velocity = velocity_override.unwrap_or(DEFAULT_NOTE_ON_VELOCITY);
 
                     events.push(MidiEvent::new(
                         *current_tick,
                         MidiMessage::NoteOn {
                             channel,
                             note,
-                            velocity: 100,
+                            velocity,
                         },
                         device,
                     ));
@@ -511,6 +516,7 @@ fn compile_elements(
                     let notes = chord_notes(*root, resolved.octave, suffix);
                     let gate_percent =
                         resolve_gate_percent(articulation, gate_normal, gate_staccato);
+                    let velocity = velocity_override.unwrap_or(DEFAULT_NOTE_ON_VELOCITY);
 
                     if let Some(arp) = arpeggio {
                         // --- アルペジオ展開 ---
@@ -535,6 +541,7 @@ fn compile_elements(
                             current_tick,
                             events,
                             random_choice_groups,
+                            velocity,
                         );
                     } else {
                         // --- 同時発音（既存挙動）---
@@ -548,7 +555,7 @@ fn compile_elements(
                                 MidiMessage::NoteOn {
                                     channel,
                                     note,
-                                    velocity: 100,
+                                    velocity,
                                 },
                                 device,
                             ));
@@ -573,6 +580,7 @@ fn compile_elements(
                 dotted,
                 articulation,
                 arpeggio,
+                velocity: velocity_override,
             } => {
                 // 構成音を MIDI ノート番号列に解決（記譜順を保持）
                 // Resolve chord tones to MIDI note numbers, preserving notation order.
@@ -585,6 +593,7 @@ fn compile_elements(
                     .collect();
 
                 let gate_percent = resolve_gate_percent(articulation, gate_normal, gate_staccato);
+                let velocity = velocity_override.unwrap_or(DEFAULT_NOTE_ON_VELOCITY);
 
                 if let Some(arp) = arpeggio {
                     // --- アルペジオ展開 ---
@@ -620,6 +629,7 @@ fn compile_elements(
                         current_tick,
                         events,
                         random_choice_groups,
+                        velocity,
                     );
                 } else {
                     // --- 同時発音（既存挙動）---
@@ -635,7 +645,7 @@ fn compile_elements(
                             MidiMessage::NoteOn {
                                 channel,
                                 note,
-                                velocity: 100,
+                                velocity,
                             },
                             device,
                         ));
@@ -763,6 +773,7 @@ fn emit_arpeggio_cycle(
     current_tick: &mut u64,
     events: &mut Vec<MidiEvent>,
     random_choice_groups: &mut Vec<RandomChoiceGroup>,
+    velocity: u8,
 ) {
     if resolved_notes.is_empty() {
         return;
@@ -782,7 +793,7 @@ fn emit_arpeggio_cycle(
                     MidiMessage::NoteOn {
                         channel,
                         note,
-                        velocity: 100,
+                        velocity,
                     },
                     device,
                 ));
@@ -811,7 +822,7 @@ fn emit_arpeggio_cycle(
                 MidiMessage::NoteOn {
                     channel,
                     note,
-                    velocity: 100,
+                    velocity,
                 },
                 device,
             ));
@@ -1235,6 +1246,7 @@ mod tests {
                 dotted,
             },
             Articulation::Normal,
+            None,
         )
     }
 
@@ -1325,6 +1337,7 @@ mod tests {
                             dotted: false,
                         },
                         Articulation::Normal,
+                        None,
                     ),
                     single_note(NoteName::C, Some(4), Some(4), false),
                 ],
@@ -1357,6 +1370,7 @@ mod tests {
                         dotted: false,
                     },
                     Articulation::Staccato,
+                    None,
                 )],
                 is_layer_start: true,
             }],
@@ -1388,6 +1402,7 @@ mod tests {
                         dotted: false,
                     },
                     Articulation::GateDirect(95),
+                    None,
                 )],
                 is_layer_start: true,
             }],
@@ -2385,6 +2400,7 @@ mod tests {
                         arpeggio: None,
                     },
                     Articulation::Normal,
+                    None,
                 )],
                 is_layer_start: true,
             }],
@@ -2444,6 +2460,7 @@ mod tests {
                             arpeggio: None,
                         },
                         Articulation::Normal,
+                        None,
                     ),
                     single_note(NoteName::E, None, None, false),
                 ],
@@ -2491,6 +2508,7 @@ mod tests {
                         arpeggio: None,
                     },
                     Articulation::Staccato,
+                    None,
                 )],
                 is_layer_start: true,
             }],
@@ -2570,6 +2588,7 @@ mod tests {
                     dotted: false,
                     articulation: Articulation::Normal,
                     arpeggio: None,
+                    velocity: None,
                 }],
                 is_layer_start: true,
             }],
@@ -2627,6 +2646,7 @@ mod tests {
                     dotted: false,
                     articulation: Articulation::Staccato,
                     arpeggio: None,
+                    velocity: None,
                 }],
                 is_layer_start: true,
             }],
@@ -2661,6 +2681,7 @@ mod tests {
                         dotted: false,
                         articulation: Articulation::Normal,
                         arpeggio: None,
+                        velocity: None,
                     },
                     single_note(NoteName::G, None, None, false),
                 ],
@@ -2704,6 +2725,7 @@ mod tests {
                     dotted: false,
                     articulation: Articulation::Normal,
                     arpeggio: None,
+                    velocity: None,
                 }],
                 is_layer_start: true,
             }],
@@ -2752,6 +2774,7 @@ mod tests {
                         direction: ArpeggioDirection::Up,
                         resolution: Some(16),
                     }),
+                    velocity: None,
                 }],
                 is_layer_start: true,
             }],
@@ -2803,6 +2826,7 @@ mod tests {
                         direction: ArpeggioDirection::Down,
                         resolution: Some(16),
                     }),
+                    velocity: None,
                 }],
                 is_layer_start: true,
             }],
@@ -2847,6 +2871,7 @@ mod tests {
                         direction: ArpeggioDirection::UpDown,
                         resolution: Some(16),
                     }),
+                    velocity: None,
                 }],
                 is_layer_start: true,
             }],
@@ -2891,6 +2916,7 @@ mod tests {
                         direction: ArpeggioDirection::Up,
                         resolution: None,
                     }),
+                    velocity: None,
                 }],
                 is_layer_start: true,
             }],
@@ -2933,6 +2959,7 @@ mod tests {
                             direction: ArpeggioDirection::Up,
                             resolution: None,
                         }),
+                        velocity: None,
                     },
                 ],
                 is_layer_start: true,
@@ -2981,6 +3008,7 @@ mod tests {
                         direction: ArpeggioDirection::Random,
                         resolution: Some(8),
                     }),
+                    velocity: None,
                 }],
                 is_layer_start: true,
             }],
@@ -3032,6 +3060,7 @@ mod tests {
                         }),
                     },
                     Articulation::Normal,
+                    None,
                 )],
                 is_layer_start: true,
             }],
@@ -3082,6 +3111,7 @@ mod tests {
                         }),
                     },
                     Articulation::Normal,
+                    None,
                 )],
                 is_layer_start: true,
             }],
@@ -3123,6 +3153,7 @@ mod tests {
                         }),
                     },
                     Articulation::Normal,
+                    None,
                 )],
                 is_layer_start: true,
             }],

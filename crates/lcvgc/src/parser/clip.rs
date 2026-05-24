@@ -3,7 +3,6 @@ use nom::{bytes::complete::tag, character::complete::char, combinator::opt, IRes
 use crate::ast::clip::*;
 use crate::parser::cell_normalize::{expand_bar_jump_cells, expand_pipe_cells, CellToken};
 use crate::parser::clip_arpeggio::parse_arpeggio;
-use crate::parser::clip_articulation::parse_articulation;
 use crate::parser::clip_bar_jump::parse_bar_jump;
 use crate::parser::clip_cc::{parse_cc_step, parse_cc_target, parse_cc_time};
 use crate::parser::clip_drum::{
@@ -166,10 +165,14 @@ fn parse_pitched_body(mut input: &str) -> IResult<&str, PitchedClipBody> {
                 let note_token_ok = match parse_note_event(current) {
                     Ok((after, _)) => {
                         let next_ch = after.chars().next();
+                        // ノート直後に許容するセパレータ:
+                        //   - 空白系 / `}` / EOF / staccato `'` / アルペジオ開始 `(` / 付点 `.`
+                        //   - サフィックス `gN` / `vN` (直後が数字であることを要求)
+                        // Velocity suffix `vN` is treated like the gate suffix `gN`.
                         matches!(
                             next_ch,
                             None | Some(' ' | '\t' | '\r' | '\n' | '}' | '\'' | '(' | '.')
-                        ) || after.starts_with("g")
+                        ) || (after.starts_with('g') || after.starts_with('v'))
                             && after.chars().nth(1).is_some_and(|c| c.is_ascii_digit())
                     }
                     Err(_) => false,
@@ -221,7 +224,9 @@ fn parse_pitched_body(mut input: &str) -> IResult<&str, PitchedClipBody> {
             // ノートイベントを試行（単音またはコード名）
             // Try note event (single note or chord name)
             if let Ok((r, note)) = parse_note_event(current) {
-                let (r, art) = parse_articulation(r)?;
+                let (r, suffix) = crate::parser::clip_articulation::parse_note_suffix(r)?;
+                let art = suffix.articulation;
+                let vel = suffix.velocity;
                 // コード名に対するアルペジオを確認し、ChordName の arpeggio フィールドに格納する。
                 // 単音 (`Single`) や休符 (`Rest`) には arp は付かない（パーサーは消費するだけ）。
                 //
@@ -249,10 +254,10 @@ fn parse_pitched_body(mut input: &str) -> IResult<&str, PitchedClipBody> {
                         other => other,
                     };
                     current = r2;
-                    elements.push(PitchedElement::Note(note_with_arp, art));
+                    elements.push(PitchedElement::Note(note_with_arp, art, vel));
                     continue;
                 }
-                elements.push(PitchedElement::Note(note, art));
+                elements.push(PitchedElement::Note(note, art, vel));
                 current = r;
                 continue;
             }
@@ -377,7 +382,9 @@ fn parse_chord_bracket(input: &str) -> IResult<&str, PitchedElement> {
     };
 
     let (current, dotted) = opt(tag("."))(current)?;
-    let (current, art) = parse_articulation(current)?;
+    let (current, suffix) = crate::parser::clip_articulation::parse_note_suffix(current)?;
+    let art = suffix.articulation;
+    let vel = suffix.velocity;
 
     // アルペジオを確認
     // Check for arpeggio
@@ -396,6 +403,7 @@ fn parse_chord_bracket(input: &str) -> IResult<&str, PitchedElement> {
             dotted: dotted.is_some(),
             articulation: art,
             arpeggio: arp,
+            velocity: vel,
         },
     ))
 }
@@ -757,8 +765,13 @@ pub fn parse_repetition_content(content: &str) -> Result<Vec<PitchedElement>, St
         // ノートイベントを試行（単音またはコード名）
         // Try note event (single note or chord name)
         if let Ok((r, note)) = parse_note_event(current) {
-            let (r, art) = parse_articulation(r).map_err(|e| format!("{:?}", e))?;
-            elements.push(PitchedElement::Note(note, art));
+            let (r, suffix) = crate::parser::clip_articulation::parse_note_suffix(r)
+                .map_err(|e| format!("{:?}", e))?;
+            elements.push(PitchedElement::Note(
+                note,
+                suffix.articulation,
+                suffix.velocity,
+            ));
             current = r;
             continue;
         }
@@ -842,7 +855,7 @@ mod tests {
                 assert_eq!(body.lines.len(), 1);
                 assert_eq!(body.lines[0].elements.len(), 1);
                 match &body.lines[0].elements[0] {
-                    PitchedElement::Note(NoteEvent::ChordName { root, suffix, .. }, _) => {
+                    PitchedElement::Note(NoteEvent::ChordName { root, suffix, .. }, _, _) => {
                         assert_eq!(*root, NoteName::C);
                         assert_eq!(*suffix, ChordSuffix::Min7);
                     }
@@ -875,6 +888,7 @@ mod tests {
                             ..
                         },
                         _,
+                        _,
                     ) => {
                         assert_eq!(*root, NoteName::C);
                         assert_eq!(*suffix, ChordSuffix::Min);
@@ -903,7 +917,7 @@ mod tests {
         assert_eq!(rest, "");
         match &clip.body {
             ClipBody::Pitched(body) => match &body.lines[0].elements[0] {
-                PitchedElement::Note(NoteEvent::ChordName { arpeggio, .. }, _) => {
+                PitchedElement::Note(NoteEvent::ChordName { arpeggio, .. }, _, _) => {
                     let arp = arpeggio.expect("arpeggio should be Some");
                     assert_eq!(
                         arp.direction,

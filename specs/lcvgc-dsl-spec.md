@@ -768,16 +768,44 @@ clip bass_combo [bars 1] {
 }
 ```
 
+#### Direct Velocity Specification `vN`
+
+Appending `vN` to a note overrides the MIDI velocity for that single Note On.
+
+- `N` must be in the range `0` – `127` (MIDI velocity range).
+- When `vN` is omitted, the compiler emits velocity `100` for the Note On.
+- `vN` applies to the Note On only; the corresponding Note Off velocity remains `0`.
+- `vN` is independent of the gate suffix (`'` / `gN`) and dotted suffix (`.`), and can be combined with any of them.
+
+```
+clip bass_velocity [bars 1] {
+  bass c:3:4v127 d:4 e:4v40 f:4         // accent, normal, ghost, normal
+  bass c:3:4.v90 d:4'v110 e:4g95v100    // suffixes can be combined
+}
+```
+
+#### Suffix Modifier Ordering
+
+- **Dotted `.`** is bound to the duration and must immediately follow the duration field (`c:3:4.`); it is not part of the order-independent suffix set.
+- The three articulation/velocity modifiers — `'` (staccato), `gN` (direct gate ratio), `vN` (direct velocity) — share the following rules:
+  - **Order-independent** among each other: `c:3:4g95v100` and `c:3:4v100g95` parse to the same note.
+  - **Each modifier may appear at most once** per note. A duplicated modifier (e.g. `c:3:4v100v90`, `c:3:4g30g50`) is a parse error.
+  - **`'` and `gN` are mutually exclusive** because both determine the gate ratio. Specifying them together (e.g. `c:3:4'g95`) is a parse error.
+- **No whitespace** is allowed between the note body and any suffix, or between suffixes themselves.
+
 #### Notation Summary
 
 | Notation | Meaning | Example |
 |----------|---------|---------|
-| `c:3:4` | Normal (gate_normal applied) | Gate On = duration × 80% |
+| `c:3:4` | Normal (gate_normal applied, velocity 100) | Gate On = duration × 80%, Velocity = 100 |
 | `c:3:4'` | Staccato (gate_staccato applied) | Gate On = duration × 40% |
 | `c:3:4.` | Dotted note (1.5× duration, gate_normal applied) | Gate On = dotted duration × 80% |
 | `c:3:4.'` | Dotted + staccato | Gate On = dotted duration × 40% |
 | `c:3:4g95` | Direct gate ratio specification (95%) | Gate On = duration × 95% |
 | `c:3:4.g30` | Dotted + direct gate ratio specification (30%) | Gate On = dotted duration × 30% |
+| `c:3:4v127` | Direct velocity specification (127) | Velocity = 127 |
+| `c:3:4.g30v90` | Dotted + Gate 30% + Velocity 90 (g/v are order-independent) | Gate On = dotted duration × 30%, Velocity = 90 |
+| `c:3:4.v90g30` | Same as above (g/v swapped — same meaning) | Gate On = dotted duration × 30%, Velocity = 90 |
 
 #### Gate Duration Calculation
 
@@ -1778,6 +1806,7 @@ The engine continues playback as-is. Restarting Neovim and reconnecting allows c
 - Drum step sequencer notation and pitched instrument notation are not mixed within a clip (determined by whether a kit is used)
 - Gate ratios (gate_normal / gate_staccato) can be set per instrument. Per-note control is available via staccato `'` and direct gate specification `gN`
 - If the Gate Off period is less than 5ms, a minimum of 5ms is enforced (except for gate_normal: 100 legato)
+- Velocity on a pitched note defaults to 100; `vN` (N = 0–127) on a note overrides the per-note Note On velocity. The articulation/velocity suffix modifiers `'` / `gN` / `vN` are order-independent and each may appear at most once; `'` and `gN` are mutually exclusive. Dotted `.` is bound to the duration field and stays adjacent to it
 - CC automation uses step mode (shared resolution) and time-based + interpolation mode (`@bar.beat`, `-` for linear, `-exp` for exponential curve)
 - `var name = value` defines variables; referenced without `$`. Variable lookup takes priority; if not found, treated as a literal
 - Scope is two-level: global (top-level) and block (inside `{}`). Inner scope takes priority
