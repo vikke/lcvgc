@@ -12,9 +12,14 @@ use crate::parser::clip_repetition::Repetition;
 /// A single element in a pitched instrument line.
 #[derive(Debug, Clone, PartialEq)]
 pub enum PitchedElement {
-    /// 単音ノートイベントとアーティキュレーション
-    /// A single note event with articulation
-    Note(NoteEvent, Articulation),
+    /// 単音ノートイベントとアーティキュレーション、および任意の velocity 上書き値。
+    /// `Option<u8>` が `Some(v)` のとき Note On の velocity は `v` を採用、
+    /// `None` のときコンパイラ既定値 (= 100) を採用する。
+    ///
+    /// A single note event with articulation and an optional velocity override.
+    /// `Some(v)` overrides the Note On velocity with `v`; `None` falls back to
+    /// the compiler default (`100`).
+    Note(NoteEvent, Articulation, Option<u8>),
     /// コードブラケット（複数音の同時発音）
     /// A chord bracket (simultaneous sounding of multiple notes)
     ChordBracket {
@@ -33,6 +38,12 @@ pub enum PitchedElement {
         /// アルペジオ指定（オプション）
         /// Arpeggio specification (optional)
         arpeggio: Option<Arpeggio>,
+        /// velocity 上書き（オプション）。`Some(v)` のとき chord 内の全 Note On に
+        /// `v` を適用する。`None` の場合コンパイラ既定値 (= 100) を採用。
+        /// Optional velocity override. When `Some(v)`, all Note On events
+        /// emitted from this chord use `v`. `None` falls back to the
+        /// compiler default (`100`).
+        velocity: Option<u8>,
     },
     /// リピート記号
     /// Repetition marker
