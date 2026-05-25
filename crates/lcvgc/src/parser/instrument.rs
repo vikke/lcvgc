@@ -41,6 +41,30 @@ fn parse_gate_staccato(input: &str) -> IResult<&str, Either<u8, &str>> {
     parse_u8_or_identifier(input)
 }
 
+/// 通常ベロシティをパースする: `velocity_normal <u8>` or `velocity_normal <var_ref>`（§6 変数展開）
+/// Parse `velocity_normal <u8>` or `velocity_normal <var_ref>` (§6 variable expansion)
+fn parse_velocity_normal(input: &str) -> IResult<&str, Either<u8, &str>> {
+    let (input, _) = tag("velocity_normal")(input)?;
+    let (input, _) = ws1(input)?;
+    parse_u8_or_identifier(input)
+}
+
+/// アクセントベロシティをパースする: `velocity_accent <u8>` or `velocity_accent <var_ref>`（§6 変数展開）
+/// Parse `velocity_accent <u8>` or `velocity_accent <var_ref>` (§6 variable expansion)
+fn parse_velocity_accent(input: &str) -> IResult<&str, Either<u8, &str>> {
+    let (input, _) = tag("velocity_accent")(input)?;
+    let (input, _) = ws1(input)?;
+    parse_u8_or_identifier(input)
+}
+
+/// ゴーストベロシティをパースする: `velocity_ghost <u8>` or `velocity_ghost <var_ref>`（§6 変数展開）
+/// Parse `velocity_ghost <u8>` or `velocity_ghost <var_ref>` (§6 variable expansion)
+fn parse_velocity_ghost(input: &str) -> IResult<&str, Either<u8, &str>> {
+    let (input, _) = tag("velocity_ghost")(input)?;
+    let (input, _) = ws1(input)?;
+    parse_u8_or_identifier(input)
+}
+
 /// ノート（音名＋オクターブ）をパースする: `note <note_name><octave>`
 /// Parse `note <note_name><octave>`
 fn parse_note(input: &str) -> IResult<&str, InstrumentNote> {
@@ -97,6 +121,18 @@ enum InstrumentProperty {
     GateStaccato(u8),
     /// gate_staccato の変数参照（§6 変数展開）/ Variable reference for gate_staccato (§6)
     GateStaccatoRef(String),
+    /// 通常ベロシティ / Normal velocity
+    VelocityNormal(u8),
+    /// velocity_normal の変数参照（§6 変数展開）/ Variable reference for velocity_normal (§6)
+    VelocityNormalRef(String),
+    /// アクセントベロシティ / Accent velocity
+    VelocityAccent(u8),
+    /// velocity_accent の変数参照（§6 変数展開）/ Variable reference for velocity_accent (§6)
+    VelocityAccentRef(String),
+    /// ゴーストベロシティ / Ghost velocity
+    VelocityGhost(u8),
+    /// velocity_ghost の変数参照（§6 変数展開）/ Variable reference for velocity_ghost (§6)
+    VelocityGhostRef(String),
     /// CCマッピング / CC mapping
     Cc(CcMapping),
     /// cc の変数参照（cc_number のみ）（§6 変数展開）/ CC with variable reference for cc_number (§6)
@@ -147,6 +183,33 @@ fn parse_property(input: &str) -> IResult<&str, InstrumentProperty> {
             },
         ));
     }
+    if let Ok((rest, vn)) = parse_velocity_normal(input) {
+        return Ok((
+            rest,
+            match vn {
+                Either::Left(v) => InstrumentProperty::VelocityNormal(v),
+                Either::Right(r) => InstrumentProperty::VelocityNormalRef(r.to_string()),
+            },
+        ));
+    }
+    if let Ok((rest, va)) = parse_velocity_accent(input) {
+        return Ok((
+            rest,
+            match va {
+                Either::Left(v) => InstrumentProperty::VelocityAccent(v),
+                Either::Right(r) => InstrumentProperty::VelocityAccentRef(r.to_string()),
+            },
+        ));
+    }
+    if let Ok((rest, vg)) = parse_velocity_ghost(input) {
+        return Ok((
+            rest,
+            match vg {
+                Either::Left(v) => InstrumentProperty::VelocityGhost(v),
+                Either::Right(r) => InstrumentProperty::VelocityGhostRef(r.to_string()),
+            },
+        ));
+    }
     if let Ok((rest, cc)) = parse_cc(input) {
         return Ok((rest, cc));
     }
@@ -171,6 +234,9 @@ pub fn parse_instrument(input: &str) -> IResult<&str, InstrumentDef> {
     let mut note = None;
     let mut gate_normal = None;
     let mut gate_staccato = None;
+    let mut velocity_normal = None;
+    let mut velocity_accent = None;
+    let mut velocity_ghost = None;
     let mut cc_mappings = Vec::new();
     let mut local_vars = Vec::new();
     let mut unresolved = UnresolvedVarRefs::default();
@@ -210,6 +276,21 @@ pub fn parse_instrument(input: &str) -> IResult<&str, InstrumentDef> {
                 unresolved.gate_staccato = Some(r);
                 gate_staccato = Some(0); // placeholder
             }
+            InstrumentProperty::VelocityNormal(v) => velocity_normal = Some(v),
+            InstrumentProperty::VelocityNormalRef(r) => {
+                unresolved.velocity_normal = Some(r);
+                velocity_normal = Some(0); // placeholder
+            }
+            InstrumentProperty::VelocityAccent(v) => velocity_accent = Some(v),
+            InstrumentProperty::VelocityAccentRef(r) => {
+                unresolved.velocity_accent = Some(r);
+                velocity_accent = Some(0); // placeholder
+            }
+            InstrumentProperty::VelocityGhost(v) => velocity_ghost = Some(v),
+            InstrumentProperty::VelocityGhostRef(r) => {
+                unresolved.velocity_ghost = Some(r);
+                velocity_ghost = Some(0); // placeholder
+            }
             InstrumentProperty::Cc(cc) => cc_mappings.push(cc),
             InstrumentProperty::CcRef {
                 alias,
@@ -242,6 +323,9 @@ pub fn parse_instrument(input: &str) -> IResult<&str, InstrumentDef> {
             note,
             gate_normal,
             gate_staccato,
+            velocity_normal,
+            velocity_accent,
+            velocity_ghost,
             cc_mappings,
             local_vars,
             unresolved,
@@ -414,6 +498,39 @@ mod tests {
         let (_, inst) = parse_instrument(input).unwrap();
         assert_eq!(inst.unresolved.gate_normal, Some("gn_val".to_string()));
         assert_eq!(inst.unresolved.gate_staccato, Some("gs_val".to_string()));
+    }
+
+    /// velocity_normal/accent/ghost のリテラル値がパースできること。
+    /// Verify literal velocity_normal/accent/ghost values are parsed.
+    #[test]
+    fn test_instrument_with_velocity_literals() {
+        let input = "instrument piano {\n  device mb\n  channel 1\n  velocity_normal 90\n  velocity_accent 120\n  velocity_ghost 30\n}";
+        let (_, inst) = parse_instrument(input).unwrap();
+        assert_eq!(inst.velocity_normal, Some(90));
+        assert_eq!(inst.velocity_accent, Some(120));
+        assert_eq!(inst.velocity_ghost, Some(30));
+    }
+
+    /// velocity_normal/accent/ghost の変数参照がパースできること（§6）。
+    /// Verify velocity_normal/accent/ghost variable references are parsed (§6).
+    #[test]
+    fn test_instrument_with_velocity_var_refs() {
+        let input = "instrument piano {\n  device mb\n  channel 1\n  velocity_normal vn_val\n  velocity_accent va_val\n  velocity_ghost vg_val\n}";
+        let (_, inst) = parse_instrument(input).unwrap();
+        assert_eq!(inst.unresolved.velocity_normal, Some("vn_val".to_string()));
+        assert_eq!(inst.unresolved.velocity_accent, Some("va_val".to_string()));
+        assert_eq!(inst.unresolved.velocity_ghost, Some("vg_val".to_string()));
+    }
+
+    /// velocity 系を指定しない場合は None のままであること。
+    /// Verify velocity fields stay None when unspecified.
+    #[test]
+    fn test_instrument_without_velocity() {
+        let input = "instrument synth {\n  device mb\n  channel 1\n}";
+        let (_, inst) = parse_instrument(input).unwrap();
+        assert_eq!(inst.velocity_normal, None);
+        assert_eq!(inst.velocity_accent, None);
+        assert_eq!(inst.velocity_ghost, None);
     }
 
     #[test]

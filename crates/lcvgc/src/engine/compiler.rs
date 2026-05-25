@@ -401,6 +401,9 @@ fn compile_pitched_layer(
     let channel = inst.channel;
     let gate_normal = inst.gate_normal.unwrap_or(80);
     let gate_staccato = inst.gate_staccato.unwrap_or(40);
+    // 音程楽器の `vN` 未指定ノートに用いる既定 velocity。velocity_normal 未指定時は従来の固定値。
+    // Default velocity for pitched notes without a `vN` suffix; falls back to the legacy constant.
+    let velocity_normal = inst.velocity_normal.unwrap_or(DEFAULT_NOTE_ON_VELOCITY);
     let device = inst.device.clone();
 
     let mut events = Vec::new();
@@ -416,6 +419,7 @@ fn compile_pitched_layer(
             &device,
             gate_normal,
             gate_staccato,
+            velocity_normal,
             &mut current_tick,
             &mut carry,
             &mut events,
@@ -439,6 +443,7 @@ fn compile_elements(
     device: &str,
     gate_normal: u8,
     gate_staccato: u8,
+    velocity_normal: u8,
     current_tick: &mut u64,
     carry: &mut CarryOverState,
     events: &mut Vec<MidiEvent>,
@@ -474,7 +479,7 @@ fn compile_elements(
                     let gate_percent =
                         resolve_gate_percent(articulation, gate_normal, gate_staccato);
                     let gate_ticks = apply_min_gate_off(note_ticks, gate_percent, clock);
-                    let velocity = velocity_override.unwrap_or(DEFAULT_NOTE_ON_VELOCITY);
+                    let velocity = velocity_override.unwrap_or(velocity_normal);
 
                     events.push(MidiEvent::new(
                         *current_tick,
@@ -516,7 +521,7 @@ fn compile_elements(
                     let notes = chord_notes(*root, resolved.octave, suffix);
                     let gate_percent =
                         resolve_gate_percent(articulation, gate_normal, gate_staccato);
-                    let velocity = velocity_override.unwrap_or(DEFAULT_NOTE_ON_VELOCITY);
+                    let velocity = velocity_override.unwrap_or(velocity_normal);
 
                     if let Some(arp) = arpeggio {
                         // --- アルペジオ展開 ---
@@ -593,7 +598,7 @@ fn compile_elements(
                     .collect();
 
                 let gate_percent = resolve_gate_percent(articulation, gate_normal, gate_staccato);
-                let velocity = velocity_override.unwrap_or(DEFAULT_NOTE_ON_VELOCITY);
+                let velocity = velocity_override.unwrap_or(velocity_normal);
 
                 if let Some(arp) = arpeggio {
                     // --- アルペジオ展開 ---
@@ -674,6 +679,7 @@ fn compile_elements(
                         device,
                         gate_normal,
                         gate_staccato,
+                        velocity_normal,
                         current_tick,
                         carry,
                         events,
@@ -888,6 +894,31 @@ fn resolve_gate_percent(art: &Articulation, gate_normal: u8, gate_staccato: u8) 
         Articulation::Normal => gate_normal,
         Articulation::Staccato => gate_staccato,
         Articulation::GateDirect(pct) => *pct,
+    }
+}
+
+/// ドラムヒットシンボルから MIDI velocity を解決する。
+///
+/// kit インストゥルメントに `velocity_normal` / `velocity_accent` / `velocity_ghost`
+/// が設定されていればそれを優先し、未設定の場合は `HitSymbol` の既定値
+/// （Normal=100 / Accent=127 / Ghost=40）にフォールバックする。休符は `None`。
+///
+/// Resolves the MIDI velocity for a drum hit symbol. Per-instrument
+/// `velocity_normal` / `velocity_accent` / `velocity_ghost` overrides take
+/// precedence; otherwise the `HitSymbol` defaults apply. A rest yields `None`.
+///
+/// # 引数 / Arguments
+/// * `hit` - ヒットシンボル / Hit symbol
+/// * `kit_inst` - 対象 kit インストゥルメント定義 / The kit instrument definition
+///
+/// # 戻り値 / Returns
+/// MIDI velocity (0-127)。休符の場合は `None`。/ MIDI velocity, or `None` for a rest.
+fn resolve_drum_velocity(hit: &HitSymbol, kit_inst: &crate::ast::kit::KitInstrument) -> Option<u8> {
+    match hit {
+        HitSymbol::Normal => Some(kit_inst.velocity_normal.unwrap_or(100)),
+        HitSymbol::Accent => Some(kit_inst.velocity_accent.unwrap_or(127)),
+        HitSymbol::Ghost => Some(kit_inst.velocity_ghost.unwrap_or(40)),
+        HitSymbol::Rest => None,
     }
 }
 
@@ -1137,7 +1168,7 @@ fn compile_drum(
                 continue;
             }
 
-            let velocity = hit.velocity().unwrap_or(0);
+            let velocity = resolve_drum_velocity(hit, kit_inst).unwrap_or(0);
             if velocity == 0 {
                 continue;
             }
@@ -1210,6 +1241,9 @@ mod tests {
             note: None,
             gate_normal: Some(80),
             gate_staccato: Some(40),
+            velocity_normal: None,
+            velocity_accent: None,
+            velocity_ghost: None,
             cc_mappings: vec![],
             local_vars: vec![],
             unresolved: Default::default(),
@@ -1741,6 +1775,9 @@ mod tests {
                 },
                 gate_normal: Some(50),
                 gate_staccato: Some(20),
+                velocity_normal: None,
+                velocity_accent: None,
+                velocity_ghost: None,
                 unresolved: Default::default(),
             }],
         }));
@@ -1811,6 +1848,9 @@ mod tests {
                 },
                 gate_normal: Some(50),
                 gate_staccato: None,
+                velocity_normal: None,
+                velocity_accent: None,
+                velocity_ghost: None,
                 unresolved: Default::default(),
             }],
         }));
@@ -1843,6 +1883,173 @@ mod tests {
         assert!(ghost_on.is_some());
     }
 
+    /// kit インストゥルメントに velocity_normal/accent/ghost を設定すると、
+    /// HitSymbol の既定 velocity を上書きすること（ドラム）。
+    /// Per-instrument velocity_normal/accent/ghost override the HitSymbol defaults (drums).
+    #[test]
+    fn drum_velocity_overrides_hit_symbol_defaults() {
+        let mut registry = Registry::default();
+        registry.register_block(crate::ast::Block::Kit(KitDef {
+            name: "kit".to_string(),
+            device: "dev".to_string(),
+            instruments: vec![KitInstrument {
+                name: "sn".to_string(),
+                channel: MidiChannel::from_one_based(10).unwrap(),
+                note: KitInstrumentNote {
+                    name: NoteName::D,
+                    octave: 2,
+                },
+                gate_normal: Some(50),
+                gate_staccato: None,
+                velocity_normal: Some(90),
+                velocity_accent: Some(120),
+                velocity_ghost: Some(30),
+                unresolved: Default::default(),
+            }],
+        }));
+
+        let clock = Clock::new(120.0);
+        let clip = ClipDef {
+            name: "d".to_string(),
+            options: ClipOptions::default(),
+            body: ClipBody::Drum(crate::ast::clip::DrumClipBody {
+                kit: "kit".to_string(),
+                resolution: 16,
+                rows: vec![crate::ast::clip_drum::DrumRow {
+                    instrument: "sn".to_string(),
+                    hits: vec![HitSymbol::Normal, HitSymbol::Accent, HitSymbol::Ghost],
+                    probability: None,
+                }],
+                cc_automations: vec![],
+            }),
+        };
+
+        let compiled = compile_clip(&clip, &clock, &registry).unwrap();
+        // Normal=90, Accent=120, Ghost=30 の NoteOn がそれぞれ存在すること
+        for expected in [90u8, 120, 30] {
+            assert!(
+                compiled.events.iter().any(|e| matches!(
+                    e.message,
+                    MidiMessage::NoteOn { velocity, .. } if velocity == expected
+                )),
+                "velocity {} の NoteOn が見つからない",
+                expected
+            );
+        }
+    }
+
+    /// instrument に velocity_normal を設定すると、`vN` 未指定ノートの
+    /// デフォルト velocity がその値になること（音程楽器）。
+    /// velocity_normal sets the default velocity for pitched notes without a `vN` suffix.
+    #[test]
+    fn pitched_velocity_normal_sets_default() {
+        let mut registry = Registry::default();
+        registry.register_block(crate::ast::Block::Instrument(InstrumentDef {
+            name: "bass".to_string(),
+            device: "dev".to_string(),
+            channel: MidiChannel::from_one_based(1).unwrap(),
+            note: None,
+            gate_normal: Some(80),
+            gate_staccato: Some(40),
+            velocity_normal: Some(70),
+            velocity_accent: None,
+            velocity_ghost: None,
+            cc_mappings: vec![],
+            local_vars: vec![],
+            unresolved: Default::default(),
+        }));
+
+        let clock = Clock::new(120.0);
+        let clip = make_pitched_clip(
+            "test",
+            None,
+            vec![PitchedLine {
+                instrument: "bass".to_string(),
+                elements: vec![single_note(NoteName::C, Some(4), Some(4), false)],
+                is_layer_start: true,
+            }],
+        );
+
+        let compiled = compile_clip(&clip, &clock, &registry).unwrap();
+        // velocity_override 未指定なので velocity_normal=70 が使われる
+        assert!(matches!(
+            compiled.events[0].message,
+            MidiMessage::NoteOn { velocity: 70, .. }
+        ));
+    }
+
+    /// instrument の velocity_normal 未設定時は従来どおり 100 がデフォルトになること。
+    /// When velocity_normal is unset, the legacy default of 100 still applies.
+    #[test]
+    fn pitched_velocity_normal_defaults_to_100() {
+        let registry = make_registry_with_bass();
+        let clock = Clock::new(120.0);
+        let clip = make_pitched_clip(
+            "test",
+            None,
+            vec![PitchedLine {
+                instrument: "bass".to_string(),
+                elements: vec![single_note(NoteName::C, Some(4), Some(4), false)],
+                is_layer_start: true,
+            }],
+        );
+
+        let compiled = compile_clip(&clip, &clock, &registry).unwrap();
+        assert!(matches!(
+            compiled.events[0].message,
+            MidiMessage::NoteOn { velocity: 100, .. }
+        ));
+    }
+
+    /// `vN` 明示指定は velocity_normal より優先されること（音程楽器）。
+    /// An explicit `vN` suffix takes precedence over velocity_normal.
+    #[test]
+    fn pitched_vn_overrides_velocity_normal() {
+        let mut registry = Registry::default();
+        registry.register_block(crate::ast::Block::Instrument(InstrumentDef {
+            name: "bass".to_string(),
+            device: "dev".to_string(),
+            channel: MidiChannel::from_one_based(1).unwrap(),
+            note: None,
+            gate_normal: Some(80),
+            gate_staccato: Some(40),
+            velocity_normal: Some(70),
+            velocity_accent: None,
+            velocity_ghost: None,
+            cc_mappings: vec![],
+            local_vars: vec![],
+            unresolved: Default::default(),
+        }));
+
+        let clock = Clock::new(120.0);
+        // velocity_override = Some(127)（`c4v127` 相当）
+        let note = PitchedElement::Note(
+            NoteEvent::Single {
+                name: NoteName::C,
+                octave: Some(4),
+                duration: Some(4),
+                dotted: false,
+            },
+            Articulation::Normal,
+            Some(127),
+        );
+        let clip = make_pitched_clip(
+            "test",
+            None,
+            vec![PitchedLine {
+                instrument: "bass".to_string(),
+                elements: vec![note],
+                is_layer_start: true,
+            }],
+        );
+
+        let compiled = compile_clip(&clip, &clock, &registry).unwrap();
+        assert!(matches!(
+            compiled.events[0].message,
+            MidiMessage::NoteOn { velocity: 127, .. }
+        ));
+    }
+
     /// 確率行を含むドラムクリップは drum_mask_groups を生成する
     /// Drum clips with a probability row produce drum_mask_groups.
     #[test]
@@ -1860,6 +2067,9 @@ mod tests {
                 },
                 gate_normal: Some(50),
                 gate_staccato: None,
+                velocity_normal: None,
+                velocity_accent: None,
+                velocity_ghost: None,
                 unresolved: Default::default(),
             }],
         }));
@@ -1922,6 +2132,9 @@ mod tests {
                 },
                 gate_normal: Some(50),
                 gate_staccato: None,
+                velocity_normal: None,
+                velocity_accent: None,
+                velocity_ghost: None,
                 unresolved: Default::default(),
             }],
         }));
@@ -1956,6 +2169,9 @@ mod tests {
             note: None,
             gate_normal: Some(100),
             gate_staccato: Some(60),
+            velocity_normal: None,
+            velocity_accent: None,
+            velocity_ghost: None,
             cc_mappings: vec![],
             local_vars: vec![],
             unresolved: Default::default(),
@@ -3217,6 +3433,9 @@ mod tests {
             note: None,
             gate_normal: Some(100),
             gate_staccato: Some(60),
+            velocity_normal: None,
+            velocity_accent: None,
+            velocity_ghost: None,
             cc_mappings: vec![],
             local_vars: vec![],
             unresolved: Default::default(),
@@ -3260,6 +3479,9 @@ mod tests {
             note: None,
             gate_normal: Some(80),
             gate_staccato: Some(40),
+            velocity_normal: None,
+            velocity_accent: None,
+            velocity_ghost: None,
             cc_mappings: vec![CcMapping {
                 alias: "cutoff".to_string(),
                 cc_number: 74,
@@ -3407,6 +3629,9 @@ mod tests {
                 },
                 gate_normal: Some(50),
                 gate_staccato: None,
+                velocity_normal: None,
+                velocity_accent: None,
+                velocity_ghost: None,
                 unresolved: Default::default(),
             }],
         }));
@@ -3699,6 +3924,9 @@ mod tests {
             note: None,
             gate_normal: Some(80),
             gate_staccato: Some(40),
+            velocity_normal: None,
+            velocity_accent: None,
+            velocity_ghost: None,
             cc_mappings: vec![],
             local_vars: vec![],
             unresolved: Default::default(),
@@ -3710,6 +3938,9 @@ mod tests {
             note: None,
             gate_normal: Some(80),
             gate_staccato: Some(40),
+            velocity_normal: None,
+            velocity_accent: None,
+            velocity_ghost: None,
             cc_mappings: vec![],
             local_vars: vec![],
             unresolved: Default::default(),
@@ -3787,6 +4018,9 @@ mod tests {
                 },
                 gate_normal: Some(80),
                 gate_staccato: Some(40),
+                velocity_normal: None,
+                velocity_accent: None,
+                velocity_ghost: None,
                 unresolved: Default::default(),
             }],
         }));

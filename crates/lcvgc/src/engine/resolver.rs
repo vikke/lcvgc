@@ -88,6 +88,24 @@ pub fn resolve_instrument(inst: &mut InstrumentDef, scope: &ScopeChain) -> Resul
         inst.gate_staccato = Some(resolve_u8(scope, var_name, "gate_staccato")?);
     }
 
+    // velocity_normal の変数参照を解決
+    // Resolve velocity_normal variable reference
+    if let Some(ref var_name) = inst.unresolved.velocity_normal {
+        inst.velocity_normal = Some(resolve_u8(scope, var_name, "velocity_normal")?);
+    }
+
+    // velocity_accent の変数参照を解決
+    // Resolve velocity_accent variable reference
+    if let Some(ref var_name) = inst.unresolved.velocity_accent {
+        inst.velocity_accent = Some(resolve_u8(scope, var_name, "velocity_accent")?);
+    }
+
+    // velocity_ghost の変数参照を解決
+    // Resolve velocity_ghost variable reference
+    if let Some(ref var_name) = inst.unresolved.velocity_ghost {
+        inst.velocity_ghost = Some(resolve_u8(scope, var_name, "velocity_ghost")?);
+    }
+
     // CC マッピングの変数参照を解決
     // Resolve CC mapping variable references
     for cc in &mut inst.cc_mappings {
@@ -130,6 +148,24 @@ pub fn resolve_kit(kit: &mut KitDef, scope: &ScopeChain) -> Result<(), EngineErr
         if let Some(ref var_name) = inst.unresolved.gate_staccato {
             inst.gate_staccato = Some(resolve_u8(scope, var_name, "gate_staccato")?);
         }
+
+        // velocity_normal の変数参照を解決
+        // Resolve velocity_normal variable reference
+        if let Some(ref var_name) = inst.unresolved.velocity_normal {
+            inst.velocity_normal = Some(resolve_u8(scope, var_name, "velocity_normal")?);
+        }
+
+        // velocity_accent の変数参照を解決
+        // Resolve velocity_accent variable reference
+        if let Some(ref var_name) = inst.unresolved.velocity_accent {
+            inst.velocity_accent = Some(resolve_u8(scope, var_name, "velocity_accent")?);
+        }
+
+        // velocity_ghost の変数参照を解決
+        // Resolve velocity_ghost variable reference
+        if let Some(ref var_name) = inst.unresolved.velocity_ghost {
+            inst.velocity_ghost = Some(resolve_u8(scope, var_name, "velocity_ghost")?);
+        }
     }
 
     Ok(())
@@ -154,6 +190,9 @@ mod tests {
             note: None,
             gate_normal: None,
             gate_staccato: None,
+            velocity_normal: None,
+            velocity_accent: None,
+            velocity_ghost: None,
             cc_mappings: vec![],
             local_vars: vec![],
             unresolved: UnresolvedVarRefs {
@@ -178,6 +217,9 @@ mod tests {
             note: None,
             gate_normal: None,
             gate_staccato: None,
+            velocity_normal: None,
+            velocity_accent: None,
+            velocity_ghost: None,
             cc_mappings: vec![],
             local_vars: vec![],
             unresolved: UnresolvedVarRefs {
@@ -203,11 +245,17 @@ mod tests {
             note: None,
             gate_normal: Some(0),
             gate_staccato: Some(0),
+            velocity_normal: None,
+            velocity_accent: None,
+            velocity_ghost: None,
             cc_mappings: vec![],
             local_vars: vec![],
             unresolved: UnresolvedVarRefs {
                 gate_normal: Some("gn".into()),
                 gate_staccato: Some("gs".into()),
+                velocity_normal: None,
+                velocity_accent: None,
+                velocity_ghost: None,
                 ..Default::default()
             },
         };
@@ -215,6 +263,41 @@ mod tests {
         resolve_instrument(&mut inst, &scope).unwrap();
         assert_eq!(inst.gate_normal, Some(100));
         assert_eq!(inst.gate_staccato, Some(50));
+    }
+
+    /// instrument の velocity_normal/accent/ghost の変数参照が解決されること（§6）。
+    /// Verify velocity_normal/accent/ghost variable references are resolved on an instrument (§6).
+    #[test]
+    fn resolve_instrument_velocity_refs() {
+        let mut scope = ScopeChain::new();
+        scope.define_global("vn".into(), "90".into());
+        scope.define_global("va".into(), "120".into());
+        scope.define_global("vg".into(), "30".into());
+
+        let mut inst = InstrumentDef {
+            name: "piano".into(),
+            device: "mb".into(),
+            channel: MidiChannel::from_one_based(1).unwrap(),
+            note: None,
+            gate_normal: None,
+            gate_staccato: None,
+            velocity_normal: Some(0),
+            velocity_accent: Some(0),
+            velocity_ghost: Some(0),
+            cc_mappings: vec![],
+            local_vars: vec![],
+            unresolved: UnresolvedVarRefs {
+                velocity_normal: Some("vn".into()),
+                velocity_accent: Some("va".into()),
+                velocity_ghost: Some("vg".into()),
+                ..Default::default()
+            },
+        };
+
+        resolve_instrument(&mut inst, &scope).unwrap();
+        assert_eq!(inst.velocity_normal, Some(90));
+        assert_eq!(inst.velocity_accent, Some(120));
+        assert_eq!(inst.velocity_ghost, Some(30));
     }
 
     #[test]
@@ -231,6 +314,9 @@ mod tests {
             note: None,
             gate_normal: None,
             gate_staccato: None,
+            velocity_normal: None,
+            velocity_accent: None,
+            velocity_ghost: None,
             cc_mappings: vec![CcMapping {
                 alias: "filter".into(),
                 cc_number: 0,
@@ -255,6 +341,9 @@ mod tests {
             note: None,
             gate_normal: None,
             gate_staccato: None,
+            velocity_normal: None,
+            velocity_accent: None,
+            velocity_ghost: None,
             cc_mappings: vec![],
             local_vars: vec![],
             unresolved: UnresolvedVarRefs {
@@ -286,6 +375,9 @@ mod tests {
             note: None,
             gate_normal: None,
             gate_staccato: None,
+            velocity_normal: None,
+            velocity_accent: None,
+            velocity_ghost: None,
             cc_mappings: vec![],
             local_vars: vec![],
             unresolved: UnresolvedVarRefs {
@@ -327,6 +419,9 @@ mod tests {
                 },
                 gate_normal: None,
                 gate_staccato: None,
+                velocity_normal: None,
+                velocity_accent: None,
+                velocity_ghost: None,
                 unresolved: UnresolvedKitInstrumentVarRefs {
                     channel: Some("drum_ch".into()),
                     ..Default::default()
@@ -336,6 +431,45 @@ mod tests {
 
         resolve_kit(&mut kit, &scope).unwrap();
         assert_eq!(kit.instruments[0].channel.as_one_based(), 10);
+    }
+
+    /// kit インストゥルメントの velocity_normal/accent/ghost の変数参照が解決されること（§6）。
+    /// Verify velocity_normal/accent/ghost variable references are resolved on a kit instrument (§6).
+    #[test]
+    fn resolve_kit_velocity_refs() {
+        let mut scope = ScopeChain::new();
+        scope.define_global("vn".into(), "90".into());
+        scope.define_global("va".into(), "120".into());
+        scope.define_global("vg".into(), "30".into());
+
+        let mut kit = KitDef {
+            name: "drums".into(),
+            device: "td3".into(),
+            instruments: vec![KitInstrument {
+                name: "sn".into(),
+                channel: MidiChannel::from_one_based(10).unwrap(),
+                note: KitInstrumentNote {
+                    name: NoteName::D,
+                    octave: 2,
+                },
+                gate_normal: None,
+                gate_staccato: None,
+                velocity_normal: Some(0),
+                velocity_accent: Some(0),
+                velocity_ghost: Some(0),
+                unresolved: UnresolvedKitInstrumentVarRefs {
+                    velocity_normal: Some("vn".into()),
+                    velocity_accent: Some("va".into()),
+                    velocity_ghost: Some("vg".into()),
+                    ..Default::default()
+                },
+            }],
+        };
+
+        resolve_kit(&mut kit, &scope).unwrap();
+        assert_eq!(kit.instruments[0].velocity_normal, Some(90));
+        assert_eq!(kit.instruments[0].velocity_accent, Some(120));
+        assert_eq!(kit.instruments[0].velocity_ghost, Some(30));
     }
 
     #[test]
@@ -349,6 +483,9 @@ mod tests {
             note: None,
             gate_normal: Some(100),
             gate_staccato: None,
+            velocity_normal: None,
+            velocity_accent: None,
+            velocity_ghost: None,
             cc_mappings: vec![],
             local_vars: vec![],
             unresolved: Default::default(),

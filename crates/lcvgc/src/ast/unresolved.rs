@@ -22,6 +22,15 @@ pub struct UnresolvedVarRefs {
     /// gate_staccato フィールドの変数参照
     /// Variable reference for the gate_staccato field
     pub gate_staccato: Option<String>,
+    /// velocity_normal フィールドの変数参照
+    /// Variable reference for the velocity_normal field
+    pub velocity_normal: Option<String>,
+    /// velocity_accent フィールドの変数参照
+    /// Variable reference for the velocity_accent field
+    pub velocity_accent: Option<String>,
+    /// velocity_ghost フィールドの変数参照
+    /// Variable reference for the velocity_ghost field
+    pub velocity_ghost: Option<String>,
 }
 
 /// CCマッピングの未解決変数参照
@@ -46,4 +55,13 @@ pub struct UnresolvedKitInstrumentVarRefs {
     /// gate_staccato フィールドの変数参照
     /// Variable reference for the gate_staccato field
     pub gate_staccato: Option<String>,
+    /// velocity_normal フィールドの変数参照
+    /// Variable reference for the velocity_normal field
+    pub velocity_normal: Option<String>,
+    /// velocity_accent フィールドの変数参照
+    /// Variable reference for the velocity_accent field
+    pub velocity_accent: Option<String>,
+    /// velocity_ghost フィールドの変数参照
+    /// Variable reference for the velocity_ghost field
+    pub velocity_ghost: Option<String>,
 }

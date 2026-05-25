@@ -353,6 +353,9 @@ fn determine_instrument_context(trimmed: &str) -> CompletionContext {
     if trimmed.starts_with("channel ")
         || trimmed.starts_with("gate_normal ")
         || trimmed.starts_with("gate_staccato ")
+        || trimmed.starts_with("velocity_normal ")
+        || trimmed.starts_with("velocity_accent ")
+        || trimmed.starts_with("velocity_ghost ")
     {
         return CompletionContext::NumberExpected;
     }
@@ -1442,6 +1445,9 @@ mod tests {
                 note: None,
                 gate_normal: None,
                 gate_staccato: None,
+                velocity_normal: None,
+                velocity_accent: None,
+                velocity_ghost: None,
                 cc_mappings: vec![],
                 local_vars: vec![],
                 unresolved: Default::default(),
@@ -1487,6 +1493,9 @@ mod tests {
                 note: None,
                 gate_normal: None,
                 gate_staccato: None,
+                velocity_normal: None,
+                velocity_accent: None,
+                velocity_ghost: None,
                 cc_mappings: vec![],
                 local_vars: vec![],
                 unresolved: Default::default(),

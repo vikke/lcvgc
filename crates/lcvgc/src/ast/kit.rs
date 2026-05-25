@@ -33,6 +33,15 @@ pub struct KitInstrument {
     /// スタッカートゲート値（オプション、0-127）
     /// Staccato gate value (optional, 0-127)
     pub gate_staccato: Option<u8>,
+    /// 通常ベロシティ（オプション、0-127）。`x`（Normal）ヒットの既定値を上書きする。
+    /// Normal velocity (optional, 0-127). Overrides the default for the `x` (Normal) hit.
+    pub velocity_normal: Option<u8>,
+    /// アクセントベロシティ（オプション、0-127）。`X`（Accent）ヒットの既定値を上書きする。
+    /// Accent velocity (optional, 0-127). Overrides the default for the `X` (Accent) hit.
+    pub velocity_accent: Option<u8>,
+    /// ゴーストベロシティ（オプション、0-127）。`o`（Ghost）ヒットの既定値を上書きする。
+    /// Ghost velocity (optional, 0-127). Overrides the default for the `o` (Ghost) hit.
+    pub velocity_ghost: Option<u8>,
     /// 未解決変数参照（§6 変数展開）
     /// Unresolved variable references (§6 variable expansion)
     pub unresolved: UnresolvedKitInstrumentVarRefs,
