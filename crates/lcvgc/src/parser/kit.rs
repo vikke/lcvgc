@@ -44,6 +44,18 @@ enum InstrumentProp {
     GateNormalRef(String),
     /// gate_staccato の変数参照（§6 変数展開）/ Variable reference for gate_staccato (§6)
     GateStaccatoRef(String),
+    /// 通常ベロシティ（`x` ヒットの既定値）/ Normal velocity (default for the `x` hit)
+    VelocityNormal(u8),
+    /// velocity_normal の変数参照（§6 変数展開）/ Variable reference for velocity_normal (§6)
+    VelocityNormalRef(String),
+    /// アクセントベロシティ（`X` ヒットの既定値）/ Accent velocity (default for the `X` hit)
+    VelocityAccent(u8),
+    /// velocity_accent の変数参照（§6 変数展開）/ Variable reference for velocity_accent (§6)
+    VelocityAccentRef(String),
+    /// ゴーストベロシティ（`o` ヒットの既定値）/ Ghost velocity (default for the `o` hit)
+    VelocityGhost(u8),
+    /// velocity_ghost の変数参照（§6 変数展開）/ Variable reference for velocity_ghost (§6)
+    VelocityGhostRef(String),
 }
 
 /// カンマ区切りのインストゥルメントプロパティを1つパースする。
@@ -77,6 +89,27 @@ fn parse_instrument_prop(input: &str) -> IResult<&str, InstrumentProp> {
             match v {
                 Either::Left(n) => Ok((input, InstrumentProp::GateStaccato(n))),
                 Either::Right(r) => Ok((input, InstrumentProp::GateStaccatoRef(r.to_string()))),
+            }
+        }
+        "velocity_normal" => {
+            let (input, v) = parse_u8_or_identifier(input)?;
+            match v {
+                Either::Left(n) => Ok((input, InstrumentProp::VelocityNormal(n))),
+                Either::Right(r) => Ok((input, InstrumentProp::VelocityNormalRef(r.to_string()))),
+            }
+        }
+        "velocity_accent" => {
+            let (input, v) = parse_u8_or_identifier(input)?;
+            match v {
+                Either::Left(n) => Ok((input, InstrumentProp::VelocityAccent(n))),
+                Either::Right(r) => Ok((input, InstrumentProp::VelocityAccentRef(r.to_string()))),
+            }
+        }
+        "velocity_ghost" => {
+            let (input, v) = parse_u8_or_identifier(input)?;
+            match v {
+                Either::Left(n) => Ok((input, InstrumentProp::VelocityGhost(n))),
+                Either::Right(r) => Ok((input, InstrumentProp::VelocityGhostRef(r.to_string()))),
             }
         }
         _ => Err(nom::Err::Error(nom::error::Error::new(
@@ -131,6 +164,9 @@ fn parse_instrument(input: &str) -> IResult<&str, KitInstrument> {
     let mut note = None;
     let mut gate_normal = None;
     let mut gate_staccato = None;
+    let mut velocity_normal = None;
+    let mut velocity_accent = None;
+    let mut velocity_ghost = None;
     let mut unresolved = UnresolvedKitInstrumentVarRefs::default();
 
     for prop in props {
@@ -160,6 +196,21 @@ fn parse_instrument(input: &str) -> IResult<&str, KitInstrument> {
                 unresolved.gate_staccato = Some(r);
                 gate_staccato = Some(0); // placeholder
             }
+            InstrumentProp::VelocityNormal(v) => velocity_normal = Some(v),
+            InstrumentProp::VelocityNormalRef(r) => {
+                unresolved.velocity_normal = Some(r);
+                velocity_normal = Some(0); // placeholder
+            }
+            InstrumentProp::VelocityAccent(v) => velocity_accent = Some(v),
+            InstrumentProp::VelocityAccentRef(r) => {
+                unresolved.velocity_accent = Some(r);
+                velocity_accent = Some(0); // placeholder
+            }
+            InstrumentProp::VelocityGhost(v) => velocity_ghost = Some(v),
+            InstrumentProp::VelocityGhostRef(r) => {
+                unresolved.velocity_ghost = Some(r);
+                velocity_ghost = Some(0); // placeholder
+            }
         }
     }
 
@@ -178,6 +229,9 @@ fn parse_instrument(input: &str) -> IResult<&str, KitInstrument> {
             note,
             gate_normal,
             gate_staccato,
+            velocity_normal,
+            velocity_accent,
+            velocity_ghost,
             unresolved,
         },
     ))
@@ -472,6 +526,30 @@ mod tests {
             kit.instruments[0].unresolved.gate_staccato,
             Some("gs_val".to_string())
         );
+    }
+
+    /// kit インストゥルメントに velocity_normal/accent/ghost のリテラルを指定できること。
+    /// Verify literal velocity_normal/accent/ghost can be set on a kit instrument.
+    #[test]
+    fn test_kit_instrument_with_velocity_literals() {
+        let input = "kit drums {\n  device td3\n  sn { channel 10, note d2, velocity_normal 90, velocity_accent 120, velocity_ghost 30 }\n}";
+        let (_, kit) = parse_kit(input).unwrap();
+        let sn = &kit.instruments[0];
+        assert_eq!(sn.velocity_normal, Some(90));
+        assert_eq!(sn.velocity_accent, Some(120));
+        assert_eq!(sn.velocity_ghost, Some(30));
+    }
+
+    /// kit インストゥルメントの velocity_normal/accent/ghost に変数参照を使えること（§6）。
+    /// Verify velocity_normal/accent/ghost variable references on a kit instrument (§6).
+    #[test]
+    fn test_kit_instrument_with_velocity_var_refs() {
+        let input = "kit drums {\n  device td3\n  sn { channel 10, note d2, velocity_normal vn, velocity_accent va, velocity_ghost vg }\n}";
+        let (_, kit) = parse_kit(input).unwrap();
+        let sn = &kit.instruments[0];
+        assert_eq!(sn.unresolved.velocity_normal, Some("vn".to_string()));
+        assert_eq!(sn.unresolved.velocity_accent, Some("va".to_string()));
+        assert_eq!(sn.unresolved.velocity_ghost, Some("vg".to_string()));
     }
 
     /// kit 内の `channel 0` は無効。parse error として弾かれること。

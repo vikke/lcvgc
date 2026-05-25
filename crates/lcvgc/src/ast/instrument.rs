@@ -52,6 +52,17 @@ pub struct InstrumentDef {
     /// スタッカートゲート値（オプション、0-127）
     /// Staccato gate value (optional, 0-127)
     pub gate_staccato: Option<u8>,
+    /// 通常ベロシティ（オプション、0-127）。音程楽器では `vN` 未指定ノートの既定値、
+    /// ドラムでは `x`（Normal）の既定値として使われる。
+    /// Normal velocity (optional, 0-127). Used as the default for pitched notes
+    /// without a `vN` suffix, and for the `x` (Normal) drum hit.
+    pub velocity_normal: Option<u8>,
+    /// アクセントベロシティ（オプション、0-127）。ドラムの `X`（Accent）の既定値を上書きする。
+    /// Accent velocity (optional, 0-127). Overrides the default for the `X` (Accent) drum hit.
+    pub velocity_accent: Option<u8>,
+    /// ゴーストベロシティ（オプション、0-127）。ドラムの `o`（Ghost）の既定値を上書きする。
+    /// Ghost velocity (optional, 0-127). Overrides the default for the `o` (Ghost) drum hit.
+    pub velocity_ghost: Option<u8>,
     /// CCマッピングのリスト
     /// List of CC mappings
     pub cc_mappings: Vec<CcMapping>,

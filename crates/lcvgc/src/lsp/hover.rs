@@ -53,6 +53,15 @@ impl HoverProvider {
                 if let Some(gs) = i.gate_staccato {
                     s += &format!("\n- gate_staccato: `{}%`", gs);
                 }
+                if let Some(vn) = i.velocity_normal {
+                    s += &format!("\n- velocity_normal: `{}`", vn);
+                }
+                if let Some(va) = i.velocity_accent {
+                    s += &format!("\n- velocity_accent: `{}`", va);
+                }
+                if let Some(vg) = i.velocity_ghost {
+                    s += &format!("\n- velocity_ghost: `{}`", vg);
+                }
                 if !i.cc_mappings.is_empty() {
                     let cc_str: Vec<String> = i
                         .cc_mappings
@@ -171,6 +180,9 @@ mod tests {
             note: None,
             gate_normal: None,
             gate_staccato: None,
+            velocity_normal: None,
+            velocity_accent: None,
+            velocity_ghost: None,
             cc_mappings: vec![],
             local_vars: vec![],
             unresolved: Default::default(),
@@ -189,6 +201,9 @@ mod tests {
             note: None,
             gate_normal: Some(80),
             gate_staccato: Some(40),
+            velocity_normal: None,
+            velocity_accent: None,
+            velocity_ghost: None,
             cc_mappings: vec![CcMapping {
                 alias: "mod".into(),
                 cc_number: 1,
@@ -217,6 +232,9 @@ mod tests {
                 },
                 gate_normal: None,
                 gate_staccato: None,
+                velocity_normal: None,
+                velocity_accent: None,
+                velocity_ghost: None,
                 unresolved: Default::default(),
             }],
         })));

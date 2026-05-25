@@ -10,6 +10,7 @@
     * [1.2 Multi-Device MIDI Routing](#12-multi-device-midi-routing)
 * [2. Instrument Definition (instrument)](#2-instrument-definition-instrument)
     * [Default Gate Ratio Values](#default-gate-ratio-values)
+    * [Default Velocity Values](#default-velocity-values)
 * [3. Kit Definition (kit)](#3-kit-definition-kit)
 * [4. Tempo (tempo)](#4-tempo-tempo)
 * [4.1 Scale (scale)](#41-scale-scale)
@@ -230,6 +231,9 @@ instrument bass {
   channel 1
   gate_normal 80           // Normal gate ratio (%). Default if omitted: 80
   gate_staccato 40         // Staccato gate ratio (%). Default if omitted: 40
+  velocity_normal 100      // Normal velocity (0-127). Default for notes without a `vN` suffix. Default if omitted: 100
+  velocity_accent 127      // Accent velocity (0-127). Default for the `X` drum hit. Default if omitted: 127
+  velocity_ghost 40        // Ghost velocity (0-127). Default for the `o` drum hit. Default if omitted: 40
   cc cutoff 74             // Assign alias "cutoff" to CC#74
   cc resonance 71          // CC#71
 }
@@ -282,17 +286,30 @@ instrument mod_osc {
 | `gate_normal` | 80 |
 | `gate_staccato` | 40 |
 
+### Default Velocity Values
+
+`velocity_normal` / `velocity_accent` / `velocity_ghost` can override the default velocity values (all optional, and variable references are also allowed).
+
+| Parameter | Default Value | Scope |
+|-----------|---------------|-------|
+| `velocity_normal` | 100 | Pitched instruments: default velocity for notes without a `vN` suffix. Drums: default velocity for `x` (normal hit) |
+| `velocity_accent` | 127 | Drums: default velocity for `X` (accent hit) |
+| `velocity_ghost` | 40 | Drums: default velocity for `o` (ghost hit) |
+
+- For pitched instruments, appending `vN` to a note (e.g. `c4v80`) takes precedence over `velocity_normal`.
+- `velocity_accent` / `velocity_ghost` are primarily for overriding the default velocity of the `X` / `o` hits in drum kits. Since pitched-instrument note notation has no symbols for accent / ghost, they are not used directly for pitched instruments.
+
 ---
 
 ## 3. Kit Definition (kit)
 
-Defines drum-type instruments as a group. The device is specified at the kit level. Each instrument can have `gate_normal` and `gate_staccato` specified (defaults apply if omitted).
+Defines drum-type instruments as a group. The device is specified at the kit level. Each instrument can have `gate_normal`, `gate_staccato`, `velocity_normal`, `velocity_accent`, and `velocity_ghost` specified (defaults apply if omitted). `velocity_normal` / `velocity_accent` / `velocity_ghost` override the default velocity of the `x` / `X` / `o` hits respectively.
 
 ```
 kit tr808 {
   device mutant_brain
   bd    { channel 10, note c2, gate_normal 50, gate_staccato 20 }
-  snare { channel 10, note d2 }
+  snare { channel 10, note d2, velocity_accent 120, velocity_ghost 30 }
   hh    { channel 10, note f#2, gate_normal 30, gate_staccato 10 }
   oh    { channel 10, note a#2, gate_normal 80 }
   clap  { channel 10, note d#2 }
@@ -471,7 +488,7 @@ instrument bass {
 
 The following keywords cannot be used as variable names:
 
-`device`, `instrument`, `kit`, `clip`, `scene`, `session`, `include`, `tempo`, `play`, `stop`, `pause`, `resume`, `mute`, `unmute`, `var`, `port`, `transport`, `channel`, `note`, `gate_normal`, `gate_staccato`, `cc`, `use`, `resolution`, `arp`, `bars`, `time`, `scale`, `repeat`, `loop`
+`device`, `instrument`, `kit`, `clip`, `scene`, `session`, `include`, `tempo`, `play`, `stop`, `pause`, `resume`, `mute`, `unmute`, `var`, `port`, `transport`, `channel`, `note`, `gate_normal`, `gate_staccato`, `velocity_normal`, `velocity_accent`, `velocity_ghost`, `cc`, `use`, `resolution`, `arp`, `bars`, `time`, `scale`, `repeat`, `loop`
 
 ---
 

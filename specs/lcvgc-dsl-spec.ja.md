@@ -10,6 +10,7 @@
     * [1.2 複数 device への振り分けルーティング](#12-複数-device-への振り分けルーティング)
 * [2. 楽器定義 (instrument)](#2-楽器定義-instrument)
     * [Gate比率のデフォルト値](#gate比率のデフォルト値)
+    * [velocityのデフォルト値](#velocityのデフォルト値)
 * [3. キット定義 (kit)](#3-キット定義-kit)
 * [4. テンポ (tempo)](#4-テンポ-tempo)
 * [4.1 スケール (scale)](#41-スケール-scale)
@@ -230,6 +231,9 @@ instrument bass {
   channel 1
   gate_normal 80           // 通常のGate比率 (%)。省略時: 80
   gate_staccato 40         // スタッカート時のGate比率 (%)。省略時: 40
+  velocity_normal 100      // 通常velocity (0-127)。`vN` 未指定ノートの既定値。省略時: 100
+  velocity_accent 127      // アクセントvelocity (0-127)。ドラムの `X` の既定値。省略時: 127
+  velocity_ghost 40        // ゴーストvelocity (0-127)。ドラムの `o` の既定値。省略時: 40
   cc cutoff 74             // CC#74 に "cutoff" というエイリアスを付ける
   cc resonance 71          // CC#71
 }
@@ -282,17 +286,30 @@ instrument mod_osc {
 | `gate_normal` | 80 |
 | `gate_staccato` | 40 |
 
+### velocityのデフォルト値
+
+`velocity_normal` / `velocity_accent` / `velocity_ghost` で velocity の既定値を上書きできる（いずれも省略可、変数参照も可）。
+
+| パラメータ | デフォルト値 | 適用範囲 |
+|-----------|-------------|---------|
+| `velocity_normal` | 100 | 音程楽器: `vN` 未指定ノートの既定velocity。ドラム: `x`（通常ヒット）の既定velocity |
+| `velocity_accent` | 127 | ドラム: `X`（アクセントヒット）の既定velocity |
+| `velocity_ghost` | 40 | ドラム: `o`（ゴーストヒット）の既定velocity |
+
+- 音程楽器ではノートに `vN`（例: `c4v80`）を付けると `velocity_normal` より優先される。
+- `velocity_accent` / `velocity_ghost` は主にドラム（kit）の `X` / `o` ヒットの既定velocityを上書きするためのもの。音程楽器のノート記法には accent / ghost を表す記号がないため、音程楽器では直接使われない。
+
 ---
 
 ## 3. キット定義 (kit)
 
-ドラム系楽器をまとめて定義する。deviceはキットレベルで指定する。各楽器に `gate_normal`, `gate_staccato` を指定可能（省略時はデフォルト値）。
+ドラム系楽器をまとめて定義する。deviceはキットレベルで指定する。各楽器に `gate_normal`, `gate_staccato`, `velocity_normal`, `velocity_accent`, `velocity_ghost` を指定可能（省略時はデフォルト値）。`velocity_normal` / `velocity_accent` / `velocity_ghost` はそれぞれ `x` / `X` / `o` ヒットの既定velocityを上書きする。
 
 ```
 kit tr808 {
   device mutant_brain
   bd    { channel 10, note c2, gate_normal 50, gate_staccato 20 }
-  snare { channel 10, note d2 }
+  snare { channel 10, note d2, velocity_accent 120, velocity_ghost 30 }
   hh    { channel 10, note f#2, gate_normal 30, gate_staccato 10 }
   oh    { channel 10, note a#2, gate_normal 80 }
   clap  { channel 10, note d#2 }
@@ -471,7 +488,7 @@ instrument bass {
 
 以下のキーワードは変数名に使えない:
 
-`device`, `instrument`, `kit`, `clip`, `scene`, `session`, `include`, `tempo`, `play`, `stop`, `pause`, `resume`, `mute`, `unmute`, `var`, `port`, `transport`, `channel`, `note`, `gate_normal`, `gate_staccato`, `cc`, `use`, `resolution`, `arp`, `bars`, `time`, `scale`, `repeat`, `loop`
+`device`, `instrument`, `kit`, `clip`, `scene`, `session`, `include`, `tempo`, `play`, `stop`, `pause`, `resume`, `mute`, `unmute`, `var`, `port`, `transport`, `channel`, `note`, `gate_normal`, `gate_staccato`, `velocity_normal`, `velocity_accent`, `velocity_ghost`, `cc`, `use`, `resolution`, `arp`, `bars`, `time`, `scale`, `repeat`, `loop`
 
 ---
 
