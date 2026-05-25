@@ -16,19 +16,6 @@ pub enum HitSymbol {
     Rest,
 }
 
-impl HitSymbol {
-    /// このヒットのMIDIベロシティを返す。休符の場合は`None`を返す。
-    /// Returns the MIDI velocity for this hit, or `None` for a rest.
-    pub fn velocity(self) -> Option<u8> {
-        match self {
-            HitSymbol::Normal => Some(100),
-            HitSymbol::Accent => Some(127),
-            HitSymbol::Ghost => Some(40),
-            HitSymbol::Rest => None,
-        }
-    }
-}
-
 /// ドラムクリップ内の単一インストゥルメント行
 /// A single instrument row in a drum clip.
 #[derive(Debug, Clone, PartialEq)]
