@@ -144,6 +144,94 @@ fn find_next_keyword(source: &str) -> Option<usize> {
     None
 }
 
+/// 文字列を表示用に「先頭1行・最大 max 文字」へ切り詰める。
+/// 改行で打ち切り、長い場合は末尾に省略記号 `…` を付ける。
+/// マルチバイト境界で切らないよう `char_indices` で安全に分割する。
+///
+/// Truncate a string for display to its first line and at most `max` chars,
+/// appending `…` when truncated. Splits on a char boundary to stay UTF-8 safe.
+///
+/// # Arguments
+/// * `s` - 切り詰め対象の文字列 / Source string
+/// * `max` - 最大文字数（char 単位）/ Maximum length in chars
+///
+/// # Returns
+/// 表示用に整えた断片文字列 / A snippet suitable for display
+fn snippet_for_display(s: &str, max: usize) -> String {
+    let first_line = s.lines().next().unwrap_or("").trim();
+    let mut out = String::new();
+    for (count, (_, ch)) in first_line.char_indices().enumerate() {
+        if count >= max {
+            out.push('…');
+            return out;
+        }
+        out.push(ch);
+    }
+    out
+}
+
+/// パース失敗時の簡潔なエラーメッセージを組み立てる。
+///
+/// nom デフォルト Error の `Display` は失敗位置以降のソース全文を
+/// 埋め込むため、そのまま診断メッセージにすると巨大で読めなくなる。
+/// 本関数は (1) ブロック先頭から推定したブロック種別と、
+/// (2) 失敗位置付近の短い断片のみを使い、簡潔な日本語文言を作る。
+///
+/// Builds a concise parse-error message. nom's default Error `Display` embeds
+/// the entire remaining source, which makes diagnostics unreadable. This uses
+/// only (1) the block kind inferred from the block's leading keyword and
+/// (2) a short snippet around the failure point.
+///
+/// # Arguments
+/// * `block_input` - `parse_block` に渡したブロック先頭の入力（種別推定用）
+///   / The block's leading input passed to `parse_block` (for kind inference)
+/// * `err` - nom が返したパースエラー / The parse error returned by nom
+///
+/// # Returns
+/// 診断表示用の簡潔なエラーメッセージ / A concise error message for diagnostics
+fn describe_parse_error(block_input: &str, err: &nom::Err<nom::error::Error<&str>>) -> String {
+    // ブロック種別判定用のキーワード一覧。`parse_block` の分岐に揃える。
+    // 回復用の `KEYWORDS` とは用途が異なるため別途定義する。
+    // longest-match のため、接頭辞が衝突しない範囲で語順は問わない。
+    const BLOCK_KEYWORDS: &[&str] = &[
+        "device",
+        "instrument",
+        "kit",
+        "clip",
+        "scene",
+        "session",
+        "tempo",
+        "scale",
+        "var",
+        "include",
+        "play",
+        "stop",
+        "pause",
+        "resume",
+        "unmute",
+        "mute",
+    ];
+    // ブロック種別を先頭キーワードから推定する（消費済みでも block_input には残っている）。
+    let head = block_input.trim_start();
+    let kind = BLOCK_KEYWORDS
+        .iter()
+        .find(|kw| head.starts_with(**kw))
+        .copied();
+
+    // 失敗位置付近の断片を取り出す。nom Error が指す input を優先し、
+    // 取れない場合（Incomplete 等）はブロック先頭を使う。
+    let failure_input = match err {
+        nom::Err::Error(e) | nom::Err::Failure(e) => e.input,
+        nom::Err::Incomplete(_) => block_input,
+    };
+    let snippet = snippet_for_display(failure_input, 40);
+
+    match kind {
+        Some(k) => format!("{k} ブロックの構文エラー: '{snippet}' 付近で解釈に失敗しました"),
+        None => format!("構文エラー: '{snippet}' を解釈できませんでした"),
+    }
+}
+
 /// ソーステキストをスパン付きでパースする
 /// Parses source text with span information
 ///
@@ -217,7 +305,7 @@ pub fn span_parse_source(source: &str) -> ParseOutcome {
                 remaining = rest;
             }
             Err(e) => {
-                let err_msg = format!("{}", e);
+                let err_msg = describe_parse_error(remaining, &e);
                 // Try to skip to next keyword
                 match find_next_keyword(remaining) {
                     Some(skip_to) => {
@@ -355,6 +443,80 @@ mod tests {
         assert_eq!(out.errors.len(), 1);
         assert_eq!(out.errors[0].span.start, 0);
         assert_eq!(out.errors[0].span.end, src.len());
+    }
+
+    // --- エラーメッセージ整形 (案2) ---
+    // --- Error message formatting (approach B-light) ---
+
+    /// パースエラーのメッセージに、失敗位置以降のソース「全文」が
+    /// 混入していないことを検証する（再発防止）。
+    /// nom のデフォルト Error の Display は残りソース全文を埋め込むため、
+    /// これを直接使わず簡潔な文言にしていることを保証する。
+    ///
+    /// Verify that a parse-error message does NOT embed the entire remaining
+    /// source after the failure point (regression guard). nom's default Error
+    /// `Display` would otherwise dump the full remaining input.
+    #[test]
+    fn error_message_excludes_full_source() {
+        // clip ヘッダで `[bar 1]` (正しくは `[bars 1]`) と書き間違えたケース。
+        // clip option を解釈できず `{` 位置で失敗し、残り入力に長い本文が続く。
+        let src = "clip tuning [bar 1] {\n\tfm c:1:1\n\tbass c:1:1\n\tlead c:1:1\n\tpad c:1:1\n}";
+        let out = span_parse_source(src);
+        assert_eq!(out.errors.len(), 1, "1 件のエラーになるはず");
+        let msg = &out.errors[0].message;
+
+        // 本文の後続行 (例: `bass c:1:1`) がメッセージに含まれていないこと。
+        assert!(
+            !msg.contains("bass c:1:1"),
+            "メッセージに後続ソース行が混入している: {msg}"
+        );
+        // nom の Debug 表現 (`Error {{ input:`) が露出していないこと。
+        assert!(
+            !msg.contains("Error { input"),
+            "nom の Debug 表現が露出している: {msg}"
+        );
+        // メッセージが過度に長くないこと。
+        assert!(
+            msg.len() < 200,
+            "メッセージが長すぎる ({} bytes): {msg}",
+            msg.len()
+        );
+    }
+
+    /// パースエラーのメッセージに、失敗したブロック種別 (例: clip) と
+    /// 失敗位置付近の断片が含まれ、ユーザーが原因箇所を推察できることを検証する。
+    ///
+    /// Verify the message names the failing block kind (e.g. clip) and shows a
+    /// short snippet around the failure point, so the user can locate the cause.
+    #[test]
+    fn error_message_includes_block_kind_and_snippet() {
+        let src = "clip tuning [bar 1] {\n\tfm c:1:1\n}";
+        let out = span_parse_source(src);
+        assert_eq!(out.errors.len(), 1);
+        let msg = &out.errors[0].message;
+
+        // 失敗したブロック種別が分かること。
+        assert!(
+            msg.contains("clip"),
+            "ブロック種別 clip が含まれない: {msg}"
+        );
+        // 失敗位置付近の断片 (`[bar 1]`) が含まれ、原因を推察できること。
+        assert!(msg.contains("[bar 1]"), "失敗位置の断片が含まれない: {msg}");
+    }
+
+    /// 先頭キーワードに一致しない不明な入力では、ブロック種別を
+    /// 特定できないため「構文エラー」系の汎用文言になることを検証する。
+    ///
+    /// For input that matches no leading keyword, the message falls back to a
+    /// generic "syntax error" form since the block kind is unknown.
+    #[test]
+    fn error_message_generic_for_unknown_input() {
+        let src = "INVALID STUFF";
+        let out = span_parse_source(src);
+        assert_eq!(out.errors.len(), 1);
+        let msg = &out.errors[0].message;
+        assert!(msg.contains("構文エラー"), "汎用文言になっていない: {msg}");
+        assert!(!msg.contains("Error { input"), "Debug 表現が露出: {msg}");
     }
 
     #[test]
