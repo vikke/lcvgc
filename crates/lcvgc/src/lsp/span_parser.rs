@@ -194,8 +194,22 @@ fn describe_parse_error(block_input: &str, err: &nom::Err<nom::error::Error<&str
     // 回復用の `KEYWORDS` とは用途が異なるため別途定義する。
     // longest-match のため、接頭辞が衝突しない範囲で語順は問わない。
     const BLOCK_KEYWORDS: &[&str] = &[
-        "device", "instrument", "kit", "clip", "scene", "session", "tempo", "scale", "var",
-        "include", "play", "stop", "pause", "resume", "unmute", "mute",
+        "device",
+        "instrument",
+        "kit",
+        "clip",
+        "scene",
+        "session",
+        "tempo",
+        "scale",
+        "var",
+        "include",
+        "play",
+        "stop",
+        "pause",
+        "resume",
+        "unmute",
+        "mute",
     ];
     // ブロック種別を先頭キーワードから推定する（消費済みでも block_input には残っている）。
     let head = block_input.trim_start();
