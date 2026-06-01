@@ -6,7 +6,7 @@
 
 use std::str::FromStr;
 
-use lcvgc::generator::{generate, InputFormat};
+use lcvgc::generator::{generate, GenOptions, InputFormat};
 use lcvgc::parser::parse_source;
 
 /// 最小 SMF を組み立てるヘルパ (ch1 で C4, D4 を 1 拍ずつ)。
@@ -52,7 +52,8 @@ fn minimal_mdx() -> Vec<u8> {
 #[test]
 fn smf_generated_dsl_parses() {
     let bytes = minimal_smf();
-    let dsl = generate(InputFormat::Smf, &bytes, "test.mid").expect("generate ok");
+    let dsl = generate(InputFormat::Smf, &bytes, "test.mid", &GenOptions::default())
+        .expect("generate ok");
     let result = parse_source(&dsl);
     assert!(
         result.is_ok(),
@@ -65,7 +66,8 @@ fn smf_generated_dsl_parses() {
 #[test]
 fn mdx_generated_dsl_parses() {
     let bytes = minimal_mdx();
-    let dsl = generate(InputFormat::Mdx, &bytes, "test.mdx").expect("generate ok");
+    let dsl = generate(InputFormat::Mdx, &bytes, "test.mdx", &GenOptions::default())
+        .expect("generate ok");
     let result = parse_source(&dsl);
     assert!(
         result.is_ok(),
