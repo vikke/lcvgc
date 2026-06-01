@@ -180,7 +180,7 @@ mod tests {
         // slot 1 に off=header_len, size=4 を書く。
         let off = header_len as u32;
         let size = 4u32;
-        let base = 1 * 8;
+        let base = 8; // slot 1 のエントリ先頭 (1 * 8)
         buf[base..base + 4].copy_from_slice(&off.to_be_bytes());
         buf[base + 4..base + 8].copy_from_slice(&size.to_be_bytes());
         buf.extend_from_slice(&[0x11, 0x22, 0x33, 0x44]); // ADPCM 4 バイト = 8 サンプル
