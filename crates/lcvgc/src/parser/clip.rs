@@ -182,89 +182,17 @@ fn parse_pitched_body(mut input: &str) -> IResult<&str, PitchedClipBody> {
                 }
             }
 
-            // `|` 拍境界スナップを試行
-            // Try `|` beat-boundary snap. 単独トークン (=次が空白/改行/EOF/}) のみ受理。
-            // Only accept a standalone `|` token (followed by whitespace, newline,
-            // EOF, or closing brace) so future `||` (or similar) syntax stays open.
-            if current.starts_with('|') {
-                let after = &current[1..];
-                let next_ch = after.chars().next();
-                if matches!(next_ch, None | Some(' ' | '\t' | '\r' | '\n' | '}')) {
-                    elements.push(PitchedElement::PipeSnap);
-                    current = after;
-                    continue;
+            // 単一のピッチド要素をパース（繰り返しグループの中身と共通の処理）。
+            // Parse a single pitched element (shared with repetition-group content).
+            match parse_one_pitched_element(current)? {
+                (r, Some(el)) => {
+                    elements.push(el);
+                    current = r;
                 }
+                // 他にパースできるものがないため終了
+                // Can't parse anything else, break
+                (_, None) => break,
             }
-
-            // 小節ジャンプを試行
-            // Try bar jump
-            if let Ok((r, bj)) = parse_bar_jump(current) {
-                elements.push(PitchedElement::BarJump(bj));
-                current = r;
-                continue;
-            }
-
-            // リピートを試行
-            // Try repetition
-            if let Ok((r, rep)) = parse_repetition(current) {
-                elements.push(PitchedElement::Repetition(rep));
-                current = r;
-                continue;
-            }
-
-            // コード括弧 [notes]:dur を試行
-            // Try chord bracket [notes]:dur
-            if current.starts_with('[') {
-                let (r, chord) = parse_chord_bracket(current)?;
-                elements.push(chord);
-                current = r;
-                continue;
-            }
-
-            // ノートイベントを試行（単音またはコード名）
-            // Try note event (single note or chord name)
-            if let Ok((r, note)) = parse_note_event(current) {
-                let (r, suffix) = crate::parser::clip_articulation::parse_note_suffix(r)?;
-                let art = suffix.articulation;
-                let vel = suffix.velocity;
-                // コード名に対するアルペジオを確認し、ChordName の arpeggio フィールドに格納する。
-                // 単音 (`Single`) や休符 (`Rest`) には arp は付かない（パーサーは消費するだけ）。
-                //
-                // Detect a trailing `arp(...)` and attach it to ChordName. Single
-                // notes and rests cannot carry an arpeggio; the parser just
-                // consumes the syntax for them (existing behavior).
-                let (r, _) = ws(r)?;
-                if let Some((r2, arp)) = parse_arpeggio(r) {
-                    let note_with_arp = match note {
-                        crate::ast::clip_note::NoteEvent::ChordName {
-                            root,
-                            suffix,
-                            octave,
-                            duration,
-                            dotted,
-                            arpeggio: _,
-                        } => crate::ast::clip_note::NoteEvent::ChordName {
-                            root,
-                            suffix,
-                            octave,
-                            duration,
-                            dotted,
-                            arpeggio: Some(arp),
-                        },
-                        other => other,
-                    };
-                    current = r2;
-                    elements.push(PitchedElement::Note(note_with_arp, art, vel));
-                    continue;
-                }
-                elements.push(PitchedElement::Note(note, art, vel));
-                current = r;
-                continue;
-            }
-
-            // 他にパースできるものがないため終了
-            // Can't parse anything else, break
-            break;
         }
 
         if !elements.is_empty() {
@@ -708,75 +636,124 @@ fn build_probability_row(
     Ok(flat)
 }
 
+/// 単一のピッチド要素を1つだけパースする。
+///
+/// クリップ本体 (`parse_pitched_body`) と繰り返しグループの中身
+/// (`parse_repetition_content`) の双方から共有する。要素パースを二重実装すると、
+/// 片方にだけ機能（例: `arp(...)`）が実装されて取りこぼす不具合
+/// （繰り返しグループ `(...)*N` の中で arpeggio が失われる等）が起きるため、
+/// 単一の関数に集約して両者の挙動が乖離しないようにする。
+///
+/// `(...)` のネストは `Repetition` ノードとして保持され、後段（コンパイル時）で
+/// 再帰的に再パース・展開されるため、`((処理))` のような入れ子は内側から評価される。
+///
+/// 戻り値:
+/// - `Ok((rest, Some(element)))`: 要素を1つパースできた。
+/// - `Ok((input, None))`: ここではどの要素にもマッチしなかった（呼び出し側はループ終了）。
+/// - `Err(..)`: パース途中での致命的エラー。
+///
+/// Parse exactly one pitched element. Shared by both the clip body parser
+/// (`parse_pitched_body`) and the repetition-group content parser
+/// (`parse_repetition_content`) so element handling (notes, chords, arpeggios,
+/// bar jumps, nested repetitions, pipe snaps) never diverges between the two.
+/// Nested `(...)` is kept as a `Repetition` node and re-parsed/expanded
+/// recursively at compile time, so `((...))` evaluates inside-out.
+/// `Ok((_, None))` means "nothing matched here".
+fn parse_one_pitched_element(input: &str) -> IResult<&str, Option<PitchedElement>> {
+    // `|` 拍境界スナップ（単独トークン = 次が空白/改行/EOF/} のみ受理）。
+    // `|` beat-boundary snap (standalone token only).
+    if let Some(after) = input.strip_prefix('|') {
+        let next_ch = after.chars().next();
+        if matches!(next_ch, None | Some(' ' | '\t' | '\r' | '\n' | '}')) {
+            return Ok((after, Some(PitchedElement::PipeSnap)));
+        }
+    }
+
+    // 小節ジャンプ / Bar jump
+    if let Ok((r, bj)) = parse_bar_jump(input) {
+        return Ok((r, Some(PitchedElement::BarJump(bj))));
+    }
+
+    // リピート（ネスト対応。中身は後段で再帰的に再パースされる）
+    // Repetition (nesting supported; content is re-parsed recursively later)
+    if let Ok((r, rep)) = parse_repetition(input) {
+        return Ok((r, Some(PitchedElement::Repetition(rep))));
+    }
+
+    // コード括弧 [notes]:dur arp(...) / Chord bracket
+    if input.starts_with('[') {
+        let (r, chord) = parse_chord_bracket(input)?;
+        return Ok((r, Some(chord)));
+    }
+
+    // ノートイベント（単音またはコード名）+ サフィックス + arp
+    // Note event (single note or chord name) + suffix + arpeggio
+    if let Ok((r, note)) = parse_note_event(input) {
+        let (r, suffix) = crate::parser::clip_articulation::parse_note_suffix(r)?;
+        let art = suffix.articulation;
+        let vel = suffix.velocity;
+        // コード名に続く `arp(...)` を ChordName.arpeggio に格納する。
+        // 単音 (`Single`) や休符 (`Rest`) には arp は付かない（構文のみ消費）。
+        //
+        // Attach a trailing `arp(...)` to ChordName. Single notes and rests
+        // cannot carry an arpeggio; the parser just consumes the syntax.
+        let (r, _) = ws(r)?;
+        if let Some((r2, arp)) = parse_arpeggio(r) {
+            let note_with_arp = match note {
+                crate::ast::clip_note::NoteEvent::ChordName {
+                    root,
+                    suffix,
+                    octave,
+                    duration,
+                    dotted,
+                    arpeggio: _,
+                } => crate::ast::clip_note::NoteEvent::ChordName {
+                    root,
+                    suffix,
+                    octave,
+                    duration,
+                    dotted,
+                    arpeggio: Some(arp),
+                },
+                other => other,
+            };
+            return Ok((r2, Some(PitchedElement::Note(note_with_arp, art, vel))));
+        }
+        return Ok((r, Some(PitchedElement::Note(note, art, vel))));
+    }
+
+    // どの要素にもマッチしない / Nothing matched
+    Ok((input, None))
+}
+
 /// 繰り返し content 文字列をピッチド要素列にパースする。
 /// Repetition の content（括弧の中身）を PitchedElement のリストに変換する。
 ///
+/// 本体パーサーと同じ `parse_one_pitched_element` を用いるため、arpeggio や
+/// ネストした繰り返しなど全要素を本体と同等に扱える。
+///
 /// Parse repetition content string into a vector of pitched elements.
-/// Converts the content inside parentheses of a Repetition into PitchedElement list.
+/// Uses the same `parse_one_pitched_element` as the clip body, so arpeggios,
+/// nested repetitions, and all other elements are handled identically.
 pub fn parse_repetition_content(content: &str) -> Result<Vec<PitchedElement>, String> {
     let mut elements = Vec::new();
     let mut current = content;
 
-    while let Ok((r, _)) = ws(current) {
+    loop {
+        let (r, _) = ws(current).map_err(|e| format!("{:?}", e))?;
         current = r;
 
         if current.is_empty() {
             break;
         }
 
-        // `|` 拍境界スナップを試行
-        // Try `|` beat-boundary snap (standalone token only)
-        if current.starts_with('|') {
-            let after = &current[1..];
-            let next_ch = after.chars().next();
-            if matches!(next_ch, None | Some(' ' | '\t' | '\r' | '\n')) {
-                elements.push(PitchedElement::PipeSnap);
-                current = after;
-                continue;
-            }
-        }
-
-        // 小節ジャンプを試行
-        // Try bar jump
-        if let Ok((r, bj)) = parse_bar_jump(current) {
-            elements.push(PitchedElement::BarJump(bj));
-            current = r;
-            continue;
-        }
-
-        // リピートを試行（ネスト対応）
-        // Try repetition (supports nesting)
-        if let Ok((r, rep)) = parse_repetition(current) {
-            elements.push(PitchedElement::Repetition(rep));
-            current = r;
-            continue;
-        }
-
-        // コード括弧を試行
-        // Try chord bracket
-        if current.starts_with('[') {
-            if let Ok((r, chord)) = parse_chord_bracket(current) {
-                elements.push(chord);
+        match parse_one_pitched_element(current).map_err(|e| format!("{:?}", e))? {
+            (r, Some(el)) => {
+                elements.push(el);
                 current = r;
-                continue;
             }
+            (_, None) => break,
         }
-
-        // ノートイベントを試行（単音またはコード名）
-        // Try note event (single note or chord name)
-        if let Ok((r, note)) = parse_note_event(current) {
-            let (r, suffix) = crate::parser::clip_articulation::parse_note_suffix(r)
-                .map_err(|e| format!("{:?}", e))?;
-            elements.push(PitchedElement::Note(
-                note,
-                suffix.articulation,
-                suffix.velocity,
-            ));
-            current = r;
-            continue;
-        }
-
-        break;
     }
 
     Ok(elements)
@@ -1225,6 +1202,69 @@ mod tests {
                 assert_eq!(body.rows[0].hits.len(), 32);
             }
             _ => panic!("expected drum"),
+        }
+    }
+
+    /// 繰り返しグループ `(...)*N` の中身でも `arp(...)` が ChordName に保持される。
+    /// 以前は `parse_repetition_content` が arp を取りこぼし、`arp(random)` が
+    /// 余計な A ノート + 休符に誤パースされていた（回帰防止）。
+    ///
+    /// `arp(...)` must survive inside a repetition group `(...)*N`. Previously
+    /// `parse_repetition_content` dropped the arpeggio and mis-parsed
+    /// `arp(random)` into a stray A note plus a rest.
+    #[test]
+    fn repetition_content_preserves_arpeggio() {
+        use crate::parser::clip_arpeggio::ArpeggioDirection;
+        let elems = parse_repetition_content("cm7:4:4 arp(random)").unwrap();
+        // ChordName ただ1要素（余計なノート/休符が混入しない）
+        assert_eq!(
+            elems.len(),
+            1,
+            "expected exactly one element, got {elems:?}"
+        );
+        match &elems[0] {
+            PitchedElement::Note(
+                NoteEvent::ChordName {
+                    suffix, arpeggio, ..
+                },
+                _,
+                _,
+            ) => {
+                assert_eq!(*suffix, ChordSuffix::Min7);
+                let arp = arpeggio.as_ref().expect("arpeggio should be Some");
+                assert_eq!(arp.direction, ArpeggioDirection::Random);
+            }
+            other => panic!("expected ChordName with arpeggio, got {other:?}"),
+        }
+    }
+
+    /// ネストした繰り返し `((...)*N)` が内側から評価されるよう、内側の `Repetition`
+    /// が `Repetition` ノードとして保持される。中身を再帰的にパースすると arp も残る。
+    ///
+    /// Nested repetition keeps the inner group as a `Repetition` node so it is
+    /// expanded inside-out; recursively parsing its content still yields the arp.
+    #[test]
+    fn repetition_content_supports_nested_group_with_arp() {
+        use crate::parser::clip_arpeggio::ArpeggioDirection;
+        // 外側の中身 = `(cm7 arp(up))*2`
+        let outer = parse_repetition_content("(cm7 arp(up))*2").unwrap();
+        assert_eq!(outer.len(), 1);
+        let inner_content = match &outer[0] {
+            PitchedElement::Repetition(rep) => {
+                assert_eq!(rep.count, 2);
+                rep.content.clone()
+            }
+            other => panic!("expected nested Repetition, got {other:?}"),
+        };
+        // 内側を再帰的にパースしても arp が保持される
+        let inner = parse_repetition_content(&inner_content).unwrap();
+        assert_eq!(inner.len(), 1);
+        match &inner[0] {
+            PitchedElement::Note(NoteEvent::ChordName { arpeggio, .. }, _, _) => {
+                let arp = arpeggio.as_ref().expect("arpeggio should be Some");
+                assert_eq!(arp.direction, ArpeggioDirection::Up);
+            }
+            other => panic!("expected ChordName with arpeggio, got {other:?}"),
         }
     }
 }
