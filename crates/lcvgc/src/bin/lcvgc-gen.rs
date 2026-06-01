@@ -17,7 +17,7 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 use clap::Parser;
-use lcvgc::generator::generate_from_path_auto;
+use lcvgc::generator::{generate_from_path_auto, GenOptions};
 
 /// `lcvgc-gen` の CLI 引数定義。
 #[derive(Parser, Debug)]
@@ -28,11 +28,26 @@ use lcvgc::generator::generate_from_path_auto;
 struct Cli {
     /// 入力ファイルパス (拡張子と内容から SMF / MDX を自動判定)
     input: PathBuf,
+
+    /// 生成 DSL の音程ノートのオクターブを n だけ上下させる
+    /// (正で上、負で下。例: `-o 1` で 1 上げ、`-o -1` で 1 下げ)。
+    /// ドラムには適用しない。
+    #[arg(
+        short = 'o',
+        long = "octave",
+        value_name = "N",
+        default_value_t = 0,
+        allow_hyphen_values = true
+    )]
+    octave: i8,
 }
 
 fn main() -> ExitCode {
     let cli = Cli::parse();
-    match generate_from_path_auto(&cli.input) {
+    let opts = GenOptions {
+        octave_shift: cli.octave,
+    };
+    match generate_from_path_auto(&cli.input, &opts) {
         Ok(dsl) => {
             print!("{}", dsl);
             ExitCode::SUCCESS

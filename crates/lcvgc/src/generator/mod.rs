@@ -29,6 +29,23 @@ pub mod readers;
 
 use std::path::Path;
 
+/// ジェネレーターの出力挙動を制御するオプション群。
+///
+/// CLI から渡され、reader → Score 構築後の正規化や emitter での出力に影響する。
+/// 後方互換のため `Default` を持ち、既存呼び出しは `GenOptions::default()` で済む。
+///
+/// Options controlling generator output. Passed from the CLI and applied during
+/// score normalization and emission.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct GenOptions {
+    /// 生成 DSL の音程ノートに適用するオクターブシフト量。
+    /// 正で上、負で下。ドラムには適用しない。既定 0。
+    ///
+    /// Octave shift applied to pitched notes (positive up, negative down).
+    /// Drums are unaffected. Defaults to 0.
+    pub octave_shift: i8,
+}
+
 /// 外部フォーマット → Score IR の reader が満たすトレイト。
 ///
 /// 新フォーマットを追加する場合は本トレイトを実装し、CLI から呼び出せるよう
@@ -127,25 +144,30 @@ pub fn generate(
     format: InputFormat,
     bytes: &[u8],
     source_name: &str,
+    opts: &GenOptions,
 ) -> Result<String, GeneratorError> {
     let score = match format {
         InputFormat::Smf => readers::smf::SmfReader.read(bytes, source_name)?,
         InputFormat::Mdx => readers::mdx::MdxReader.read(bytes, source_name)?,
     };
-    emitter::emit(&score)
+    emitter::emit(&score, opts)
 }
 
 /// ファイルパスから `generate` を呼び出すユーティリティ。
 ///
 /// Convenience wrapper around `generate` that reads a file.
-pub fn generate_from_path(format: InputFormat, path: &Path) -> Result<String, GeneratorError> {
+pub fn generate_from_path(
+    format: InputFormat,
+    path: &Path,
+    opts: &GenOptions,
+) -> Result<String, GeneratorError> {
     let bytes = std::fs::read(path)?;
     let name = path
         .file_name()
         .and_then(|s| s.to_str())
         .unwrap_or("input")
         .to_string();
-    generate(format, &bytes, &name)
+    generate(format, &bytes, &name, opts)
 }
 
 /// ファイル内容と拡張子から入力フォーマットを自動判定する。
@@ -199,7 +221,7 @@ pub fn detect_format(bytes: &[u8], path: &Path) -> Result<InputFormat, Generator
 /// CLI の位置引数 1 個用エントリポイント。
 ///
 /// Auto-detect entry point. Reads `path`, sniffs its format, and emits DSL.
-pub fn generate_from_path_auto(path: &Path) -> Result<String, GeneratorError> {
+pub fn generate_from_path_auto(path: &Path, opts: &GenOptions) -> Result<String, GeneratorError> {
     let bytes = std::fs::read(path)?;
     let format = detect_format(&bytes, path)?;
     let name = path
@@ -207,7 +229,7 @@ pub fn generate_from_path_auto(path: &Path) -> Result<String, GeneratorError> {
         .and_then(|s| s.to_str())
         .unwrap_or("input")
         .to_string();
-    generate(format, &bytes, &name)
+    generate(format, &bytes, &name, opts)
 }
 
 #[cfg(test)]

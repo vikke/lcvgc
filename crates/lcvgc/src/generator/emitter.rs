@@ -20,6 +20,7 @@
 
 use super::quantize::quantize_ticks;
 use super::score::{Event, Score, Track, TrackKind};
+use super::GenOptions;
 use super::GeneratorError;
 
 /// 省略記法のキャリーオーバー状態 (emitter 用)。
@@ -196,7 +197,16 @@ impl EmitCarry {
 /// # Errors
 /// 表現不能な構造を含む場合 `GeneratorError::Emit` を返す (現在の MVP では
 /// 殆ど発生しない)。
-pub fn emit(score: &Score) -> Result<String, GeneratorError> {
+pub fn emit(score: &Score, opts: &GenOptions) -> Result<String, GeneratorError> {
+    // オプション由来の正規化を施した作業用 Score を作る。
+    // - オクターブシフト: 音程 (Melodic) トラックのノートのみ ±12*n する。
+    //   ドラムトラックは対象外。範囲外 (0-127) は飽和させる。
+    // Build a working score with option-driven normalization applied:
+    //  - octave shift affects only Melodic-track notes (drums untouched),
+    //    clamping to the MIDI range.
+    let score = apply_octave_shift_to_score(score, opts.octave_shift);
+    let score = &score;
+
     let mut out = String::new();
     emit_header(score, &mut out);
     emit_device(&mut out);
@@ -207,6 +217,51 @@ pub fn emit(score: &Score) -> Result<String, GeneratorError> {
     emit_scene(score, &mut out);
     emit_play(&mut out);
     Ok(out)
+}
+
+/// 音程 (Melodic) トラックのノートに対してのみオクターブシフトを適用した
+/// Score の複製を返す。`shift == 0` のときはクローンのみで内容は不変。
+/// シフト後のノート番号が MIDI 範囲 (0-127) を外れる場合は端に飽和させる。
+/// ドラム (Drum) トラックは変更しない。
+///
+/// Returns a clone of `score` with an octave shift applied to Melodic-track
+/// notes only. Notes are clamped to 0..=127. Drum tracks are left unchanged.
+///
+/// # 引数 / Arguments
+/// * `score` - 元の Score / source score
+/// * `octave_shift` - シフトするオクターブ数（正で上、負で下）/ octave shift count
+///
+/// # 戻り値 / Returns
+/// シフト適用済みの Score / a shifted copy of the score
+fn apply_octave_shift_to_score(score: &Score, octave_shift: i8) -> Score {
+    let mut score = score.clone();
+    if octave_shift == 0 {
+        return score;
+    }
+    let delta = octave_shift as i32 * 12;
+    for track in score.tracks.iter_mut() {
+        if track.kind != TrackKind::Melodic {
+            continue;
+        }
+        shift_events(&mut track.events, delta);
+    }
+    score
+}
+
+/// イベント列内の全ノートの MIDI ノート番号に `delta` を加算し 0..=127 に飽和。
+/// `LoopBlock` 内のノートも再帰的にシフトする。
+///
+/// Adds `delta` to every note's MIDI number (clamped to 0..=127), recursing
+/// into `LoopBlock`s.
+fn shift_events(events: &mut [Event], delta: i32) {
+    for ev in events.iter_mut() {
+        match ev {
+            Event::Note { midi_note, .. } => {
+                *midi_note = (*midi_note as i32 + delta).clamp(0, 127) as u8;
+            }
+            Event::LoopBlock { events, .. } => shift_events(events, delta),
+        }
+    }
 }
 
 /// 生成元情報のヘッダコメントを書き出す。
@@ -766,8 +821,61 @@ mod tests {
     }
 
     #[test]
+    fn octave_shift_up_raises_emitted_octave() {
+        // C4 を +1 オクターブ → C5。clip 本体に `c:5` が現れる。
+        let opts = GenOptions { octave_shift: 1 };
+        let dsl = emit(&one_note_score(), &opts).unwrap();
+        let body = melodic_clip_body(&dsl);
+        assert!(body.contains("c:5"), "body was: {}", body);
+    }
+
+    #[test]
+    fn octave_shift_down_lowers_emitted_octave() {
+        // C4 を -1 オクターブ → C3。
+        let opts = GenOptions { octave_shift: -1 };
+        let dsl = emit(&one_note_score(), &opts).unwrap();
+        let body = melodic_clip_body(&dsl);
+        assert!(body.contains("c:3"), "body was: {}", body);
+    }
+
+    #[test]
+    fn octave_shift_does_not_affect_drum_kit_notes() {
+        // ドラムトラックの kit ノートはオクターブシフトの影響を受けない。
+        let mut s = one_note_score();
+        s.tracks.push(Track {
+            name: "drums".into(),
+            midi_channel: 10,
+            kind: TrackKind::Drum,
+            events: vec![Event::Note {
+                start_tick: 0,
+                end_tick: 120,
+                midi_note: 36, // GM Bass Drum (C2)
+                velocity: 100,
+            }],
+        });
+        let before = emit(&s, &GenOptions::default()).unwrap();
+        let after = emit(&s, &GenOptions { octave_shift: 2 }).unwrap();
+        // kit ブロック (note c2) 部分は両者で変わらない。
+        let kit_before = before
+            .split("kit gen_kit")
+            .nth(1)
+            .unwrap()
+            .split('}')
+            .next()
+            .unwrap();
+        let kit_after = after
+            .split("kit gen_kit")
+            .nth(1)
+            .unwrap()
+            .split('}')
+            .next()
+            .unwrap();
+        assert_eq!(kit_before, kit_after, "drum kit notes must not shift");
+    }
+
+    #[test]
     fn emit_includes_required_blocks() {
-        let dsl = emit(&one_note_score()).unwrap();
+        let dsl = emit(&one_note_score(), &GenOptions::default()).unwrap();
         assert!(dsl.contains("device gen_device"));
         assert!(dsl.contains("instrument lead"));
         assert!(dsl.contains("clip lead_clip"));
@@ -778,7 +886,7 @@ mod tests {
 
     #[test]
     fn melodic_clip_has_single_note() {
-        let dsl = emit(&one_note_score()).unwrap();
+        let dsl = emit(&one_note_score(), &GenOptions::default()).unwrap();
         // C4 / 4 分音符。初期キャリー (oct=4, dur=4) と一致するため省略形 `c` になる。
         // The single C4 quarter note matches the initial carry state (oct=4,
         // dur=4), so it is emitted in the shortest form `c`.
@@ -803,7 +911,7 @@ mod tests {
                 velocity: 100,
             },
         ];
-        let dsl = emit(&s).unwrap();
+        let dsl = emit(&s, &GenOptions::default()).unwrap();
         // 0-240 で c:4:8、240-480 が休符 8 分、480 から d:4:8。省略後は:
         //   c::8  (oct=4 は初期値と一致し省略、dur=8 は初期 4 と異なり明示)
         //   r     (休符 dur=8 は直前 c の 8 と一致し省略)
@@ -837,7 +945,7 @@ mod tests {
                 velocity: 100,
             },
         ];
-        let dsl = emit(&s).unwrap();
+        let dsl = emit(&s, &GenOptions::default()).unwrap();
         // 初期キャリー oct=4 と全構成音 (c4/e4/g4) が一致するため、和音内の oct は
         // 省略され `[c e g]:2` になる (dur=2 は初期 4 と異なり明示)。
         // All chord tones match the base octave (4), so the in-chord octaves are
@@ -878,7 +986,7 @@ mod tests {
                 velocity: 100,
             }, // g4
         ];
-        let dsl = emit(&s).unwrap();
+        let dsl = emit(&s, &GenOptions::default()).unwrap();
         let body = melodic_clip_body(&dsl);
         assert_eq!(
             body, "lead [c e:5 g]:2",
@@ -915,7 +1023,7 @@ mod tests {
             }],
             ..one_note_score()
         };
-        let dsl = emit(&s).unwrap();
+        let dsl = emit(&s, &GenOptions::default()).unwrap();
         assert!(dsl.contains("*2"), "expected (...)*2 in output:\n{}", dsl);
         assert!(dsl.contains("c:4:4"));
     }
@@ -957,7 +1065,7 @@ mod tests {
             }],
             ..one_note_score()
         };
-        let dsl = emit(&s).unwrap();
+        let dsl = emit(&s, &GenOptions::default()).unwrap();
         assert!(dsl.contains("kit gen_kit"));
         assert!(dsl.contains("use gen_kit"));
         assert!(dsl.contains("resolution 16"));
@@ -1006,7 +1114,7 @@ mod tests {
             }],
             ..one_note_score()
         };
-        let dsl = emit(&s).unwrap();
+        let dsl = emit(&s, &GenOptions::default()).unwrap();
 
         // melodic clip 本体 (lead の clip ブロック) を抜き出して、改行数を数える
         let clip_start = dsl.find("clip lead_clip").expect("clip 開始位置");
@@ -1047,7 +1155,7 @@ mod tests {
             }],
             ..one_note_score()
         };
-        let dsl = emit(&s).unwrap();
+        let dsl = emit(&s, &GenOptions::default()).unwrap();
         let clip_start = dsl.find("clip lead_clip").expect("melodic clip 開始");
         let clip_end = clip_start + dsl[clip_start..].find("\n}").unwrap() + 2;
         let clip_src = &dsl[clip_start..clip_end];
@@ -1084,7 +1192,7 @@ mod tests {
             }],
             ..one_note_score()
         };
-        let dsl = emit(&s).unwrap();
+        let dsl = emit(&s, &GenOptions::default()).unwrap();
         let clip_start = dsl.find("clip drums_clip").expect("drum clip 開始");
         // 該当 clip ブロックの `}` までを抜き出す
         let clip_end = clip_start + dsl[clip_start..].find("\n}").unwrap() + 2;
@@ -1127,7 +1235,7 @@ mod tests {
             }],
             ..one_note_score()
         };
-        let dsl = emit(&s).unwrap();
+        let dsl = emit(&s, &GenOptions::default()).unwrap();
         // drum clip 本体を抜き出して `\` が含まれることを確認する。
         // 8 小節 = 128 step ごとに分割されるので、16 小節なら少なくとも 1 回。
         let clip_start = dsl.find("clip drums_clip").expect("drum clip 開始位置");
@@ -1176,7 +1284,7 @@ mod tests {
         use crate::engine::evaluator::Evaluator;
         use crate::midi::message::MidiMessage;
 
-        let dsl = emit(score).unwrap();
+        let dsl = emit(score, &GenOptions::default()).unwrap();
         let mut ev = Evaluator::new(score.initial_bpm as f64);
         ev.eval_source(&dsl)
             .unwrap_or_else(|e| panic!("emit 結果が eval 失敗: {e:?}\n---\n{dsl}"));
@@ -1310,7 +1418,7 @@ mod tests {
             actual,
             expected,
             "省略 emit → compile した NoteOn が score と一致しない\nDSL:\n{}",
-            emit(&score).unwrap()
+            emit(&score, &GenOptions::default()).unwrap()
         );
     }
 }

@@ -387,16 +387,29 @@ fn mode_byte(bytes: &[u8]) -> Option<u8> {
     }
 }
 
-/// MDX (MXDRV / OPM Timer B) のテンポバイトを BPM 近似値に変換する。
+/// MDX (MXDRV / OPM Timer B) のテンポバイト (`@t` 値) を BPM に変換する。
 ///
-/// OPM Timer B クロック式: 1 clock の周期 = (256 - n) * 1024 / (clock_freq / 16)
-/// クロック 4MHz、1 四分音符 = 48 clock 前提で BPM 換算する。
+/// MXDRV のテンポは OPM Timer B 値 `n` で表され、1 四分音符 = 48 OPM clock、
+/// OPM クロック = 4MHz、Timer B 1 tick = 1024/(4MHz/16) 秒 を前提とする。
+/// mdxtools の換算 `opm_tempo = 256 - 60*opm_clock/(bpm*48*1024)`（opm_clock=4_000_000）
+/// を BPM について解くと次式になる。
 ///
-/// Approximation: `BPM ≈ 78125 / (256 - n)` (1/4 note = 48 clocks, 4 MHz OPM).
+/// `BPM = 60 * 4_000_000 / ((256 - n) * 48 * 1024)`
+///
+/// 旧実装の `78125 / (256 - n)` は係数が約 16 倍ずれており、
+/// 典型値域で clamp 上限 (480) に張り付くバグがあった。
+///
+/// # 引数 / Arguments
+/// * `n` - OPM Timer B 値 (`@t` の引数, 0-255) / OPM Timer B value
+///
+/// # 戻り値 / Returns
+/// BPM (beats per minute)。極端な `n` は音楽的な範囲 (20-400) にクランプする。
+/// BPM, clamped to a musical range (20-400) for extreme `n`.
 fn opm_timer_b_to_bpm(n: u8) -> f32 {
+    // 60 * 4_000_000 / (48 * 1024) = 240_000_000 / 49_152 ≈ 4882.8125
+    const NUMERATOR: f32 = 240_000_000.0 / 49_152.0;
     let denom = 256u32.saturating_sub(n as u32).max(1) as f32;
-    // 78125 / (256 - n) は 100 BPM 付近で標準的な MXDRV 速度に近似
-    (78_125.0 / denom).clamp(20.0, 480.0)
+    (NUMERATOR / denom).clamp(20.0, 400.0)
 }
 
 #[cfg(test)]
@@ -586,5 +599,20 @@ mod tests {
         let score = MdxReader.read(&out, "tempo.mdx").unwrap();
         let expected = opm_timer_b_to_bpm(200);
         assert!((score.initial_bpm - expected).abs() < 0.5);
+    }
+
+    /// OPM Timer B 値 → BPM の正しい換算式を検証する。
+    /// 正しい式: BPM = 60 * 4_000_000 / ((256 - n) * 48 * 1024)
+    /// （mdxtools の `opm_tempo = 256 - 60*opm_clock/(bpm*48*1024)` の逆算）
+    #[test]
+    fn opm_timer_b_to_bpm_uses_correct_formula() {
+        // @t200 (MXDRV 既定) ≈ 87.2 BPM
+        assert!((opm_timer_b_to_bpm(200) - 87.2).abs() < 0.5);
+        // n=219 (実曲 lfoma.mdx) ≈ 132 BPM。旧式では 480 に張り付いていた回帰防止
+        assert!((opm_timer_b_to_bpm(219) - 132.0).abs() < 0.5);
+        // n=224 ≈ 152.6 BPM
+        assert!((opm_timer_b_to_bpm(224) - 152.6).abs() < 0.5);
+        // 旧バグ: 480 への張り付きが起きないこと（典型値域で 480 を返さない）
+        assert!(opm_timer_b_to_bpm(219) < 200.0);
     }
 }
