@@ -52,8 +52,8 @@ fn minimal_mdx() -> Vec<u8> {
 #[test]
 fn smf_generated_dsl_parses() {
     let bytes = minimal_smf();
-    let dsl =
-        generate(InputFormat::Smf, &bytes, "test.mid", &GenOptions::default()).expect("generate ok");
+    let dsl = generate(InputFormat::Smf, &bytes, "test.mid", &GenOptions::default())
+        .expect("generate ok");
     let result = parse_source(&dsl);
     assert!(
         result.is_ok(),
@@ -66,8 +66,8 @@ fn smf_generated_dsl_parses() {
 #[test]
 fn mdx_generated_dsl_parses() {
     let bytes = minimal_mdx();
-    let dsl =
-        generate(InputFormat::Mdx, &bytes, "test.mdx", &GenOptions::default()).expect("generate ok");
+    let dsl = generate(InputFormat::Mdx, &bytes, "test.mdx", &GenOptions::default())
+        .expect("generate ok");
     let result = parse_source(&dsl);
     assert!(
         result.is_ok(),
