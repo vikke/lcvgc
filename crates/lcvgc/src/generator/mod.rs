@@ -36,7 +36,7 @@ use std::path::Path;
 ///
 /// Options controlling generator output. Passed from the CLI and applied during
 /// score normalization and emission.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct GenOptions {
     /// 生成 DSL の音程ノートに適用するオクターブシフト量。
     /// 正で上、負で下。ドラムには適用しない。既定 0。
@@ -44,6 +44,23 @@ pub struct GenOptions {
     /// Octave shift applied to pitched notes (positive up, negative down).
     /// Drums are unaffected. Defaults to 0.
     pub octave_shift: i8,
+
+    /// ベースライン判定のしきい値 (MIDI ノート番号)。
+    /// 音程トラックの平均ノートがこの値未満なら `bass` 系、以上なら `fm` 系の
+    /// instrument 名を割り当てる。既定 48 (= C3)。
+    ///
+    /// Threshold (MIDI note) for bass-line detection. A melodic track whose mean
+    /// note is below this gets a `bass` name; otherwise `fm`. Defaults to 48 (C3).
+    pub bass_max_avg_note: u8,
+}
+
+impl Default for GenOptions {
+    fn default() -> Self {
+        GenOptions {
+            octave_shift: 0,
+            bass_max_avg_note: 48,
+        }
+    }
 }
 
 /// 外部フォーマット → Score IR の reader が満たすトレイト。

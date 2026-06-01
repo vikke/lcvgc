@@ -46,6 +46,7 @@ fn main() -> ExitCode {
     let cli = Cli::parse();
     let opts = GenOptions {
         octave_shift: cli.octave,
+        ..Default::default()
     };
     match generate_from_path_auto(&cli.input, &opts) {
         Ok(dsl) => {

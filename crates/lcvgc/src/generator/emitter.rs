@@ -204,7 +204,10 @@ pub fn emit(score: &Score, opts: &GenOptions) -> Result<String, GeneratorError> 
     // Build a working score with option-driven normalization applied:
     //  - octave shift affects only Melodic-track notes (drums untouched),
     //    clamping to the MIDI range.
-    let score = apply_octave_shift_to_score(score, opts.octave_shift);
+    let mut score = apply_octave_shift_to_score(score, opts.octave_shift);
+    // 音程トラックの instrument 名を fm / bass 系に正規化する。
+    // Normalize melodic track names into the fm / bass family.
+    normalize_instrument_names(&mut score, opts);
     let score = &score;
 
     let mut out = String::new();
@@ -262,6 +265,63 @@ fn shift_events(events: &mut [Event], delta: i32) {
             Event::LoopBlock { events, .. } => shift_events(events, delta),
         }
     }
+}
+
+/// 音程 (Melodic) トラックの instrument 名を `fm` / `bass` 系に正規化する。
+///
+/// 各音程トラックの平均 MIDI ノートを求め、`opts.bass_max_avg_note` 未満なら
+/// ベースとみなして `bass` 系、それ以外は `fm` 系の名前を割り当てる。同種が複数
+/// ある場合は 2 つ目以降に通し番号を付け (`fm`, `fm2`, `fm3` / `bass`, `bass2`)、
+/// clip 名や scene 参照が衝突しないようユニークにする。ドラムトラックは変更しない。
+///
+/// Normalizes melodic-track instrument names into the `fm` / `bass` family.
+/// A track whose mean MIDI note is below `opts.bass_max_avg_note` is treated as
+/// a bass line. Duplicates get a numeric suffix to stay unique. Drum tracks are
+/// left untouched.
+///
+/// # 引数 / Arguments
+/// * `score` - 正規化対象の Score (in-place 変更) / score to mutate in place
+/// * `opts` - ベース判定しきい値を含む生成オプション / generator options
+fn normalize_instrument_names(score: &mut Score, opts: &GenOptions) {
+    let mut fm_count = 0u32;
+    let mut bass_count = 0u32;
+    for track in score.tracks.iter_mut() {
+        if track.kind != TrackKind::Melodic {
+            continue;
+        }
+        let is_bass = mean_note(&track.events)
+            .map(|avg| avg < opts.bass_max_avg_note as f32)
+            .unwrap_or(false);
+        track.name = if is_bass {
+            bass_count += 1;
+            if bass_count == 1 {
+                "bass".to_string()
+            } else {
+                format!("bass{}", bass_count)
+            }
+        } else {
+            fm_count += 1;
+            if fm_count == 1 {
+                "fm".to_string()
+            } else {
+                format!("fm{}", fm_count)
+            }
+        };
+    }
+}
+
+/// イベント列の全ノートの平均 MIDI ノート番号を返す。ノートが無ければ `None`。
+/// `LoopBlock` 内のノートも含める。
+///
+/// Returns the mean MIDI note over all notes (including those inside loop
+/// blocks), or `None` when the track has no notes.
+fn mean_note(events: &[Event]) -> Option<f32> {
+    let notes = iter_notes(events);
+    if notes.is_empty() {
+        return None;
+    }
+    let sum: u32 = notes.iter().map(|&(_, _, m, _)| m as u32).sum();
+    Some(sum as f32 / notes.len() as f32)
 }
 
 /// 生成元情報のヘッダコメントを書き出す。
@@ -791,10 +851,10 @@ mod tests {
     use super::*;
     use crate::generator::score::{Event, Score, TimeSignature, Track, TrackKind};
 
-    /// emit 結果から `clip lead_clip { ... }` の本体 (trim 済み) を取り出す。
-    /// Extracts the trimmed body of the `lead_clip` block from emitted DSL.
+    /// emit 結果から `clip fm_clip { ... }` の本体 (trim 済み) を取り出す。
+    /// Extracts the trimmed body of the `fm_clip` block from emitted DSL.
     fn melodic_clip_body(dsl: &str) -> String {
-        let start = dsl.find("clip lead_clip").expect("lead_clip 開始");
+        let start = dsl.find("clip fm_clip").expect("fm_clip 開始");
         let open = dsl[start..].find('{').unwrap() + start + 1;
         let close = dsl[open..].find('}').unwrap();
         dsl[open..open + close].trim().to_string()
@@ -820,10 +880,75 @@ mod tests {
         }
     }
 
+    /// 指定した平均音域の単一ノートトラックを n 本持つ score を作る。
+    /// Builds a score with `midis.len()` melodic tracks, one note each.
+    fn score_with_track_notes(midis: &[u8]) -> Score {
+        let tracks = midis
+            .iter()
+            .enumerate()
+            .map(|(i, &m)| Track {
+                name: format!("orig_{i}"),
+                midi_channel: (i as u8) + 1,
+                kind: TrackKind::Melodic,
+                events: vec![Event::Note {
+                    start_tick: 0,
+                    end_tick: 480,
+                    midi_note: m,
+                    velocity: 100,
+                }],
+            })
+            .collect();
+        Score {
+            ppq: 480,
+            initial_bpm: 120.0,
+            time_signature: TimeSignature::default(),
+            title: None,
+            tracks,
+        }
+    }
+
+    #[test]
+    fn low_track_named_bass_high_track_named_fm() {
+        // C2(36)=低音域→bass、C5(72)=高音域→fm。
+        let s = score_with_track_notes(&[36, 72]);
+        let dsl = emit(&s, &GenOptions::default()).unwrap();
+        assert!(dsl.contains("instrument bass"), "bass がない: {dsl}");
+        assert!(dsl.contains("instrument fm"), "fm がない: {dsl}");
+        assert!(dsl.contains("clip bass_clip"));
+        assert!(dsl.contains("clip fm_clip"));
+    }
+
+    #[test]
+    fn multiple_fm_tracks_get_numeric_suffix() {
+        // 高音域 3 本 → fm, fm2, fm3 とユニーク採番される。
+        let s = score_with_track_notes(&[60, 64, 67]);
+        let dsl = emit(&s, &GenOptions::default()).unwrap();
+        assert!(dsl.contains("instrument fm "), "fm がない: {dsl}");
+        assert!(dsl.contains("instrument fm2 "), "fm2 がない: {dsl}");
+        assert!(dsl.contains("instrument fm3 "), "fm3 がない: {dsl}");
+    }
+
+    #[test]
+    fn bass_threshold_is_configurable() {
+        // しきい値を 70 に上げれば C5(72) 未満の C4(60) も bass 扱いになる…
+        // ではなく 60<70 なので bass。72>=70 は fm。
+        let s = score_with_track_notes(&[60, 72]);
+        let opts = GenOptions {
+            bass_max_avg_note: 70,
+            ..Default::default()
+        };
+        let dsl = emit(&s, &opts).unwrap();
+        assert!(dsl.contains("instrument bass"), "bass がない: {dsl}");
+        assert!(dsl.contains("instrument fm"), "fm がない: {dsl}");
+    }
+
     #[test]
     fn octave_shift_up_raises_emitted_octave() {
         // C4 を +1 オクターブ → C5。clip 本体に `c:5` が現れる。
-        let opts = GenOptions { octave_shift: 1 };
+        let opts = GenOptions {
+            octave_shift: 1,
+            ..Default::default()
+        };
         let dsl = emit(&one_note_score(), &opts).unwrap();
         let body = melodic_clip_body(&dsl);
         assert!(body.contains("c:5"), "body was: {}", body);
@@ -832,7 +957,10 @@ mod tests {
     #[test]
     fn octave_shift_down_lowers_emitted_octave() {
         // C4 を -1 オクターブ → C3。
-        let opts = GenOptions { octave_shift: -1 };
+        let opts = GenOptions {
+            octave_shift: -1,
+            ..Default::default()
+        };
         let dsl = emit(&one_note_score(), &opts).unwrap();
         let body = melodic_clip_body(&dsl);
         assert!(body.contains("c:3"), "body was: {}", body);
@@ -854,7 +982,14 @@ mod tests {
             }],
         });
         let before = emit(&s, &GenOptions::default()).unwrap();
-        let after = emit(&s, &GenOptions { octave_shift: 2 }).unwrap();
+        let after = emit(
+            &s,
+            &GenOptions {
+                octave_shift: 2,
+                ..Default::default()
+            },
+        )
+        .unwrap();
         // kit ブロック (note c2) 部分は両者で変わらない。
         let kit_before = before
             .split("kit gen_kit")
@@ -877,8 +1012,8 @@ mod tests {
     fn emit_includes_required_blocks() {
         let dsl = emit(&one_note_score(), &GenOptions::default()).unwrap();
         assert!(dsl.contains("device gen_device"));
-        assert!(dsl.contains("instrument lead"));
-        assert!(dsl.contains("clip lead_clip"));
+        assert!(dsl.contains("instrument fm"));
+        assert!(dsl.contains("clip fm_clip"));
         assert!(dsl.contains("tempo 120"));
         assert!(dsl.contains("scene gen_scene"));
         assert!(dsl.contains("play gen_scene"));
@@ -891,7 +1026,7 @@ mod tests {
         // The single C4 quarter note matches the initial carry state (oct=4,
         // dur=4), so it is emitted in the shortest form `c`.
         let body = melodic_clip_body(&dsl);
-        assert_eq!(body, "lead c", "省略形 `c` で書かれるべき: {body:?}");
+        assert_eq!(body, "fm c", "省略形 `c` で書かれるべき: {body:?}");
     }
 
     #[test]
@@ -918,7 +1053,7 @@ mod tests {
         //   d     (oct=4 dur=8 ともに直前と一致し両省略)
         // After shorthand: `c::8 r d`.
         let body = melodic_clip_body(&dsl);
-        assert_eq!(body, "lead c::8 r d", "省略形が想定と異なる: {body:?}");
+        assert_eq!(body, "fm c::8 r d", "省略形が想定と異なる: {body:?}");
     }
 
     #[test]
@@ -952,7 +1087,7 @@ mod tests {
         // omitted: `[c e g]:2`.
         let body = melodic_clip_body(&dsl);
         assert_eq!(
-            body, "lead [c e g]:2",
+            body, "fm [c e g]:2",
             "和音内 oct 省略形が想定と異なる: {body:?}"
         );
     }
@@ -989,7 +1124,7 @@ mod tests {
         let dsl = emit(&s, &GenOptions::default()).unwrap();
         let body = melodic_clip_body(&dsl);
         assert_eq!(
-            body, "lead [c e:5 g]:2",
+            body, "fm [c e:5 g]:2",
             "和音内で基準と異なる oct のみ明示されるべき: {body:?}"
         );
         // 意味的等価性も確認する。
@@ -1116,8 +1251,8 @@ mod tests {
         };
         let dsl = emit(&s, &GenOptions::default()).unwrap();
 
-        // melodic clip 本体 (lead の clip ブロック) を抜き出して、改行数を数える
-        let clip_start = dsl.find("clip lead_clip").expect("clip 開始位置");
+        // melodic clip 本体 (fm の clip ブロック) を抜き出して、改行数を数える
+        let clip_start = dsl.find("clip fm_clip").expect("clip 開始位置");
         let after_open = dsl[clip_start..].find('{').unwrap() + clip_start + 1;
         let after_close_rel = dsl[after_open..].find('}').unwrap();
         let body = &dsl[after_open..after_open + after_close_rel];
@@ -1156,7 +1291,7 @@ mod tests {
             ..one_note_score()
         };
         let dsl = emit(&s, &GenOptions::default()).unwrap();
-        let clip_start = dsl.find("clip lead_clip").expect("melodic clip 開始");
+        let clip_start = dsl.find("clip fm_clip").expect("melodic clip 開始");
         let clip_end = clip_start + dsl[clip_start..].find("\n}").unwrap() + 2;
         let clip_src = &dsl[clip_start..clip_end];
 
@@ -1284,18 +1419,21 @@ mod tests {
         use crate::engine::evaluator::Evaluator;
         use crate::midi::message::MidiMessage;
 
+        use crate::ast::clip::ClipBody;
+
         let dsl = emit(score, &GenOptions::default()).unwrap();
         let mut ev = Evaluator::new(score.initial_bpm as f64);
         ev.eval_source(&dsl)
             .unwrap_or_else(|e| panic!("emit 結果が eval 失敗: {e:?}\n---\n{dsl}"));
         let clock = ev.clock_snapshot();
         let mut result = Vec::new();
-        for t in &score.tracks {
-            if t.kind != TrackKind::Melodic {
+        // 命名正規化で instrument 名 (= clip 名の基) が変わるため、入力 score の
+        // 名前ではなく registry に登録された Pitched clip を全て走査する。
+        for clip_name in ev.registry().clip_names() {
+            let clip = ev.registry().get_clip(&clip_name).unwrap();
+            if !matches!(clip.body, ClipBody::Pitched(_)) {
                 continue;
             }
-            let clip_name = format!("{}_clip", t.name);
-            let clip = ev.registry().get_clip(&clip_name).unwrap();
             let compiled = compile_clip(clip, &clock, ev.registry()).unwrap();
             for e in &compiled.events {
                 if let MidiMessage::NoteOn { note, .. } = e.message {
