@@ -24,15 +24,16 @@
     * [7.1 bars Option](#71-bars-option)
     * [7.2 Time Signature (time)](#72-time-signature-time)
     * [7.3 Scale Specification (scale)](#73-scale-specification-scale)
-    * [7.4 Pitched Instrument Notation](#74-pitched-instrument-notation)
+    * [7.4 Octave Shift (`[>>]` / `[<<]`)](#74-octave-shift---)
+    * [7.5 Pitched Instrument Notation](#75-pitched-instrument-notation)
         * [Parse Rules](#parse-rules)
-    * [7.5 Shorthand Notation](#75-shorthand-notation)
+    * [7.6 Shorthand Notation](#76-shorthand-notation)
         * [Single Note Shorthand](#single-note-shorthand)
         * [Chord Name Shorthand](#chord-name-shorthand)
         * [Mixing Single Notes and Chord Names](#mixing-single-notes-and-chord-names)
         * [Shorthand Within Chords](#shorthand-within-chords)
-    * [7.6 Repetition](#76-repetition)
-    * [7.7 Articulation (Gate Control)](#77-articulation-gate-control)
+    * [7.7 Repetition](#77-repetition)
+    * [7.8 Articulation (Gate Control)](#78-articulation-gate-control)
         * [Normal](#normal)
         * [Staccato `'`](#staccato-)
         * [Direct Gate Ratio Specification `gN`](#direct-gate-ratio-specification-gn)
@@ -41,19 +42,19 @@
         * [Gate Duration Calculation](#gate-duration-calculation)
         * [Retrigger Guarantee](#retrigger-guarantee)
         * [Minimum Gate Off Duration](#minimum-gate-off-duration)
-    * [7.8 Multi-line Notation](#78-multi-line-notation)
-    * [7.9 Bar Jump (`>N`)](#79-bar-jump-n)
-    * [7.10 `|` Beat Boundary Snap (Pitched Instruments)](#710--beat-boundary-snap-pitched-instruments)
-    * [7.11 Chords (Bracket Notation)](#711-chords-bracket-notation)
-    * [7.12 Chord Name Notation](#712-chord-name-notation)
-    * [7.13 Arpeggio](#713-arpeggio)
-    * [7.14 Drums (Step Sequencer Notation)](#714-drums-step-sequencer-notation)
+    * [7.9 Multi-line Notation](#79-multi-line-notation)
+    * [7.10 Bar Jump (`>N`)](#710-bar-jump-n)
+    * [7.11 `|` Beat Boundary Snap (Pitched Instruments)](#711--beat-boundary-snap-pitched-instruments)
+    * [7.12 Chords (Bracket Notation)](#712-chords-bracket-notation)
+    * [7.13 Chord Name Notation](#713-chord-name-notation)
+    * [7.14 Arpeggio](#714-arpeggio)
+    * [7.15 Drums (Step Sequencer Notation)](#715-drums-step-sequencer-notation)
         * [Hit Symbols](#hit-symbols)
         * [`|` Beat Boundary Snap](#-beat-boundary-snap)
         * [`>N` Bar Jump](#n-bar-jump)
         * [Repetition](#repetition)
         * [Probability Row](#probability-row)
-    * [7.15 CC Automation](#715-cc-automation)
+    * [7.16 CC Automation](#716-cc-automation)
         * [Step Mode](#step-mode)
         * [Time-based Mode](#time-based-mode)
         * [Exponential Curve Interpolation](#exponential-curve-interpolation)
@@ -591,7 +592,42 @@ Supported scale types:
 
 The `[scale ...]` on a clip is optional. If omitted, the global `scale` setting (see Section 4.1) applies. If the global scale is also unset, the LSP provides only generic note name and chord name completions.
 
-### 7.4 Pitched Instrument Notation
+### 7.4 Octave Shift (`[>>]` / `[<<]`)
+
+Writing `[>>]` / `[<<]` in a clip's option position transposes the whole clip's pitch up or down in octave (12-semitone) steps.
+
+```
+// Transpose the whole clip +1 octave
+clip lead_up [>>] {
+  lead c:4:4 e g    // actually sounds as C5, E5, G5
+}
+
+// Transpose the whole clip -1 octave
+clip bass_down [<<] {
+  bass c:3:4 e g    // actually sounds as C2, E2, G2
+}
+
+// Multiple [>>] / [<<] tokens accumulate
+clip lead_up2 [>> >>] {  // +2 octaves
+  lead c:4:4
+}
+
+clip net_up [>> >> <<] {  // +1 octave (accumulated result)
+  lead c:4:4
+}
+```
+
+Specification:
+
+- `[>>]` is +1 octave, `[<<]` is -1 octave.
+- Multiple `>>` / `<<` tokens separated by whitespace inside the bracket **accumulate** (`[>> >>]` is +2, `[>> <<]` is 0).
+- Specifying multiple separate brackets such as `[>>] [>>]` also accumulates.
+- It can be combined with `[bars ...]` / `[time ...]` / `[scale ...]` in any order.
+- The shift applies **only to pitched clips**. It has no effect on drum clips.
+- If a shifted MIDI note number falls outside the range (0-127), it is a **compile error**.
+- The shift applies uniformly to both explicit octave specifications (e.g. `c:3`) inside the clip and to the carried-over octave used when omitted.
+
+### 7.5 Pitched Instrument Notation
 
 Format: `instrument_name note_or_chord_name[:octave][:duration] ...`
 
@@ -640,7 +676,7 @@ Common parse rules for both single notes and chord names.
 | `c:3:8` / `cm7:4:2` | 3 / 4 | eighth / half | Full notation |
 | `c::8` / `cm7::2` | carry over | eighth / half | Octave omitted, duration only changed |
 
-### 7.5 Shorthand Notation
+### 7.6 Shorthand Notation
 
 Octave and duration carry over from the previous value. Defaults at the start of a clip are o4, :4. This carry-over is maintained across lines.
 
@@ -695,7 +731,7 @@ keys [f:3 a c eb]:2          // f:3 sets o3; a, c, eb are o3
 keys [bb:3 d:4 f a]:1        // Octave crossings must be explicit
 ```
 
-### 7.6 Repetition
+### 7.7 Repetition
 
 `()*N` repeats a phrase. This is the same notation shared with the drum step sequencer notation.
 
@@ -737,7 +773,7 @@ Octave/duration carry-over within repetitions does not reset to the beginning on
 lead ( c d e f )    // ≡  lead c d e f
 ```
 
-### 7.7 Articulation (Gate Control)
+### 7.8 Articulation (Gate Control)
 
 Controls the gate duration (Note On to Note Off period) of notes through articulation.
 
@@ -843,7 +879,7 @@ With `gate_normal: 100` (legato), there is no Gate Off period, so retrigger beha
 
 If the calculated Gate Off period from the gate ratio is less than 5ms, a minimum of 5ms Gate Off is enforced (to guarantee retriggering). However, this restriction does not apply when `gate_normal: 100` (intentional legato).
 
-### 7.8 Multi-line Notation
+### 7.9 Multi-line Notation
 
 When consecutive lines with the same instrument name appear within a clip, they are **merged into a single timeline** as a continuation of the previous line. This allows long clips to be split for readability. Octave and duration carry-over is maintained across lines. How many bars per line is up to the writer.
 
@@ -919,7 +955,7 @@ clip drums_a [bars 2] {
 }
 ```
 
-### 7.9 Bar Jump (`>N`)
+### 7.10 Bar Jump (`>N`)
 
 `>N` forcibly moves the current position to the beginning of bar N (1-based). Useful when bar calculations get off during live coding.
 
@@ -954,7 +990,7 @@ clip drums_a [bars 4] {
 }
 ```
 
-### 7.10 `|` Beat Boundary Snap (Pitched Instruments)
+### 7.11 `|` Beat Boundary Snap (Pitched Instruments)
 
 Clip lines for pitched instruments (chord / lead / bass, etc.) can also use `|` to align to beat boundaries. The accumulated length (in ticks) up to the `|` is inspected and one of the following is performed:
 
@@ -975,7 +1011,7 @@ bass c:3:8 c c c c c | d:3:4
 
 `|` only aligns in 1-beat units (the beat length specified by `time`). Combined with multi-line notation (Section 7.8), it is also useful for snapping the end of a line exactly to a beat boundary.
 
-### 7.11 Chords (Bracket Notation)
+### 7.12 Chords (Bracket Notation)
 
 Enclosing notes in square brackets makes them sound simultaneously. Multiple Note On messages are sent on the same MIDI channel.
 
@@ -993,7 +1029,7 @@ clip fifths [bars 1] {
 }
 ```
 
-### 7.12 Chord Name Notation
+### 7.13 Chord Name Notation
 
 Format: `instrument_name chord_name:octave:duration`
 
@@ -1048,7 +1084,7 @@ clip chords_mixed [bars 2] {
 }
 ```
 
-### 7.13 Arpeggio
+### 7.14 Arpeggio
 
 Append `arp(direction)` or `arp(direction, note_resolution)` after a chord. The second argument is optional. **The chord can be either a ChordBracket (`[c eb g]`) or a chord name (`cm`, `cm7`, etc.)**; for chord names the chord tones are expanded and arpeggiated.
 
@@ -1093,7 +1129,7 @@ clip arp_f [bars 1] {
 - `random` reshuffles the order on every loop iteration.
 - `updown` is a ping-pong that does not repeat the endpoints (e.g. `[c e g]` → `c, e, g, e`).
 
-### 7.14 Drums (Step Sequencer Notation)
+### 7.15 Drums (Step Sequencer Notation)
 
 Use `use` to specify a kit and `resolution` to set the note resolution per character.
 
@@ -1227,7 +1263,7 @@ clip drums_a [bars 1] {
 }
 ```
 
-### 7.15 CC Automation
+### 7.16 CC Automation
 
 Uses CC aliases defined on an instrument to send MIDI Control Change messages within a clip. There are two modes: step mode and time-based + interpolation mode.
 
@@ -1816,6 +1852,7 @@ The engine continues playback as-is. Restarting Neovim and reconnecting allows c
 - Comments use `//` to end of line, or `/* ... */` for block comments (nesting supported)
 - Note names are all lowercase: `c c# db d d# eb e f f# gb g g# ab a a# bb b`
 - Octave and duration for pitched instruments carry over from the previous value (defaults at clip start are o4, :4). Maintained across lines
+- The clip options `[>>]` / `[<<]` transpose the whole clip in octave steps (accumulative, pitched clips only, out-of-range is a compile error)
 - Both single notes and chord names use a unified 3-section format with `:` separators (`c:3:8`, `cm7:4:2`). `::` omits octave and changes only duration (`c::8`, `cm7::1`)
 - `/` is reserved for future slash chords (chord inversions with a specified bass note)
 - The chord name suffixes `Maj` and `M` have the same meaning (aliases)

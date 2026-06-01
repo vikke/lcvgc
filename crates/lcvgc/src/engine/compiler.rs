@@ -114,6 +114,54 @@ pub struct CompiledClip {
     pub random_choice_groups: Vec<RandomChoiceGroup>,
 }
 
+/// ピッチド clip の MIDI イベント列に対し、全体オクターブシフトを適用する。
+/// `octave_shift` が 0 のときは何もしない。各 Note On / Note Off の note
+/// 番号に `octave_shift * 12` を加減算し、結果が MIDI 範囲 (0-127) を外れる
+/// 場合はコンパイルエラーとする。
+///
+/// Apply a whole-clip octave shift to a pitched clip's MIDI events. A shift of
+/// 0 is a no-op. Each Note On / Note Off note number is offset by
+/// `octave_shift * 12`; if any result falls outside the MIDI range (0-127),
+/// a compile error is returned.
+///
+/// # 引数 / Arguments
+/// * `events` - 移調対象の MIDI イベント列（in-place で書き換える） / MIDI events to transpose in place
+/// * `octave_shift` - シフトするオクターブ数（正で上、負で下） / Octave shift count (positive up, negative down)
+///
+/// # 戻り値 / Returns
+/// 成功時 `Ok(())`。範囲外ノートが生じた場合 `Err(EngineError::CompileError)`。
+/// `Ok(())` on success; `Err(EngineError::CompileError)` when a note goes out of range.
+///
+/// # エラー / Errors
+/// シフト後のノート番号が 0 未満または 127 超になる場合に
+/// `EngineError::CompileError` を返す。
+/// Returns `EngineError::CompileError` if a shifted note number would be below
+/// 0 or above 127.
+fn apply_octave_shift(events: &mut [MidiEvent], octave_shift: i8) -> Result<(), EngineError> {
+    if octave_shift == 0 {
+        return Ok(());
+    }
+    let delta = octave_shift as i32 * 12;
+    for event in events.iter_mut() {
+        let note_ref: Option<&mut u8> = match &mut event.message {
+            MidiMessage::NoteOn { note, .. } => Some(note),
+            MidiMessage::NoteOff { note, .. } => Some(note),
+            _ => None,
+        };
+        if let Some(note) = note_ref {
+            let shifted = *note as i32 + delta;
+            if !(0..=127).contains(&shifted) {
+                return Err(EngineError::CompileError(format!(
+                    "オクターブシフト [{}] によりノート番号が MIDI 範囲 (0-127) を外れました: {} -> {}",
+                    octave_shift, note, shifted
+                )));
+            }
+            *note = shifted as u8;
+        }
+    }
+    Ok(())
+}
+
 /// クリップ定義をtickベースMIDIイベント列にコンパイルする
 pub fn compile_clip(
     clip: &ClipDef,
@@ -123,8 +171,13 @@ pub fn compile_clip(
     let (mut events, mut drum_mask_groups, mut random_choice_groups, logical_end_ticks) =
         match &clip.body {
             ClipBody::Pitched(body) => {
-                let (evts, randoms, end) =
+                let (mut evts, randoms, end) =
                     compile_pitched(body, clock, registry, clip.options.bars)?;
+                // clip ヘッダの `[>>]` / `[<<]` による全体オクターブシフトを適用する。
+                // ピッチド clip のみが対象 (drum clip は対象外)。
+                // Apply the whole-clip octave shift from the `[>>]` / `[<<]`
+                // header option. Pitched clips only (drum clips are excluded).
+                apply_octave_shift(&mut evts, clip.options.octave_shift)?;
                 (evts, Vec::new(), randoms, end)
             }
             ClipBody::Drum(body) => {
@@ -1258,6 +1311,29 @@ mod tests {
                 bars,
                 time_sig: None,
                 scale: None,
+                octave_shift: 0,
+            },
+            body: ClipBody::Pitched(PitchedClipBody {
+                lines,
+                cc_automations: vec![],
+            }),
+        }
+    }
+
+    /// オクターブシフト付きのピッチド clip を作るテスト用ヘルパー。
+    /// Build a pitched clip with an octave shift, for tests.
+    fn make_pitched_clip_with_shift(
+        name: &str,
+        octave_shift: i8,
+        lines: Vec<PitchedLine>,
+    ) -> ClipDef {
+        ClipDef {
+            name: name.to_string(),
+            options: ClipOptions {
+                bars: None,
+                time_sig: None,
+                scale: None,
+                octave_shift,
             },
             body: ClipBody::Pitched(PitchedClipBody {
                 lines,
@@ -1321,6 +1397,119 @@ mod tests {
         } else {
             panic!("expected NoteOff");
         }
+    }
+
+    #[test]
+    fn octave_shift_up_raises_note_by_12() {
+        let registry = make_registry_with_bass();
+        let clock = Clock::new(120.0);
+        // [>>] = +1 オクターブ。C4(60) -> C5(72)
+        let clip = make_pitched_clip_with_shift(
+            "test",
+            1,
+            vec![PitchedLine {
+                instrument: "bass".to_string(),
+                elements: vec![single_note(NoteName::C, Some(4), Some(4), false)],
+                is_layer_start: true,
+            }],
+        );
+
+        let compiled = compile_clip(&clip, &clock, &registry).unwrap();
+        // NoteOn / NoteOff いずれも +12 されている
+        for e in &compiled.events {
+            match e.message {
+                MidiMessage::NoteOn { note, .. } => assert_eq!(note, 72),
+                MidiMessage::NoteOff { note, .. } => assert_eq!(note, 72),
+                _ => {}
+            }
+        }
+    }
+
+    #[test]
+    fn octave_shift_down_lowers_note_by_12() {
+        let registry = make_registry_with_bass();
+        let clock = Clock::new(120.0);
+        // [<<] = -1 オクターブ。C4(60) -> C3(48)
+        let clip = make_pitched_clip_with_shift(
+            "test",
+            -1,
+            vec![PitchedLine {
+                instrument: "bass".to_string(),
+                elements: vec![single_note(NoteName::C, Some(4), Some(4), false)],
+                is_layer_start: true,
+            }],
+        );
+
+        let compiled = compile_clip(&clip, &clock, &registry).unwrap();
+        if let MidiMessage::NoteOn { note, .. } = compiled.events[0].message {
+            assert_eq!(note, 48);
+        } else {
+            panic!("expected NoteOn");
+        }
+    }
+
+    #[test]
+    fn octave_shift_up_two_raises_note_by_24() {
+        let registry = make_registry_with_bass();
+        let clock = Clock::new(120.0);
+        // [>> >>] = +2 オクターブ。C4(60) -> C6(84)
+        let clip = make_pitched_clip_with_shift(
+            "test",
+            2,
+            vec![PitchedLine {
+                instrument: "bass".to_string(),
+                elements: vec![single_note(NoteName::C, Some(4), Some(4), false)],
+                is_layer_start: true,
+            }],
+        );
+
+        let compiled = compile_clip(&clip, &clock, &registry).unwrap();
+        if let MidiMessage::NoteOn { note, .. } = compiled.events[0].message {
+            assert_eq!(note, 84);
+        } else {
+            panic!("expected NoteOn");
+        }
+    }
+
+    #[test]
+    fn octave_shift_zero_is_noop() {
+        let registry = make_registry_with_bass();
+        let clock = Clock::new(120.0);
+        let clip = make_pitched_clip_with_shift(
+            "test",
+            0,
+            vec![PitchedLine {
+                instrument: "bass".to_string(),
+                elements: vec![single_note(NoteName::C, Some(4), Some(4), false)],
+                is_layer_start: true,
+            }],
+        );
+
+        let compiled = compile_clip(&clip, &clock, &registry).unwrap();
+        if let MidiMessage::NoteOn { note, .. } = compiled.events[0].message {
+            assert_eq!(note, 60);
+        } else {
+            panic!("expected NoteOn");
+        }
+    }
+
+    #[test]
+    fn octave_shift_out_of_range_is_compile_error() {
+        let registry = make_registry_with_bass();
+        let clock = Clock::new(120.0);
+        // C9(120) を +1 オクターブすると 132 となり 127 を超えるためエラー。
+        let clip = make_pitched_clip_with_shift(
+            "test",
+            1,
+            vec![PitchedLine {
+                instrument: "bass".to_string(),
+                elements: vec![single_note(NoteName::C, Some(9), Some(4), false)],
+                is_layer_start: true,
+            }],
+        );
+
+        let result = compile_clip(&clip, &clock, &registry);
+        assert!(matches!(result, Err(EngineError::CompileError(_))));
     }
 
     #[test]
@@ -1789,6 +1978,7 @@ mod tests {
                 bars: None,
                 time_sig: None,
                 scale: None,
+                octave_shift: 0,
             },
             body: ClipBody::Drum(crate::ast::clip::DrumClipBody {
                 kit: "tr808".to_string(),
@@ -3852,6 +4042,7 @@ mod tests {
                 bars: Some(4),
                 time_sig: None,
                 scale: None,
+                octave_shift: 0,
             },
             body: ClipBody::Pitched(PitchedClipBody {
                 lines: vec![PitchedLine {
@@ -4032,6 +4223,7 @@ mod tests {
                 bars: None,
                 time_sig: None,
                 scale: None,
+                octave_shift: 0,
             },
             body: ClipBody::Drum(DrumClipBody {
                 kit: "mykit".to_string(),
