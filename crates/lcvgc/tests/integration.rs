@@ -102,6 +102,111 @@ clip riff [bars 1] {
 }
 
 #[test]
+fn e2e_clip_octave_shift_up_raises_notes() {
+    // `clip foo [>>] { ... }` で clip 全体が +1 オクターブされることを確認する。
+    let mut ev = Evaluator::new(120.0);
+    let source = r#"
+device synth {
+  port Virtual MIDI
+}
+
+instrument lead {
+  device synth
+  channel 1
+}
+
+clip up [>>] {
+  lead c:4:4
+}
+"#;
+    ev.eval_source(source).unwrap();
+
+    let clip = ev.registry().get_clip("up").unwrap();
+    let compiled = compile_clip(clip, &ev.clock_snapshot(), ev.registry()).unwrap();
+
+    // C4(60) -> C5(72)
+    let note_on = compiled
+        .events
+        .iter()
+        .find_map(|e| match e.message {
+            MidiMessage::NoteOn { note, .. } => Some(note),
+            _ => None,
+        })
+        .expect("NoteOn should exist");
+    assert_eq!(note_on, 72);
+}
+
+#[test]
+fn e2e_clip_octave_shift_two_up_with_other_options() {
+    // `[bars 1] [>> >>]` の併記で +2 オクターブされることを確認する。
+    let mut ev = Evaluator::new(120.0);
+    let source = r#"
+device synth {
+  port Virtual MIDI
+}
+
+instrument lead {
+  device synth
+  channel 1
+}
+
+clip up2 [bars 1] [>> >>] {
+  lead c:4:4
+}
+"#;
+    ev.eval_source(source).unwrap();
+
+    let clip = ev.registry().get_clip("up2").unwrap();
+    let compiled = compile_clip(clip, &ev.clock_snapshot(), ev.registry()).unwrap();
+
+    // C4(60) -> C6(84)
+    let note_on = compiled
+        .events
+        .iter()
+        .find_map(|e| match e.message {
+            MidiMessage::NoteOn { note, .. } => Some(note),
+            _ => None,
+        })
+        .expect("NoteOn should exist");
+    assert_eq!(note_on, 84);
+}
+
+#[test]
+fn e2e_clip_octave_shift_down_lowers_notes() {
+    // `[<<]` で clip 全体が -1 オクターブされることを確認する。
+    let mut ev = Evaluator::new(120.0);
+    let source = r#"
+device synth {
+  port Virtual MIDI
+}
+
+instrument lead {
+  device synth
+  channel 1
+}
+
+clip down [<<] {
+  lead c:4:4
+}
+"#;
+    ev.eval_source(source).unwrap();
+
+    let clip = ev.registry().get_clip("down").unwrap();
+    let compiled = compile_clip(clip, &ev.clock_snapshot(), ev.registry()).unwrap();
+
+    // C4(60) -> C3(48)
+    let note_on = compiled
+        .events
+        .iter()
+        .find_map(|e| match e.message {
+            MidiMessage::NoteOn { note, .. } => Some(note),
+            _ => None,
+        })
+        .expect("NoteOn should exist");
+    assert_eq!(note_on, 48);
+}
+
+#[test]
 fn e2e_scale_and_var_definition() {
     let source = r#"
 scale c major

@@ -25,6 +25,14 @@ pub struct ClipOptions {
     ///
     /// Scale specification (e.g. `[scale c minor]`).
     pub scale: Option<ScaleDef>,
+    /// オクターブシフト量（例: `[>>]` で +1、`[<<]` で -1、`[>> >>]` で +2）。
+    /// clip 全体のピッチを 12 半音単位で上下させる。`>>` と `<<` は合算される。
+    /// 既定値 0（シフトなし）。ピッチド clip にのみ効果がある。
+    ///
+    /// Octave shift amount (e.g. `[>>]` is +1, `[<<]` is -1, `[>> >>]` is +2).
+    /// Transposes the whole clip in 12-semitone steps. `>>` and `<<` accumulate.
+    /// Defaults to 0 (no shift). Only affects pitched clips.
+    pub octave_shift: i8,
 }
 
 /// スケールタイプのキーワードをパースする。
@@ -111,11 +119,66 @@ fn parse_scale_option(input: &str) -> IResult<&str, ClipOptions> {
     ))
 }
 
+/// `[>>]` / `[<<]` 形式のオクターブシフト指定をパースする。
+/// 括弧内には `>>`（+1 オクターブ）と `<<`（-1 オクターブ）を空白区切りで
+/// 1 個以上並べられ、それらの合計がシフト量となる（例: `[>> >>]` で +2、
+/// `[>> <<]` で ±0）。
+///
+/// Parse a `[>>]` / `[<<]` octave-shift option. The bracket holds one or more
+/// `>>` (+1 octave) / `<<` (-1 octave) tokens separated by whitespace; their
+/// sum is the shift amount (e.g. `[>> >>]` is +2, `[>> <<]` is 0).
+fn parse_octave_shift_option(input: &str) -> IResult<&str, ClipOptions> {
+    let (input, _) = char('[')(input)?;
+    let (mut input, _) = ws(input)?;
+
+    let mut shift: i32 = 0;
+    let mut count = 0usize;
+    loop {
+        if let Ok((r, _)) = tag::<_, _, nom::error::Error<&str>>(">>")(input) {
+            shift += 1;
+            input = r;
+        } else if let Ok((r, _)) = tag::<_, _, nom::error::Error<&str>>("<<")(input) {
+            shift -= 1;
+            input = r;
+        } else {
+            break;
+        }
+        count += 1;
+        let (r, _) = ws(input)?;
+        input = r;
+    }
+
+    // `>>` / `<<` が 1 つも無い `[]` はこのオプションとして扱わない。
+    // An empty bracket with no `>>` / `<<` is not an octave-shift option.
+    if count == 0 {
+        return Err(nom::Err::Error(nom::error::Error::new(
+            input,
+            nom::error::ErrorKind::Tag,
+        )));
+    }
+
+    let (input, _) = char(']')(input)?;
+    Ok((
+        input,
+        ClipOptions {
+            // シフト量は i8 に収める。極端な多重指定は飽和させる。
+            // Clamp the accumulated shift into i8; saturate on extreme repeats.
+            octave_shift: shift.clamp(i8::MIN as i32, i8::MAX as i32) as i8,
+            ..Default::default()
+        },
+    ))
+}
+
 /// 単一のクリップオプション括弧をパースする。
 ///
 /// Parse a single clip option bracket.
 fn parse_single_option(input: &str) -> IResult<&str, ClipOptions> {
-    alt((parse_bars_option, parse_time_option, parse_scale_option))(input)
+    alt((
+        parse_bars_option,
+        parse_time_option,
+        parse_scale_option,
+        parse_octave_shift_option,
+    ))(input)
 }
 
 /// 2つの `ClipOptions` をマージする。`other` に設定されたフィールドが優先される。
@@ -126,6 +189,9 @@ fn merge(base: ClipOptions, other: ClipOptions) -> ClipOptions {
         bars: other.bars.or(base.bars),
         time_sig: other.time_sig.or(base.time_sig),
         scale: other.scale.or(base.scale),
+        // オクターブシフトは括弧をまたいで合算する（`[>>] [>>]` で +2）。
+        // Octave shifts accumulate across brackets (`[>>] [>>]` is +2).
+        octave_shift: base.octave_shift.saturating_add(other.octave_shift),
     }
 }
 
@@ -244,5 +310,76 @@ mod tests {
         let (rest, opts) = parse_clip_options("[bars 2] { }").unwrap();
         assert_eq!(rest, "{ }");
         assert_eq!(opts.bars, Some(2));
+    }
+
+    #[test]
+    fn test_octave_shift_up() {
+        let (rest, opts) = parse_clip_options("[>>]").unwrap();
+        assert_eq!(rest, "");
+        assert_eq!(opts.octave_shift, 1);
+    }
+
+    #[test]
+    fn test_octave_shift_down() {
+        let (rest, opts) = parse_clip_options("[<<]").unwrap();
+        assert_eq!(rest, "");
+        assert_eq!(opts.octave_shift, -1);
+    }
+
+    #[test]
+    fn test_octave_shift_up_two() {
+        let (rest, opts) = parse_clip_options("[>> >>]").unwrap();
+        assert_eq!(rest, "");
+        assert_eq!(opts.octave_shift, 2);
+    }
+
+    #[test]
+    fn test_octave_shift_mixed_cancels() {
+        let (rest, opts) = parse_clip_options("[>> <<]").unwrap();
+        assert_eq!(rest, "");
+        assert_eq!(opts.octave_shift, 0);
+    }
+
+    #[test]
+    fn test_octave_shift_mixed_nets_up() {
+        let (rest, opts) = parse_clip_options("[>> >> <<]").unwrap();
+        assert_eq!(rest, "");
+        assert_eq!(opts.octave_shift, 1);
+    }
+
+    #[test]
+    fn test_octave_shift_with_other_options() {
+        let (rest, opts) = parse_clip_options("[bars 2] [>>] [scale c minor]").unwrap();
+        assert_eq!(rest, "");
+        assert_eq!(opts.bars, Some(2));
+        assert_eq!(opts.octave_shift, 1);
+        assert_eq!(
+            opts.scale,
+            Some(ScaleDef {
+                root: NoteName::C,
+                scale_type: ScaleType::Minor,
+            })
+        );
+    }
+
+    #[test]
+    fn test_octave_shift_separate_brackets_accumulate() {
+        let (rest, opts) = parse_clip_options("[>>] [>>]").unwrap();
+        assert_eq!(rest, "");
+        assert_eq!(opts.octave_shift, 2);
+    }
+
+    #[test]
+    fn test_no_options_octave_shift_default_zero() {
+        let (rest, opts) = parse_clip_options("").unwrap();
+        assert_eq!(rest, "");
+        assert_eq!(opts.octave_shift, 0);
+    }
+
+    #[test]
+    fn test_octave_shift_stops_at_brace() {
+        let (rest, opts) = parse_clip_options("[>>] {").unwrap();
+        assert_eq!(rest, "{");
+        assert_eq!(opts.octave_shift, 1);
     }
 }
