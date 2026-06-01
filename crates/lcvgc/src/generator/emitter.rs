@@ -213,7 +213,10 @@ pub fn emit(score: &Score, opts: &GenOptions) -> Result<String, GeneratorError> 
     let mut out = String::new();
     emit_header(score, &mut out);
     emit_device(&mut out);
-    emit_kit_if_drum(score, &mut out);
+    // ドラム kit (tr808) はユーザー環境側に定義がある前提とし、生成しない。
+    // drum clip では `use tr808` のみを書く。
+    // The tr808 kit is assumed to be defined in the user's environment; we only
+    // emit `use tr808` in drum clips and do not generate the kit block.
     emit_instruments(score, &mut out);
     emit_clips(score, &mut out)?;
     emit_tempo(score, &mut out);
@@ -285,28 +288,39 @@ fn shift_events(events: &mut [Event], delta: i32) {
 fn normalize_instrument_names(score: &mut Score, opts: &GenOptions) {
     let mut fm_count = 0u32;
     let mut bass_count = 0u32;
+    let mut drum_count = 0u32;
     for track in score.tracks.iter_mut() {
-        if track.kind != TrackKind::Melodic {
-            continue;
+        match track.kind {
+            TrackKind::Melodic => {
+                let is_bass = mean_note(&track.events)
+                    .map(|avg| avg < opts.bass_max_avg_note as f32)
+                    .unwrap_or(false);
+                track.name = if is_bass {
+                    bass_count += 1;
+                    numbered("bass", bass_count)
+                } else {
+                    fm_count += 1;
+                    numbered("fm", fm_count)
+                };
+            }
+            TrackKind::Drum => {
+                // ドラムトラックの clip 名は `drums`（複数なら drums2, ...）。
+                drum_count += 1;
+                track.name = numbered("drums", drum_count);
+            }
         }
-        let is_bass = mean_note(&track.events)
-            .map(|avg| avg < opts.bass_max_avg_note as f32)
-            .unwrap_or(false);
-        track.name = if is_bass {
-            bass_count += 1;
-            if bass_count == 1 {
-                "bass".to_string()
-            } else {
-                format!("bass{}", bass_count)
-            }
-        } else {
-            fm_count += 1;
-            if fm_count == 1 {
-                "fm".to_string()
-            } else {
-                format!("fm{}", fm_count)
-            }
-        };
+    }
+}
+
+/// `base` と通し番号から名前を作る。1 番目は番号を付けず `base` のまま。
+/// 2 番目以降は `base2`, `base3`, ... とする。
+///
+/// Builds `base`, `base2`, `base3`, ... (no suffix for the first).
+fn numbered(base: &str, n: u32) -> String {
+    if n <= 1 {
+        base.to_string()
+    } else {
+        format!("{}{}", base, n)
     }
 }
 
@@ -348,37 +362,6 @@ fn emit_device(out: &mut String) {
     out.push_str("device gen_device {\n  port GEN_PORT\n}\n\n");
 }
 
-/// Drum トラックが含まれていれば GM ドラムマップに沿った `kit` を 1 つ書き出す。
-/// Writes a kit block if the score has any drum track.
-fn emit_kit_if_drum(score: &Score, out: &mut String) {
-    let has_drum = score.tracks.iter().any(|t| t.kind == TrackKind::Drum);
-    if !has_drum {
-        return;
-    }
-    // GM ドラムマップから、score 内で実際に出現するノートだけ kit に登録する。
-    let mut used: Vec<u8> = score
-        .tracks
-        .iter()
-        .filter(|t| t.kind == TrackKind::Drum)
-        .flat_map(|t| iter_notes(&t.events))
-        .map(|(_, _, midi_note, _)| midi_note)
-        .collect();
-    used.sort_unstable();
-    used.dedup();
-
-    out.push_str("kit gen_kit {\n  device gen_device\n");
-    for midi_note in used {
-        if let Some(label) = gm_drum_label(midi_note) {
-            let (name, oct) = midi_to_note_name(midi_note);
-            out.push_str(&format!(
-                "  {} {{ channel 10, note {}:{} }}\n",
-                label, name, oct
-            ));
-        }
-    }
-    out.push_str("}\n\n");
-}
-
 /// 各 Melodic トラックに対し instrument を書き出す。
 /// Writes one instrument per melodic track.
 fn emit_instruments(score: &Score, out: &mut String) {
@@ -398,7 +381,7 @@ fn emit_instruments(score: &Score, out: &mut String) {
 fn emit_clips(score: &Score, out: &mut String) -> Result<(), GeneratorError> {
     for t in &score.tracks {
         let bars = bars_for_track(t, score);
-        let clip_name = format!("{}_clip", t.name);
+        let clip_name = clip_name_for(t);
         match t.kind {
             TrackKind::Melodic => {
                 emit_melodic_clip(&clip_name, t, score, bars, out)?;
@@ -481,11 +464,11 @@ fn emit_drum_clip(
     }
 
     out.push_str(&format!("clip {} [bars {}] {{\n", clip_name, bars));
-    out.push_str("  use gen_kit\n");
+    out.push_str("  use tr808\n");
     out.push_str("  resolution 16\n");
     let steps_per_wrap = (steps_per_bar * BARS_PER_WRAP) as usize;
     for (midi_note, row) in per_note {
-        if let Some(label) = gm_drum_label(midi_note) {
+        if let Some(label) = drum_label(midi_note) {
             let row_str: String = row.into_iter().collect();
             out.push_str(&format!(
                 "  {} {}\n",
@@ -727,9 +710,22 @@ fn emit_tempo(score: &Score, out: &mut String) {
 fn emit_scene(score: &Score, out: &mut String) {
     out.push_str("scene gen_scene {\n");
     for t in &score.tracks {
-        out.push_str(&format!("  {}_clip\n", t.name));
+        out.push_str(&format!("  {}\n", clip_name_for(t)));
     }
     out.push_str("}\n\n");
+}
+
+/// トラックに対応する clip 名を返す。
+/// 音程トラックは `<name>_clip`、ドラムトラックは `<name>`（=`drums`）。
+/// emit_clips と emit_scene で同じ命名を共有するためのヘルパー。
+///
+/// Returns the clip name for a track: `<name>_clip` for melodic tracks,
+/// `<name>` for drum tracks. Shared by emit_clips and emit_scene.
+fn clip_name_for(track: &Track) -> String {
+    match track.kind {
+        TrackKind::Melodic => format!("{}_clip", track.name),
+        TrackKind::Drum => track.name.clone(),
+    }
 }
 
 /// 自動再生コマンド。
@@ -792,37 +788,41 @@ fn midi_to_note_name(midi: u8) -> (&'static str, u8) {
     (name, octave)
 }
 
-/// GM ドラムマップ。score 内で実際に出現するノートだけ kit に登録するため、
-/// 知らないノートは `None` を返す。
-fn gm_drum_label(midi: u8) -> Option<&'static str> {
+/// GM ドラムマップから、tr808 系の楽器名ラベルへ変換する。
+///
+/// 主要 5 種は要望に合わせて `kick` / `snare` / `oh` (open hat) / `ch` (closed
+/// hat) / `cp` (clap) に寄せる。その他 (tom / crash / ride など) は簡潔な
+/// 既存ラベルを維持する。未知のノートは `None` を返す。
+///
+/// Maps a GM drum note to a tr808-style instrument label. The five primary
+/// voices map to `kick` / `snare` / `oh` / `ch` / `cp`; others keep concise
+/// labels. Unknown notes return `None`.
+fn drum_label(midi: u8) -> Option<&'static str> {
     Some(match midi {
-        35 => "bd_acoustic",
-        36 => "bd",
-        37 => "side_stick",
-        38 => "snare",
-        39 => "hand_clap",
-        40 => "snare_electric",
-        41 => "tom_low_floor",
-        42 => "hh",
-        43 => "tom_high_floor",
-        44 => "hh_pedal",
-        45 => "tom_low",
-        46 => "oh",
-        47 => "tom_low_mid",
-        48 => "tom_high_mid",
-        49 => "crash",
-        50 => "tom_high",
-        51 => "ride",
-        52 => "crash_china",
-        53 => "ride_bell",
-        54 => "tambourine",
-        55 => "crash_splash",
-        56 => "cowbell",
-        57 => "crash2",
-        58 => "vibraslap",
-        59 => "ride2",
-        60 => "hi_bongo",
-        61 => "lo_bongo",
+        35 | 36 => "kick",    // Acoustic/Bass Drum → kick
+        37 => "rim",          // Side Stick
+        38 | 40 => "snare",   // Acoustic/Electric Snare
+        39 => "cp",           // Hand Clap → clap
+        41 => "tom_lo_floor", // Low Floor Tom
+        42 | 44 => "ch",      // Closed/Pedal Hi-Hat → closed hat
+        43 => "tom_hi_floor", // High Floor Tom
+        45 => "tom_lo",       // Low Tom
+        46 => "oh",           // Open Hi-Hat → open hat
+        47 => "tom_lo_mid",   // Low-Mid Tom
+        48 => "tom_hi_mid",   // High-Mid Tom
+        49 => "crash",        // Crash Cymbal 1
+        50 => "tom_hi",       // High Tom
+        51 => "ride",         // Ride Cymbal 1
+        52 => "crash_china",  // Chinese Cymbal
+        53 => "ride_bell",    // Ride Bell
+        54 => "tambourine",   // Tambourine
+        55 => "crash_splash", // Splash Cymbal
+        56 => "cowbell",      // Cowbell
+        57 => "crash2",       // Crash Cymbal 2
+        58 => "vibraslap",    // Vibraslap
+        59 => "ride2",        // Ride Cymbal 2
+        60 => "hi_bongo",     // High Bongo
+        61 => "lo_bongo",     // Low Bongo
         _ => return None,
     })
 }
@@ -990,22 +990,12 @@ mod tests {
             },
         )
         .unwrap();
-        // kit ブロック (note c2) 部分は両者で変わらない。
-        let kit_before = before
-            .split("kit gen_kit")
-            .nth(1)
-            .unwrap()
-            .split('}')
-            .next()
-            .unwrap();
-        let kit_after = after
-            .split("kit gen_kit")
-            .nth(1)
-            .unwrap()
-            .split('}')
-            .next()
-            .unwrap();
-        assert_eq!(kit_before, kit_after, "drum kit notes must not shift");
+        // ドラム clip (clip drums {...}) のステップ行はシフトで変わらない。
+        let drum_before = before.split("clip drums").nth(1).unwrap();
+        let drum_after = after.split("clip drums").nth(1).unwrap();
+        assert_eq!(drum_before, drum_after, "drum steps must not shift");
+        // kick の step 行が含まれること。
+        assert!(after.contains("kick "), "kick row missing: {after}");
     }
 
     #[test]
@@ -1164,8 +1154,8 @@ mod tests {
     }
 
     #[test]
-    fn drum_track_emits_kit_and_step_sequencer() {
-        // bd (note 36) を 4 つ打ち
+    fn drum_track_emits_tr808_step_sequencer() {
+        // kick (note 36) を 4 つ打ち
         let s = Score {
             tracks: vec![Track {
                 name: "drums".into(),
@@ -1201,11 +1191,17 @@ mod tests {
             ..one_note_score()
         };
         let dsl = emit(&s, &GenOptions::default()).unwrap();
-        assert!(dsl.contains("kit gen_kit"));
-        assert!(dsl.contains("use gen_kit"));
+        // kit ブロックは生成しない。clip drums で use tr808 のみ。
+        assert!(
+            !dsl.contains("kit gen_kit"),
+            "kit block must not be emitted"
+        );
+        assert!(!dsl.contains("kit tr808"), "kit block must not be emitted");
+        assert!(dsl.contains("clip drums"), "clip drums がない: {dsl}");
+        assert!(dsl.contains("use tr808"));
         assert!(dsl.contains("resolution 16"));
-        // bd 行に x が 4 ステップ間隔で 4 つ
-        assert!(dsl.contains("bd x...x...x...x..."));
+        // kick 行に x が 4 ステップ間隔で 4 つ
+        assert!(dsl.contains("kick x...x...x...x..."), "kick row: {dsl}");
     }
 
     #[test]
@@ -1328,7 +1324,7 @@ mod tests {
             ..one_note_score()
         };
         let dsl = emit(&s, &GenOptions::default()).unwrap();
-        let clip_start = dsl.find("clip drums_clip").expect("drum clip 開始");
+        let clip_start = dsl.find("clip drums ").expect("drum clip 開始");
         // 該当 clip ブロックの `}` までを抜き出す
         let clip_end = clip_start + dsl[clip_start..].find("\n}").unwrap() + 2;
         let clip_src = &dsl[clip_start..clip_end];
@@ -1373,7 +1369,7 @@ mod tests {
         let dsl = emit(&s, &GenOptions::default()).unwrap();
         // drum clip 本体を抜き出して `\` が含まれることを確認する。
         // 8 小節 = 128 step ごとに分割されるので、16 小節なら少なくとも 1 回。
-        let clip_start = dsl.find("clip drums_clip").expect("drum clip 開始位置");
+        let clip_start = dsl.find("clip drums ").expect("drum clip 開始位置");
         let after_open = dsl[clip_start..].find('{').unwrap() + clip_start + 1;
         let after_close_rel = dsl[after_open..].find("\n}").unwrap();
         let body = &dsl[after_open..after_open + after_close_rel];
