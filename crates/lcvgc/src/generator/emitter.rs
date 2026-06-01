@@ -22,6 +22,173 @@ use super::quantize::quantize_ticks;
 use super::score::{Event, Score, Track, TrackKind};
 use super::GeneratorError;
 
+/// 省略記法のキャリーオーバー状態 (emitter 用)。
+///
+/// parser 側の [`crate::parser::clip_shorthand::CarryOverState`] と同じ意味論を
+/// 出力側で再現する。直前に書き出したオクターブ・音長を覚えておき、同じ値なら
+/// 省略する。初期値は parser のデフォルトと一致させる (octave=4, duration="4")。
+///
+/// Carry-over state for shorthand emission. Mirrors the parser's
+/// `CarryOverState` so the emitted text round-trips to the same notes.
+struct EmitCarry {
+    /// 直前に書き出したオクターブ。`note:oct` の oct と一致すれば省略する。
+    /// Last emitted octave; omitted when the next note matches it.
+    octave: u8,
+    /// 直前に書き出した音長トークン文字列 (例 `"4"`, `"8."`)。
+    /// 一致すれば省略する。
+    /// Last emitted duration token (e.g. "4", "8."); omitted when matching.
+    duration: String,
+}
+
+impl EmitCarry {
+    /// parser のデフォルト (octave=4, duration=4 分音符) で初期化する。
+    /// Initializes with the parser defaults (octave 4, quarter note).
+    fn new() -> Self {
+        EmitCarry {
+            octave: 4,
+            duration: "4".to_string(),
+        }
+    }
+
+    /// 「どの実値とも一致しない」状態で初期化する (ループ先頭強制明示用)。
+    ///
+    /// `octave` を有効範囲外 (音名で表せない 255) に、`duration` を空文字に設定し、
+    /// 次に書き出す音符・休符・コードが必ず oct/dur を明示するようにする。
+    /// 案C のループ先頭 force を実現するためのコンストラクタ。
+    ///
+    /// Creates a state guaranteed not to match any real octave/duration, forcing
+    /// the next emitted token to spell out its octave/duration (loop-head force).
+    fn unreachable() -> Self {
+        EmitCarry {
+            octave: u8::MAX,
+            duration: String::new(),
+        }
+    }
+
+    /// 単音の省略形 `name[:oct][:dur][.]` を構築し、状態を更新して返す。
+    ///
+    /// # 引数 / Arguments
+    /// * `name` - 音名文字列 (例 `"c"`, `"f#"`)
+    /// * `oct` - オクターブ値
+    /// * `dur_tok` - 音長トークン文字列 (付点付きなら末尾に `.`、例 `"8."`)
+    /// * `force_oct` - `true` なら oct を必ず明示する (ループ先頭用)
+    /// * `force_dur` - `true` なら dur を必ず明示する (ループ先頭用)
+    ///
+    /// # 戻り値 / Returns
+    /// 省略適用後の DSL トークン文字列
+    ///
+    /// # 言語制約 / Constraint
+    /// 付点付き (`dur_tok` が `.` を含む) かつ oct/dur 両方を省略すると `c.` の
+    /// ような構文になりパースできない (付点は `:oct:dur` のコロン部の後でのみ
+    /// 消費される)。そのため付点付きで oct も省略する場合は dur を必ず明示する。
+    fn note_token(
+        &mut self,
+        name: &str,
+        oct: u8,
+        dur_tok: &str,
+        force_oct: bool,
+        force_dur: bool,
+    ) -> String {
+        let dotted = dur_tok.ends_with('.');
+        let out_oct = force_oct || oct != self.octave;
+        // 付点は要素固有でキャリーされない。dur を省略すると付点も書けず音長が
+        // 変わってしまうため、付点付きは常に dur を明示する。
+        let out_dur = force_dur || dotted || dur_tok != self.duration;
+        // 状態更新は実際の値で行う (出力可否に関わらずキャリーは進む)。
+        self.octave = oct;
+        self.duration = dur_tok.to_string();
+
+        let mut s = name.to_string();
+        match (out_oct, out_dur) {
+            (true, true) => {
+                s.push(':');
+                s.push_str(&oct.to_string());
+                s.push(':');
+                s.push_str(dur_tok);
+            }
+            (true, false) => {
+                // 非付点で dur 一致 → oct のみ明示 (`c:6`)。
+                s.push(':');
+                s.push_str(&oct.to_string());
+            }
+            (false, true) => {
+                // oct 省略 + dur 明示 (`c::8` / 付点なら `c::8.`)。
+                s.push_str("::");
+                s.push_str(dur_tok);
+            }
+            (false, false) => {
+                // name のみ (oct/dur 両省略, 非付点)。
+            }
+        }
+        s
+    }
+
+    /// 休符の省略形 `r[:dur]` を構築し、状態を更新して返す。
+    ///
+    /// 休符はオクターブをキャリーしない (parser の `resolve_duration_only` と同じ)。
+    /// 付点付き休符 `r.` はパース不可のため、付点付きなら dur を必ず明示する。
+    ///
+    /// # 引数 / Arguments
+    /// * `dur_tok` - 音長トークン文字列
+    /// * `force_dur` - `true` なら dur を必ず明示する
+    fn rest_token(&mut self, dur_tok: &str, force_dur: bool) -> String {
+        let dotted = dur_tok.ends_with('.');
+        // 付点休符 `r.` はパース不可のため、付点付きは常に dur を明示する。
+        let out_dur = force_dur || dotted || dur_tok != self.duration;
+        self.duration = dur_tok.to_string();
+        if out_dur {
+            format!("r:{}", dur_tok)
+        } else {
+            "r".to_string()
+        }
+    }
+
+    /// コード括弧の省略形 `[..][:dur]` を構築し、状態を更新して返す。
+    ///
+    /// コードはオクターブを **外へ** キャリーしない (`self.octave` は変更しない)。
+    /// 音長のみキャリーする。付点付き `[..].` はパース可能なので dur 省略可。
+    ///
+    /// 和音内の各音のオクターブは、parser/compiler の挙動に合わせて省略する:
+    /// 和音内で oct を省略した音は **和音突入時点の `self.octave`** にフォール
+    /// バックする (compiler の `oct_opt.unwrap_or(carry.octave)`)。そのため
+    /// `self.octave` と一致する音だけ oct を省略でき、異なる音は明示する。
+    /// 和音内で oct を書いても `self.octave` は進まないため、判定基準は常に
+    /// 和音突入時の値で一定。
+    ///
+    /// # 引数 / Arguments
+    /// * `notes` - 構成音の `(音名, オクターブ)` 列 (記譜順)
+    /// * `dur_tok` - 音長トークン文字列
+    /// * `force_dur` - `true` なら dur を必ず明示する
+    fn chord_token(&mut self, notes: &[(&str, u8)], dur_tok: &str, force_dur: bool) -> String {
+        // 和音突入時の基準オクターブ (これに一致する音だけ oct 省略可)。
+        let base_oct = self.octave;
+        let inner: Vec<String> = notes
+            .iter()
+            .map(|&(name, oct)| {
+                if oct == base_oct {
+                    name.to_string()
+                } else {
+                    format!("{}:{}", name, oct)
+                }
+            })
+            .collect();
+        let inner = inner.join(" ");
+
+        let dotted = dur_tok.ends_with('.');
+        let out_dur = force_dur || dur_tok != self.duration;
+        // dur のみキャリー (oct はキャリーしないので self.octave は据え置き)。
+        self.duration = dur_tok.to_string();
+        if out_dur {
+            format!("[{}]:{}", inner, dur_tok)
+        } else if dotted {
+            // dur は前回と同じだが付点だけ付ける (`[..].` は合法)。
+            format!("[{}].", inner)
+        } else {
+            format!("[{}]", inner)
+        }
+    }
+}
+
 /// Score を lcvgc DSL 文字列に変換する。
 ///
 /// Converts a Score into an lcvgc DSL string.
@@ -152,6 +319,8 @@ fn emit_melodic_clip(
     let mut cursor: u64 = 0;
     let mut body = String::new();
     body.push_str(&format!("  {}", track.name));
+    // clip 単位でキャリー状態を初期化する (parser のデフォルトに合わせる)。
+    let mut carry = EmitCarry::new();
     emit_event_sequence(
         &track.events,
         score,
@@ -159,6 +328,7 @@ fn emit_melodic_clip(
         &mut body,
         &track.name,
         Some(BARS_PER_WRAP),
+        &mut carry,
     )?;
     body.push('\n');
     out.push_str(&body);
@@ -280,6 +450,7 @@ fn emit_event_sequence(
     out: &mut String,
     _track_name: &str,
     wrap_every_n_bars: Option<u32>,
+    carry: &mut EmitCarry,
 ) -> Result<(), GeneratorError> {
     // 1) ノートと LoopBlock を時系列で取り出す
     let mut items: Vec<&Event> = events.iter().collect();
@@ -314,7 +485,7 @@ fn emit_event_sequence(
                 // 休符で隙間を埋める
                 if *start_tick > *cursor {
                     let gap = *start_tick - *cursor;
-                    write_rest(out, gap, score.ppq);
+                    write_rest(out, gap, score.ppq, carry);
                     *cursor = *start_tick;
                 }
                 // 同 tick のノートを集約 (和音検出)
@@ -335,7 +506,7 @@ fn emit_event_sequence(
                 }
                 let chord_end = chord.iter().map(|(_, e)| *e).max().unwrap_or(*start_tick);
                 let dur_ticks = chord_end.saturating_sub(*start_tick);
-                write_chord_or_note(out, &chord, dur_ticks, score.ppq);
+                write_chord_or_note(out, &chord, dur_ticks, score.ppq, carry);
                 *cursor = chord_end;
             }
             Event::LoopBlock {
@@ -346,13 +517,22 @@ fn emit_event_sequence(
                 // ループブロック先頭まで休符で進める
                 if *start_tick > *cursor {
                     let gap = *start_tick - *cursor;
-                    write_rest(out, gap, score.ppq);
+                    write_rest(out, gap, score.ppq, carry);
                     *cursor = *start_tick;
                 }
                 // 内部イベントを文字列化して `( ... )*N` で囲む。
                 // 内部では改行を入れないため None を渡す。
+                //
+                // 案C: ループ境界をまたぐ省略を防ぐため、ループ内では先頭要素の
+                // oct/dur を必ず明示する。これを「キャリー状態を一致し得ない値に
+                // リセットしてから inner を書く」ことで実現する。inner 内で最初に
+                // oct を持つ音符・最初に dur を持つ要素は強制的に明示され、各ループ
+                // が必ず同じ先頭状態から始まるため意味的に常に等価となる。
+                // リセットした状態を inner 終了後も親へ反映する (= ループ末尾の
+                // 状態がループ後の要素にキャリーされる。これは parser の挙動と一致)。
                 let mut inner_out = String::new();
                 let mut inner_cursor: u64 = *start_tick;
+                let mut inner_carry = EmitCarry::unreachable();
                 emit_event_sequence(
                     inner,
                     score,
@@ -360,7 +540,10 @@ fn emit_event_sequence(
                     &mut inner_out,
                     _track_name,
                     None,
+                    &mut inner_carry,
                 )?;
+                // ループ末尾のキャリー状態を親に反映する。
+                *carry = inner_carry;
                 let one_iter_ticks = inner_cursor.saturating_sub(*start_tick);
                 out.push_str(" (");
                 out.push_str(inner_out.trim_start());
@@ -374,47 +557,48 @@ fn emit_event_sequence(
 }
 
 /// 休符を書き出す (隙間 tick → `r:duration` 列)。
-fn write_rest(out: &mut String, ticks: u64, ppq: u32) {
+///
+/// 各音長トークンは [`EmitCarry`] を介して省略形 (`r` / `r:dur`) で書き出す。
+/// 休符はオクターブをキャリーしない。
+fn write_rest(out: &mut String, ticks: u64, ppq: u32, carry: &mut EmitCarry) {
     let (tokens, _, _) = quantize_ticks(ticks, ppq);
     for t in tokens {
-        out.push_str(" r:");
-        out.push_str(t.as_str());
+        out.push(' ');
+        out.push_str(&carry.rest_token(t.as_str(), false));
     }
 }
 
 /// 単音 or 和音を書き出す。
 ///
-/// `chord` が 1 要素なら単音 `note:oct:dur`、複数なら `[a:o b:o c:o]:dur` 記法。
-/// 音価は最長要素の長さで量子化し、複数 token になる場合はタイで繋ぐ。
-fn write_chord_or_note(out: &mut String, chord: &[(u8, u64)], dur_ticks: u64, ppq: u32) {
+/// `chord` が 1 要素なら単音 `note[:oct][:dur]`、複数なら `[a:o b:o c:o][:dur]`
+/// 記法。音価は最長要素の長さで量子化し、複数 token になる場合はタイ (同音の
+/// 繰り返し) で繋ぐ。各トークンは [`EmitCarry`] を介して省略形で書き出す。
+///
+/// 単音はオクターブ・音長をキャリーする。和音はオクターブをキャリーせず音長
+/// のみキャリーする (内部の各音には oct を明示する)。
+fn write_chord_or_note(
+    out: &mut String,
+    chord: &[(u8, u64)],
+    dur_ticks: u64,
+    ppq: u32,
+    carry: &mut EmitCarry,
+) {
     let (tokens, _, _) = quantize_ticks(dur_ticks, ppq);
-    // 単音 or 和音の文字列を作る (音高部分のみ)
-    let pitch_part = if chord.len() == 1 {
+    if chord.len() == 1 {
+        // 単音: note_token で oct/dur を省略する。
         let (midi, _) = chord[0];
         let (n, o) = midi_to_note_name(midi);
-        format!("{}:{}", n, o)
+        for tok in tokens {
+            out.push(' ');
+            out.push_str(&carry.note_token(n, o, tok.as_str(), false, false));
+        }
     } else {
-        let inner: Vec<String> = chord
-            .iter()
-            .map(|(m, _)| {
-                let (n, o) = midi_to_note_name(*m);
-                format!("{}:{}", n, o)
-            })
-            .collect();
-        format!("[{}]", inner.join(" "))
-    };
-    // 1 つ目のトークンは音価付き、残りはタイ (同音名繰り返し) で表現
-    let mut first = true;
-    for tok in tokens {
-        if first {
+        // 和音: 内部 pitch は和音突入時のオクターブと一致する音だけ省略し、
+        // dur もキャリーで省略する。
+        let notes: Vec<(&str, u8)> = chord.iter().map(|(m, _)| midi_to_note_name(*m)).collect();
+        for tok in tokens {
             out.push(' ');
-            out.push_str(&format!("{}:{}", pitch_part, tok.as_str()));
-            first = false;
-        } else {
-            // タイ: lcvgc DSL では明示記号が無いため、同音をもう一度書く
-            // (近似)
-            out.push(' ');
-            out.push_str(&format!("{}:{}", pitch_part, tok.as_str()));
+            out.push_str(&carry.chord_token(&notes, tok.as_str(), false));
         }
     }
 }
@@ -552,6 +736,15 @@ mod tests {
     use super::*;
     use crate::generator::score::{Event, Score, TimeSignature, Track, TrackKind};
 
+    /// emit 結果から `clip lead_clip { ... }` の本体 (trim 済み) を取り出す。
+    /// Extracts the trimmed body of the `lead_clip` block from emitted DSL.
+    fn melodic_clip_body(dsl: &str) -> String {
+        let start = dsl.find("clip lead_clip").expect("lead_clip 開始");
+        let open = dsl[start..].find('{').unwrap() + start + 1;
+        let close = dsl[open..].find('}').unwrap();
+        dsl[open..open + close].trim().to_string()
+    }
+
     fn one_note_score() -> Score {
         Score {
             ppq: 480,
@@ -586,8 +779,11 @@ mod tests {
     #[test]
     fn melodic_clip_has_single_note() {
         let dsl = emit(&one_note_score()).unwrap();
-        // C4 / 4 分音符 で書かれる
-        assert!(dsl.contains("c:4:4"));
+        // C4 / 4 分音符。初期キャリー (oct=4, dur=4) と一致するため省略形 `c` になる。
+        // The single C4 quarter note matches the initial carry state (oct=4,
+        // dur=4), so it is emitted in the shortest form `c`.
+        let body = melodic_clip_body(&dsl);
+        assert_eq!(body, "lead c", "省略形 `c` で書かれるべき: {body:?}");
     }
 
     #[test]
@@ -608,10 +804,13 @@ mod tests {
             },
         ];
         let dsl = emit(&s).unwrap();
-        // 0-240 で c:4:8、240-480 が休符 8 分、480 から d:4:8
-        assert!(dsl.contains("c:4:8"));
-        assert!(dsl.contains("r:8"));
-        assert!(dsl.contains("d:4:8"));
+        // 0-240 で c:4:8、240-480 が休符 8 分、480 から d:4:8。省略後は:
+        //   c::8  (oct=4 は初期値と一致し省略、dur=8 は初期 4 と異なり明示)
+        //   r     (休符 dur=8 は直前 c の 8 と一致し省略)
+        //   d     (oct=4 dur=8 ともに直前と一致し両省略)
+        // After shorthand: `c::8 r d`.
+        let body = melodic_clip_body(&dsl);
+        assert_eq!(body, "lead c::8 r d", "省略形が想定と異なる: {body:?}");
     }
 
     #[test]
@@ -639,7 +838,59 @@ mod tests {
             },
         ];
         let dsl = emit(&s).unwrap();
-        assert!(dsl.contains("[c:4 e:4 g:4]:2"));
+        // 初期キャリー oct=4 と全構成音 (c4/e4/g4) が一致するため、和音内の oct は
+        // 省略され `[c e g]:2` になる (dur=2 は初期 4 と異なり明示)。
+        // All chord tones match the base octave (4), so the in-chord octaves are
+        // omitted: `[c e g]:2`.
+        let body = melodic_clip_body(&dsl);
+        assert_eq!(
+            body, "lead [c e g]:2",
+            "和音内 oct 省略形が想定と異なる: {body:?}"
+        );
+    }
+
+    /// 和音内でオクターブが基準と異なる音は明示され、一致する音は省略される。
+    /// 基準 (clip 先頭の oct=4) に対し c4=省略, e5=明示, g4=省略 となる。
+    ///
+    /// In-chord octaves: tones matching the base octave are omitted, others are
+    /// spelled out (`[c e:5 g]`).
+    #[test]
+    fn chord_inner_octave_partially_omitted() {
+        let mut s = one_note_score();
+        // 和音 [c4 e5 g4] を 2 分で (e だけ 1 オクターブ上)
+        s.tracks[0].events = vec![
+            Event::Note {
+                start_tick: 0,
+                end_tick: 960,
+                midi_note: 60,
+                velocity: 100,
+            }, // c4
+            Event::Note {
+                start_tick: 0,
+                end_tick: 960,
+                midi_note: 76,
+                velocity: 100,
+            }, // e5
+            Event::Note {
+                start_tick: 0,
+                end_tick: 960,
+                midi_note: 67,
+                velocity: 100,
+            }, // g4
+        ];
+        let dsl = emit(&s).unwrap();
+        let body = melodic_clip_body(&dsl);
+        assert_eq!(
+            body, "lead [c e:5 g]:2",
+            "和音内で基準と異なる oct のみ明示されるべき: {body:?}"
+        );
+        // 意味的等価性も確認する。
+        let expected = expected_note_ons(&s);
+        let actual = compile_emitted_note_ons(&s);
+        assert_eq!(
+            actual, expected,
+            "和音内省略後の NoteOn が一致しない\nDSL:\n{dsl}"
+        );
     }
 
     #[test]
@@ -887,6 +1138,179 @@ mod tests {
             body.contains('\\'),
             "drum row 内に `\\` 継続マーカーが含まれるべき: body=\n{}",
             body
+        );
+    }
+
+    // ---- 省略記法 emit の意味的等価性 (round-trip) テスト ----
+
+    /// score のノートを LoopBlock 展開しつつ絶対 tick の `(start_tick, midi)` 列に
+    /// 平坦化する (検証用の期待値生成)。
+    /// Flattens score notes (expanding loops) into absolute (start_tick, midi).
+    fn flatten_score_notes(events: &[Event], base: u64, out: &mut Vec<(u64, u8)>) {
+        for e in events {
+            match e {
+                Event::Note {
+                    start_tick,
+                    midi_note,
+                    ..
+                } => out.push((base + *start_tick, *midi_note)),
+                Event::LoopBlock {
+                    start_tick,
+                    events: inner,
+                    count,
+                } => {
+                    // 1 ループの長さ = inner の最終 end_tick - start_tick
+                    let one = super::track_last_tick(inner).saturating_sub(*start_tick);
+                    for k in 0..*count as u64 {
+                        flatten_score_notes(inner, base + k * one, out);
+                    }
+                }
+            }
+        }
+    }
+
+    /// emit した DSL を eval → compile し、NoteOn の `(tick, note)` 列を返す。
+    /// Emits, parses, compiles, and returns the NoteOn (tick, note) sequence.
+    fn compile_emitted_note_ons(score: &Score) -> Vec<(u64, u8)> {
+        use crate::engine::compiler::compile_clip;
+        use crate::engine::evaluator::Evaluator;
+        use crate::midi::message::MidiMessage;
+
+        let dsl = emit(score).unwrap();
+        let mut ev = Evaluator::new(score.initial_bpm as f64);
+        ev.eval_source(&dsl)
+            .unwrap_or_else(|e| panic!("emit 結果が eval 失敗: {e:?}\n---\n{dsl}"));
+        let clock = ev.clock_snapshot();
+        let mut result = Vec::new();
+        for t in &score.tracks {
+            if t.kind != TrackKind::Melodic {
+                continue;
+            }
+            let clip_name = format!("{}_clip", t.name);
+            let clip = ev.registry().get_clip(&clip_name).unwrap();
+            let compiled = compile_clip(clip, &clock, ev.registry()).unwrap();
+            for e in &compiled.events {
+                if let MidiMessage::NoteOn { note, .. } = e.message {
+                    result.push((e.tick, note));
+                }
+            }
+        }
+        result.sort();
+        result
+    }
+
+    /// score のノートを `(tick, midi)` 期待値に変換する。
+    fn expected_note_ons(score: &Score) -> Vec<(u64, u8)> {
+        let mut out = Vec::new();
+        for t in &score.tracks {
+            if t.kind != TrackKind::Melodic {
+                continue;
+            }
+            flatten_score_notes(&t.events, 0, &mut out);
+        }
+        out.sort();
+        out
+    }
+
+    /// 省略 emit した DSL を compile した NoteOn が、元 score のノートと一致する。
+    /// オクターブ変化・休符・和音・付点・ループ・タイを含む複合ケースで検証する。
+    ///
+    /// Shorthand emission round-trips: compiling the emitted DSL yields the same
+    /// NoteOn (tick, note) set as the source score across octaves, rests,
+    /// chords, dotted durations, loops, and ties.
+    #[test]
+    fn shorthand_emission_round_trips_to_same_notes() {
+        let ppq: u32 = 480;
+        let q = ppq as u64; // 4 分音符
+        let e8 = q / 2; // 8 分
+        let s16 = q / 4; // 16 分
+                         // 複合的なメロディ:
+                         //   c4(4分) c4(4分) c5(8分) [休符 8分] e4(付点4分=720) g4(16分)
+                         //   その後 (c4(8分) d4(8分))*2 のループ
+        let mut events = vec![
+            Event::Note {
+                start_tick: 0,
+                end_tick: q,
+                midi_note: 60,
+                velocity: 100,
+            },
+            Event::Note {
+                start_tick: q,
+                end_tick: 2 * q,
+                midi_note: 60,
+                velocity: 100,
+            },
+            Event::Note {
+                start_tick: 2 * q,
+                end_tick: 2 * q + e8,
+                midi_note: 72,
+                velocity: 100,
+            },
+            // 2*q+e8 .. 3*q は休符 (8分相当)
+            Event::Note {
+                start_tick: 3 * q,
+                end_tick: 3 * q + q + e8,
+                midi_note: 64,
+                velocity: 100,
+            }, // 付点4分
+            Event::Note {
+                start_tick: 3 * q + q + e8,
+                end_tick: 3 * q + q + e8 + s16,
+                midi_note: 67,
+                velocity: 100,
+            },
+        ];
+        // 和音 [c4 e4 g4] を 2 分で
+        let chord_start = 6 * q;
+        for m in [60u8, 64, 67] {
+            events.push(Event::Note {
+                start_tick: chord_start,
+                end_tick: chord_start + 2 * q,
+                midi_note: m,
+                velocity: 100,
+            });
+        }
+        // ループ (c4 8分, d4 8分)*2 を 8*q から
+        let loop_start = 8 * q;
+        events.push(Event::LoopBlock {
+            start_tick: loop_start,
+            events: vec![
+                Event::Note {
+                    start_tick: loop_start,
+                    end_tick: loop_start + e8,
+                    midi_note: 60,
+                    velocity: 100,
+                },
+                Event::Note {
+                    start_tick: loop_start + e8,
+                    end_tick: loop_start + 2 * e8,
+                    midi_note: 62,
+                    velocity: 100,
+                },
+            ],
+            count: 2,
+        });
+
+        let score = Score {
+            ppq,
+            initial_bpm: 120.0,
+            time_signature: TimeSignature::default(),
+            title: Some("roundtrip".into()),
+            tracks: vec![Track {
+                name: "lead".into(),
+                midi_channel: 1,
+                kind: TrackKind::Melodic,
+                events,
+            }],
+        };
+
+        let expected = expected_note_ons(&score);
+        let actual = compile_emitted_note_ons(&score);
+        assert_eq!(
+            actual,
+            expected,
+            "省略 emit → compile した NoteOn が score と一致しない\nDSL:\n{}",
+            emit(&score).unwrap()
         );
     }
 }
