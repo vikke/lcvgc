@@ -14,9 +14,15 @@
 //! 音価は 16 分音符グリッドに量子化し、不要なものはタイ (`x:8 x:16`) で繋ぐ。
 //! `LoopBlock` は `(...)*count` で展開。
 //!
+//! melodic clip では MML 行の直下に小節頭マーカーのコメント行 (`//...|...`) を
+//! 挿入する。各小節の先頭文字の真下に `|` を立て、小節線をまたぐ音符がある場合は
+//! 境界直後の次の音符の下に `|` を置く。
+//!
 //! Emits lcvgc DSL from a `Score`. The MVP output structure is described
 //! above. Notes are quantized onto a 16th-note grid; loop blocks become
 //! `(...)*count`; drum tracks are emitted with the step-sequencer notation.
+//! Each melodic MML line is followed by a comment line that aligns a `|` under
+//! every bar head (notes crossing a bar line push the marker to the next note).
 
 use super::quantize::quantize_ticks;
 use super::score::{Event, Score, Track, TrackKind};
@@ -188,6 +194,25 @@ impl EmitCarry {
             format!("[{}]", inner)
         }
     }
+}
+
+/// 小節マーカーコメント生成のために、出力本文中のトークン開始位置と
+/// 開始 tick を記録する。
+///
+/// melodic clip の MML はすべて ASCII (音名・数字・記号) なので、`offset` は
+/// バイト offset であると同時に行内の列番号としても使える。
+///
+/// Records, for each emitted melodic token, its byte offset in the clip body
+/// and the absolute tick at which it starts sounding. Used to align bar-head
+/// `|` markers in the comment line below each MML line. The body is ASCII, so
+/// the byte offset doubles as a column index.
+struct TokenMark {
+    /// body 文字列内でのトークン先頭 offset (= 行内列番号)。
+    /// Byte offset of the token head within the body (also a column index).
+    offset: usize,
+    /// そのトークンが鳴り始める絶対 tick。
+    /// Absolute tick at which the token starts.
+    start_tick: u64,
 }
 
 /// Score を lcvgc DSL 文字列に変換する。
@@ -419,17 +444,21 @@ fn emit_melodic_clip(
     body.push_str(&format!("  {}", track.name));
     // clip 単位でキャリー状態を初期化する (parser のデフォルトに合わせる)。
     let mut carry = EmitCarry::new();
+    // 各トークンの出力位置と開始 tick を集め、小節マーカー行の生成に使う。
+    let mut marks: Vec<TokenMark> = Vec::new();
     emit_event_sequence(
         &track.events,
         score,
         &mut cursor,
         &mut body,
-        &track.name,
         Some(BARS_PER_WRAP),
         &mut carry,
+        &mut marks,
     )?;
-    body.push('\n');
-    out.push_str(&body);
+    // MML 行の直下に小節頭マーカー (`//...|...`) を挿入する。
+    let annotated = annotate_bar_markers(&body, &marks, bar_ticks(score), bars);
+    out.push_str(&annotated);
+    out.push('\n');
     out.push_str("}\n\n");
     Ok(())
 }
@@ -546,9 +575,9 @@ fn emit_event_sequence(
     score: &Score,
     cursor: &mut u64,
     out: &mut String,
-    _track_name: &str,
     wrap_every_n_bars: Option<u32>,
     carry: &mut EmitCarry,
+    marks: &mut Vec<TokenMark>,
 ) -> Result<(), GeneratorError> {
     // 1) ノートと LoopBlock を時系列で取り出す
     let mut items: Vec<&Event> = events.iter().collect();
@@ -583,7 +612,7 @@ fn emit_event_sequence(
                 // 休符で隙間を埋める
                 if *start_tick > *cursor {
                     let gap = *start_tick - *cursor;
-                    write_rest(out, gap, score.ppq, carry);
+                    write_rest(out, gap, score.ppq, *cursor, carry, marks);
                     *cursor = *start_tick;
                 }
                 // 同 tick のノートを集約 (和音検出)
@@ -604,7 +633,7 @@ fn emit_event_sequence(
                 }
                 let chord_end = chord.iter().map(|(_, e)| *e).max().unwrap_or(*start_tick);
                 let dur_ticks = chord_end.saturating_sub(*start_tick);
-                write_chord_or_note(out, &chord, dur_ticks, score.ppq, carry);
+                write_chord_or_note(out, &chord, dur_ticks, score.ppq, *start_tick, carry, marks);
                 *cursor = chord_end;
             }
             Event::LoopBlock {
@@ -615,7 +644,7 @@ fn emit_event_sequence(
                 // ループブロック先頭まで休符で進める
                 if *start_tick > *cursor {
                     let gap = *start_tick - *cursor;
-                    write_rest(out, gap, score.ppq, carry);
+                    write_rest(out, gap, score.ppq, *cursor, carry, marks);
                     *cursor = *start_tick;
                 }
                 // 内部イベントを文字列化して `( ... )*N` で囲む。
@@ -631,19 +660,30 @@ fn emit_event_sequence(
                 let mut inner_out = String::new();
                 let mut inner_cursor: u64 = *start_tick;
                 let mut inner_carry = EmitCarry::unreachable();
+                // ループ内部のトークン offset は別バッファ基準で body と一致しない
+                // ため、小節マーカーは収集しない (内部マークは捨てる)。ループの
+                // 開始位置のみ親 body 上に 1 つ記録し、ループ頭が小節頭になる
+                // ケースに対応する。
+                let mut inner_marks: Vec<TokenMark> = Vec::new();
                 emit_event_sequence(
                     inner,
                     score,
                     &mut inner_cursor,
                     &mut inner_out,
-                    _track_name,
                     None,
                     &mut inner_carry,
+                    &mut inner_marks,
                 )?;
                 // ループ末尾のキャリー状態を親に反映する。
                 *carry = inner_carry;
                 let one_iter_ticks = inner_cursor.saturating_sub(*start_tick);
-                out.push_str(" (");
+                out.push(' ');
+                // `(` をループ頭の文字とみなしてマーカー候補に登録する。
+                marks.push(TokenMark {
+                    offset: out.len(),
+                    start_tick: *start_tick,
+                });
+                out.push('(');
                 out.push_str(inner_out.trim_start());
                 out.push_str(&format!(" )*{}", count));
                 *cursor += one_iter_ticks * (*count as u64);
@@ -657,12 +697,27 @@ fn emit_event_sequence(
 /// 休符を書き出す (隙間 tick → `r:duration` 列)。
 ///
 /// 各音長トークンは [`EmitCarry`] を介して省略形 (`r` / `r:dur`) で書き出す。
-/// 休符はオクターブをキャリーしない。
-fn write_rest(out: &mut String, ticks: u64, ppq: u32, carry: &mut EmitCarry) {
+/// 休符はオクターブをキャリーしない。各休符トークンの先頭 offset と開始 tick を
+/// `marks` に記録する (小節がこの休符から始まる場合のマーカー用)。
+fn write_rest(
+    out: &mut String,
+    ticks: u64,
+    ppq: u32,
+    start_tick: u64,
+    carry: &mut EmitCarry,
+    marks: &mut Vec<TokenMark>,
+) {
     let (tokens, _, _) = quantize_ticks(ticks, ppq);
+    let sixteenth_ticks = (ppq / 4).max(1) as u64;
+    let mut tick = start_tick;
     for t in tokens {
         out.push(' ');
+        marks.push(TokenMark {
+            offset: out.len(),
+            start_tick: tick,
+        });
         out.push_str(&carry.rest_token(t.as_str(), false));
+        tick += t.sixteenths() as u64 * sixteenth_ticks;
     }
 }
 
@@ -679,16 +734,25 @@ fn write_chord_or_note(
     chord: &[(u8, u64)],
     dur_ticks: u64,
     ppq: u32,
+    start_tick: u64,
     carry: &mut EmitCarry,
+    marks: &mut Vec<TokenMark>,
 ) {
     let (tokens, _, _) = quantize_ticks(dur_ticks, ppq);
+    let sixteenth_ticks = (ppq / 4).max(1) as u64;
+    let mut tick = start_tick;
     if chord.len() == 1 {
         // 単音: note_token で oct/dur を省略する。
         let (midi, _) = chord[0];
         let (n, o) = midi_to_note_name(midi);
         for tok in tokens {
             out.push(' ');
+            marks.push(TokenMark {
+                offset: out.len(),
+                start_tick: tick,
+            });
             out.push_str(&carry.note_token(n, o, tok.as_str(), false, false));
+            tick += tok.sixteenths() as u64 * sixteenth_ticks;
         }
     } else {
         // 和音: 内部 pitch は和音突入時のオクターブと一致する音だけ省略し、
@@ -696,9 +760,95 @@ fn write_chord_or_note(
         let notes: Vec<(&str, u8)> = chord.iter().map(|(m, _)| midi_to_note_name(*m)).collect();
         for tok in tokens {
             out.push(' ');
+            marks.push(TokenMark {
+                offset: out.len(),
+                start_tick: tick,
+            });
             out.push_str(&carry.chord_token(&notes, tok.as_str(), false));
+            tick += tok.sixteenths() as u64 * sixteenth_ticks;
         }
     }
+}
+
+/// melodic clip 本文の各 MML 行の直下に、小節頭マーカーのコメント行を挿入する。
+///
+/// 各小節境界 tick (`k * bar_ticks`, `k = 0..bars`) について「開始 tick が境界
+/// 以上の最初のトークン」を求め、その文字位置 (列) に `|` を立てる。これにより:
+/// - 小節がちょうど音符・休符で始まる場合はその文字の下に `|` が入る。
+/// - 音符が小節線をまたいで伸びている場合は、境界直後に始まる次の音符の下に
+///   `|` が入る (要望どおり「次の音符文字の下」)。
+///
+/// 8 小節折り返しで本文が複数行になる場合は、行ごとに該当する `|` を集約し、
+/// その行の直下にだけコメント行を挿入する。`bar_ticks` が 0 か、トークンが
+/// 無い場合は body をそのまま返す。
+///
+/// Inserts a `// ... | ...` comment line beneath each MML line, placing a `|`
+/// under the first token whose start tick is at or after each bar boundary.
+/// Notes sustaining across a bar line push the marker to the next token, as
+/// requested. Wrapped (multi-line) bodies get one comment line per MML line.
+fn annotate_bar_markers(body: &str, marks: &[TokenMark], bar_ticks: u64, bars: u32) -> String {
+    use std::collections::BTreeSet;
+
+    if bar_ticks == 0 || marks.is_empty() {
+        return body.to_string();
+    }
+
+    // 各小節境界に対応するマーカー offset を集める。
+    // marks は出力順 (= tick 昇順) なので、最初に条件を満たすものが小節頭。
+    let mut marker_offsets: BTreeSet<usize> = BTreeSet::new();
+    for k in 0..bars as u64 {
+        let boundary = k * bar_ticks;
+        if let Some(m) = marks.iter().find(|m| m.start_tick >= boundary) {
+            marker_offsets.insert(m.offset);
+        }
+    }
+    if marker_offsets.is_empty() {
+        return body.to_string();
+    }
+
+    // body を行ごとに走査し、各行に属する offset を列に変換してコメント行を作る。
+    let mut result = String::new();
+    let mut line_start = 0usize;
+    let mut first = true;
+    for line in body.split('\n') {
+        if !first {
+            result.push('\n');
+        }
+        first = false;
+        result.push_str(line);
+
+        let line_end = line_start + line.len();
+        let cols: Vec<usize> = marker_offsets
+            .iter()
+            .filter(|&&o| o >= line_start && o < line_end)
+            .map(|&o| o - line_start)
+            .collect();
+        if !cols.is_empty() {
+            result.push('\n');
+            result.push_str(&build_marker_line(&cols));
+        }
+        // 次行の開始 offset (`\n` の分 +1)。
+        line_start = line_end + 1;
+    }
+    result
+}
+
+/// 列番号の昇順リストから、小節頭マーカーのコメント行を組み立てる。
+///
+/// 先頭は行コメント記号 `//`、各列に `|`、それ以外は空白。MML のインデントは
+/// 2〜3 文字あり、最初の音符は列 4 以降に来るため `//` と `|` は衝突しない。
+///
+/// Builds a `//` comment line with `|` at the given (ascending) columns.
+fn build_marker_line(cols: &[usize]) -> String {
+    let max_col = *cols.last().expect("cols must be non-empty");
+    let mut buf = vec![b' '; max_col + 1];
+    buf[0] = b'/';
+    buf[1] = b'/';
+    for &c in cols {
+        buf[c] = b'|';
+    }
+    // ASCII のみで構成しているため UTF-8 として常に妥当。
+    String::from_utf8(buf).expect("marker line is ASCII")
 }
 
 /// テンポを書き出す。
@@ -1016,7 +1166,8 @@ mod tests {
         // The single C4 quarter note matches the initial carry state (oct=4,
         // dur=4), so it is emitted in the shortest form `c`.
         let body = melodic_clip_body(&dsl);
-        assert_eq!(body, "fm c", "省略形 `c` で書かれるべき: {body:?}");
+        // MML 行の直下に小節頭マーカーのコメント行が付く。`c` は列 5。
+        assert_eq!(body, "fm c\n//   |", "省略形 `c` + 小節マーカー: {body:?}");
     }
 
     #[test]
@@ -1043,7 +1194,11 @@ mod tests {
         //   d     (oct=4 dur=8 ともに直前と一致し両省略)
         // After shorthand: `c::8 r d`.
         let body = melodic_clip_body(&dsl);
-        assert_eq!(body, "fm c::8 r d", "省略形が想定と異なる: {body:?}");
+        // 1 小節に収まるので小節頭マーカーは先頭 `c` の下 (列 5) のみ。
+        assert_eq!(
+            body, "fm c::8 r d\n//   |",
+            "省略形 + 小節マーカーが想定と異なる: {body:?}"
+        );
     }
 
     #[test]
@@ -1077,8 +1232,8 @@ mod tests {
         // omitted: `[c e g]:2`.
         let body = melodic_clip_body(&dsl);
         assert_eq!(
-            body, "fm [c e g]:2",
-            "和音内 oct 省略形が想定と異なる: {body:?}"
+            body, "fm [c e g]:2\n//   |",
+            "和音内 oct 省略形 + 小節マーカーが想定と異なる: {body:?}"
         );
     }
 
@@ -1114,8 +1269,8 @@ mod tests {
         let dsl = emit(&s, &GenOptions::default()).unwrap();
         let body = melodic_clip_body(&dsl);
         assert_eq!(
-            body, "fm [c e:5 g]:2",
-            "和音内で基準と異なる oct のみ明示されるべき: {body:?}"
+            body, "fm [c e:5 g]:2\n//   |",
+            "和音内で基準と異なる oct のみ明示 + 小節マーカー: {body:?}"
         );
         // 意味的等価性も確認する。
         let expected = expected_note_ons(&s);
@@ -1124,6 +1279,154 @@ mod tests {
             actual, expected,
             "和音内省略後の NoteOn が一致しない\nDSL:\n{dsl}"
         );
+    }
+
+    /// 複数小節の melodic clip では、各小節頭の文字の下に `|` が並ぶ。
+    /// 4/4・ppq480 で 8 拍 (= 2 小節) の 4 分音符を並べ、1 小節目先頭の `c` と
+    /// 2 小節目先頭の `c` の真下に `|` が立つことを確認する。
+    ///
+    /// Each bar head gets a `|` aligned beneath its first character.
+    #[test]
+    fn bar_markers_aligned_under_each_bar_head() {
+        let ppq: u32 = 480;
+        let mut events = Vec::new();
+        for i in 0..8u64 {
+            events.push(Event::Note {
+                start_tick: i * ppq as u64,
+                end_tick: (i + 1) * ppq as u64,
+                midi_note: 60,
+                velocity: 100,
+            });
+        }
+        let s = Score {
+            tracks: vec![Track {
+                name: "lead".into(),
+                midi_channel: 1,
+                kind: TrackKind::Melodic,
+                events,
+            }],
+            ..one_note_score()
+        };
+        let dsl = emit(&s, &GenOptions::default()).unwrap();
+        let body = melodic_clip_body(&dsl);
+        // 1 小節 = 4 拍。`c` は列 5,7,9,11,13,...。小節頭は列 5 (拍1) と列 13 (拍5)。
+        assert_eq!(
+            body, "fm c c c c c c c c\n//   |       |",
+            "小節頭マーカーが想定と異なる: {body:?}"
+        );
+    }
+
+    /// 小節線をまたぐ音符がある場合、マーカーは境界直後に始まる次の音符の下に
+    /// 入る。c(付点二分=3拍) → d(二分=2拍, 小節をまたぐ) → e(付点二分) と並べると、
+    /// 2 小節目の頭は d の途中なので、マーカーは次の音符 e の下に立つ。
+    ///
+    /// A note crossing the bar line pushes the marker to the next note (`e`).
+    #[test]
+    fn bar_marker_falls_on_next_note_when_note_straddles_barline() {
+        let ppq = 480u64;
+        let s = Score {
+            tracks: vec![Track {
+                name: "lead".into(),
+                midi_channel: 1,
+                kind: TrackKind::Melodic,
+                events: vec![
+                    Event::Note {
+                        start_tick: 0,
+                        end_tick: 3 * ppq, // 付点二分 (3拍): 1小節目に収まる
+                        midi_note: 60,     // c4
+                        velocity: 100,
+                    },
+                    Event::Note {
+                        start_tick: 3 * ppq,
+                        end_tick: 5 * ppq, // 二分 (2拍): 3拍目〜5拍目で小節線(4拍)をまたぐ
+                        midi_note: 62,     // d4
+                        velocity: 100,
+                    },
+                    Event::Note {
+                        start_tick: 5 * ppq,
+                        end_tick: 8 * ppq, // 付点二分 (3拍)
+                        midi_note: 64,     // e4
+                        velocity: 100,
+                    },
+                ],
+            }],
+            ..one_note_score()
+        };
+        let dsl = emit(&s, &GenOptions::default()).unwrap();
+        let body = melodic_clip_body(&dsl);
+        // 2 小節目の頭 (列 16 = `e`) にマーカー。d は小節をまたぐので飛ばされる。
+        assert_eq!(
+            body, "fm c::2. d::2 e::2.\n//   |          |",
+            "またぎ時のマーカーが次音符 e の下に来ていない: {body:?}"
+        );
+    }
+
+    /// 8 小節折り返しで複数行になる melodic clip は、各 MML 行ごとに 1 本ずつ
+    /// 小節マーカーのコメント行が付く。16 小節分を流し込み、clip 本文に
+    /// マーカー行 (`//` 始まり) が 2 本現れることを確認する。
+    ///
+    /// Wrapped (multi-line) bodies get one marker comment line per MML line.
+    #[test]
+    fn bar_markers_added_per_wrapped_line() {
+        let ppq: u32 = 480;
+        let mut events = Vec::new();
+        for i in 0..64u64 {
+            events.push(Event::Note {
+                start_tick: i * ppq as u64,
+                end_tick: (i + 1) * ppq as u64,
+                midi_note: 60,
+                velocity: 100,
+            });
+        }
+        let s = Score {
+            tracks: vec![Track {
+                name: "lead".into(),
+                midi_channel: 1,
+                kind: TrackKind::Melodic,
+                events,
+            }],
+            ..one_note_score()
+        };
+        let dsl = emit(&s, &GenOptions::default()).unwrap();
+        let body = melodic_clip_body(&dsl);
+        // 16 小節 = 8 小節 × 2 行。各行の直下にマーカー行が 1 本ずつ → 計 2 本。
+        let marker_lines = body
+            .lines()
+            .filter(|l| l.trim_start().starts_with("//"))
+            .count();
+        assert_eq!(marker_lines, 2, "折り返し行ごとにマーカー行が必要: {body}");
+    }
+
+    /// 小節マーカー入りの DSL も DSL パーサで読み戻せる (マーカーはコメント扱い)。
+    /// The bar-marker comment lines are ignored by the parser (round-trips).
+    #[test]
+    fn clip_with_bar_markers_round_trips_through_parser() {
+        let ppq: u32 = 480;
+        let mut events = Vec::new();
+        for i in 0..8u64 {
+            events.push(Event::Note {
+                start_tick: i * ppq as u64,
+                end_tick: (i + 1) * ppq as u64,
+                midi_note: 60,
+                velocity: 100,
+            });
+        }
+        let s = Score {
+            tracks: vec![Track {
+                name: "lead".into(),
+                midi_channel: 1,
+                kind: TrackKind::Melodic,
+                events,
+            }],
+            ..one_note_score()
+        };
+        let dsl = emit(&s, &GenOptions::default()).unwrap();
+        let clip_start = dsl.find("clip fm_clip").expect("melodic clip 開始");
+        let clip_end = clip_start + dsl[clip_start..].find("\n}").unwrap() + 2;
+        let clip_src = &dsl[clip_start..clip_end];
+        let (rest, _clip) = crate::parser::clip::parse_clip(clip_src)
+            .unwrap_or_else(|e| panic!("clip 再パース失敗: {:?}\n---\n{}", e, clip_src));
+        assert_eq!(rest, "");
     }
 
     #[test]
