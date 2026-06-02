@@ -495,7 +495,7 @@ The following keywords cannot be used as variable names:
 
 ## 7. Clip Definition (clip)
 
-The unit of a playback pattern. Eval'ing a clip with the same name overwrites it, and clips used by a currently playing scene switch to the new content at the start of the next loop.
+The unit of a playback pattern. Eval'ing a clip with the same name overwrites it, and clips used by a currently playing scene switch to the new content on the next **4-bar grid boundary** measured from the transport start (every staged replacement commits together on the same grid downbeat). This bounds the swap latency to at most 4 bars even for long clips, and the new clip starts playing from its own bar head (tick 0). The grid is a fixed 4/4-only value for now; odd-meter support is future work.
 
 ### 7.1 bars Option
 
@@ -1844,7 +1844,7 @@ The engine continues playback as-is. Restarting Neovim and reconnecting allows c
 
 - Each block (device, instrument, kit, clip, scene, session, tempo, play, stop, pause, resume, mute, unmute, include, var) can be independently parsed and eval'd
 - Eval'ing a block with the same name overwrites it
-- Overwriting a clip causes scenes using that clip to switch to the new content at the start of the next loop
+- Overwriting a clip causes scenes using that clip to switch to the new content together on the next 4-bar grid boundary measured from the transport start (bounded to at most 4 bars even for long clips; 4/4 only for now)
 - Overwriting a session takes effect from the next scene transition
 - Exceeding bars results in truncation with a warning, not an error
 - `>N` allows forced jumping to the beginning of a bar

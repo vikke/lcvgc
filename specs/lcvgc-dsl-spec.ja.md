@@ -495,7 +495,7 @@ instrument bass {
 
 ## 7. クリップ定義 (clip)
 
-再生パターンの単位。evalで同名のclipを再送信すると上書きされ、再生中のsceneが使用しているclipは次のループ頭から新しい内容に切り替わる。
+再生パターンの単位。evalで同名のclipを再送信すると上書きされ、再生中のsceneが使用しているclipはtransport起点から数えた**4小節グリッドの頭**で新しい内容に切り替わる（差し替え待ちの全clipが同じグリッド頭で一斉にcommitされる）。これにより長いclipでも切替までの待ちは最大4小節に収まる。新clipはその小節頭（自分のtick 0）から鳴り始める。現状は4/4専用の固定値で、変拍子対応は将来課題。
 
 ### 7.1 barsオプション
 
@@ -1845,7 +1845,7 @@ MIDIポートが消えた場合（USB抜け等）、そのdeviceへの出力だ�
 
 - 各ブロック（device, instrument, kit, clip, scene, session, tempo, play, stop, pause, resume, mute, unmute, include, var）は独立してパース・eval可能
 - 同名のブロックをevalすると上書きされる
-- clipを上書きすると、そのclipを使用中のsceneは次のループ頭から新しい内容に切り替わる
+- clipを上書きすると、そのclipを使用中のsceneはtransport起点から数えた4小節グリッドの頭で新しい内容に一斉に切り替わる（長いclipでも最大4小節で反映。現状4/4専用）
 - sessionを上書きすると、次のシーン切り替わり時から新しい構成に変わる
 - barsを超過した場合はエラーではなく切り捨て（ワーニング表示）
 - `>N` で小節頭への強制ジャンプが可能
