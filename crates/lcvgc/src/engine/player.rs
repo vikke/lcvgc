@@ -29,11 +29,30 @@ fn lcm(a: u64, b: u64) -> u64 {
 pub struct ClipPlayer {
     /// 再生対象のコンパイル済みクリップ
     clip: CompiledClip,
-    /// 次ループ頭で差し替える待機クリップ（§7: 動的上書き対応）
-    /// Pending clip to swap in at the next loop boundary (§7: dynamic replacement)
+    /// 差し替え待機クリップ（§7: 動的上書き対応）
+    /// commit_pending() が呼ばれるまで適用されない。実際の swap タイミングは
+    /// transport 層（PlaybackDriver）が 4 小節グリッドで決める。
+    ///
+    /// Pending clip awaiting replacement (§7: dynamic replacement). It is not
+    /// applied until `commit_pending()` is called; the transport layer
+    /// (PlaybackDriver) decides the swap timing on the 4-bar grid.
     pending_clip: Option<CompiledClip>,
-    /// 現在の再生tick位置
+    /// 現在の再生tick位置（transport 起点からの絶対 tick）
+    /// Current playback tick position (absolute tick from transport start).
     current_tick: u64,
+    /// 位相原点。`effective_tick` は `(current_tick - phase_origin)` を
+    /// `total_ticks` で割った余りで求める。clip 差し替え（commit_pending）時に
+    /// その瞬間の `current_tick` を原点に据えることで、新 clip を「小節頭」から
+    /// 再生開始させる。差し替えが無い間は 0 のままで、従来の
+    /// `current_tick % total_ticks` と完全に一致する。
+    ///
+    /// Phase origin. `effective_tick` is computed as
+    /// `(current_tick - phase_origin) % total_ticks`. On clip replacement
+    /// (`commit_pending`) the origin is moved to the current `current_tick`,
+    /// so the new clip starts playing from its bar head regardless of length.
+    /// While no replacement happens it stays 0, exactly matching the former
+    /// `current_tick % total_ticks` behavior.
+    phase_origin: u64,
     /// ループ再生するかどうか
     looping: bool,
     /// ミュート状態（§10.3 `stop <clip>` によるclip単位ミュート対応）
@@ -84,6 +103,7 @@ impl ClipPlayer {
             clip,
             pending_clip: None,
             current_tick: 0,
+            phase_origin: 0,
             looping,
             muted: false,
             paused: false,
@@ -103,6 +123,7 @@ impl ClipPlayer {
             clip,
             pending_clip: None,
             current_tick: 0,
+            phase_origin: 0,
             looping,
             muted: false,
             paused: false,
@@ -236,17 +257,20 @@ impl ClipPlayer {
         self.current_tick
     }
 
-    /// tickを進める。ループ頭到達時にpending_clipがあれば差し替える。
-    /// paused 状態では tick を進めない（位相凍結、§10.4）。
+    /// tickを進める。paused 状態では tick を進めない（位相凍結、§10.4）。
     ///
-    /// ループ境界をまたいだ場合、ドラム発音率行に基づく確率抽選を再実行し
-    /// 次ループ周期の mask を更新する。`pending_clip` が swap された場合も、
-    /// swap 後の clip の確率行に対して即時抽選する。
+    /// ループ境界（phase_origin 相対）をまたいだ場合、ドラム発音率行・
+    /// random-choice に基づく確率抽選を再実行し、次ループ周期の mask を更新する。
     ///
-    /// Advance tick. If `pending_clip` exists and the loop boundary is
-    /// crossed, swap it in. Whenever the loop boundary is crossed (with or
-    /// without a pending swap), reroll the drum probability mask so each
-    /// loop produces a fresh variation.
+    /// clip の差し替え（pending_clip の swap）は本メソッドでは行わない。
+    /// swap タイミングは transport 層が 4 小節グリッドで決め、`commit_pending()`
+    /// 経由で適用する。
+    ///
+    /// Advance tick. Whenever the loop boundary (relative to `phase_origin`)
+    /// is crossed, reroll the probability mask so each loop produces a fresh
+    /// variation. Clip replacement is *not* performed here — the transport
+    /// layer decides the swap timing on the 4-bar grid and applies it via
+    /// `commit_pending()`.
     pub fn advance(&mut self, ticks: u64) {
         if self.paused {
             return;
@@ -255,19 +279,10 @@ impl ClipPlayer {
         self.current_tick += ticks;
 
         if self.looping && self.clip.total_ticks > 0 {
-            let old_loop = old_tick / self.clip.total_ticks;
-            let new_loop = self.current_tick / self.clip.total_ticks;
+            let old_loop = old_tick.wrapping_sub(self.phase_origin) / self.clip.total_ticks;
+            let new_loop =
+                self.current_tick.wrapping_sub(self.phase_origin) / self.clip.total_ticks;
             if new_loop > old_loop {
-                if self.pending_clip.is_some() {
-                    self.clip = self.pending_clip.take().unwrap();
-                    // clip を差し替えたので、events_at が引く tick→indices 索引も
-                    // 新 clip のもので再構築する。
-                    // Rebuild the tick→indices map for the swapped-in clip.
-                    self.events_by_tick = build_events_by_tick(&self.clip);
-                    // ループ頭からの相対位置を維持
-                    // Maintain relative position from loop start
-                    self.current_tick %= self.clip.total_ticks;
-                }
                 // 新しいループ周期に入ったので確率抽選を再実行する
                 // Entered a new loop iteration → reroll the probability mask
                 self.reroll_masks(&mut rand::thread_rng());
@@ -275,8 +290,37 @@ impl ClipPlayer {
         }
     }
 
-    /// 次ループ頭で差し替えるクリップをセットする（§7: 動的上書き）
-    /// Set a clip to replace the current one at the next loop boundary (§7: dynamic replacement)
+    /// 待機中の差し替えクリップを即座に適用する（pending が無ければ no-op）。
+    ///
+    /// transport 層が 4 小節グリッド境界で呼び出す想定。適用時に：
+    /// - clip を swap し、`events_by_tick` 索引を再構築する。
+    /// - `phase_origin` を現在の `current_tick` に据え、新 clip を小節頭から鳴らす。
+    /// - 新 clip の確率行に対して mask を再抽選する。
+    ///
+    /// pending が無い clip の位相は触らない（誤って位置がジャンプしないように）。
+    ///
+    /// Applies the pending replacement clip immediately (no-op when there is
+    /// none). Intended to be called by the transport layer at a 4-bar grid
+    /// boundary. On apply it swaps the clip, rebuilds the tick index, anchors
+    /// `phase_origin` to the current tick so the new clip starts from its bar
+    /// head, and rerolls the mask. Clips without a pending swap are left
+    /// untouched so their phase never jumps.
+    pub fn commit_pending(&mut self) {
+        if let Some(clip) = self.pending_clip.take() {
+            self.clip = clip;
+            self.events_by_tick = build_events_by_tick(&self.clip);
+            // 現在 tick を新 clip の小節頭に合わせる（位相原点を移動）
+            // Anchor the origin to now so the new clip starts at its bar head.
+            self.phase_origin = self.current_tick;
+            self.reroll_masks(&mut rand::thread_rng());
+        }
+    }
+
+    /// 差し替えるクリップを待機させる（§7: 動的上書き）。実際の swap は
+    /// transport 層が 4 小節グリッド境界で `commit_pending()` を呼んだ時点。
+    /// Stage a replacement clip (§7: dynamic replacement). The actual swap
+    /// happens when the transport layer calls `commit_pending()` at a 4-bar
+    /// grid boundary.
     pub fn replace_clip(&mut self, clip: CompiledClip) {
         self.pending_clip = Some(clip);
     }
@@ -287,18 +331,19 @@ impl ClipPlayer {
         self.pending_clip.is_some()
     }
 
-    /// ループ完了判定（looping=falseの場合のみtrue）
+    /// ループ完了判定（looping=falseの場合のみtrue、phase_origin 相対）
     pub fn is_done(&self) -> bool {
         if self.looping {
             false
         } else {
-            self.current_tick >= self.clip.total_ticks
+            self.current_tick.wrapping_sub(self.phase_origin) >= self.clip.total_ticks
         }
     }
 
-    /// 再生位置をリセット
+    /// 再生位置をリセット（位相原点も先頭へ戻す）
     pub fn reset(&mut self) {
         self.current_tick = 0;
+        self.phase_origin = 0;
     }
 
     /// このクリップの total_ticks を返す
@@ -307,12 +352,18 @@ impl ClipPlayer {
         self.clip.total_ticks
     }
 
-    /// ループ内の実効tick（total_ticksでmod）
+    /// ループ内の実効tick（phase_origin 相対で total_ticks の余りを取る）
+    ///
+    /// `phase_origin` が 0 の間は従来通り `tick % total_ticks` と一致する。
+    /// clip 差し替え後は原点が移動するため、新 clip が小節頭から鳴り始める。
+    ///
+    /// Effective tick within the loop, taken modulo `total_ticks` relative to
+    /// `phase_origin`. Identical to `tick % total_ticks` while the origin is 0.
     fn effective_tick(&self, tick: u64) -> u64 {
         if self.clip.total_ticks == 0 {
             return 0;
         }
-        tick % self.clip.total_ticks
+        tick.wrapping_sub(self.phase_origin) % self.clip.total_ticks
     }
 }
 
@@ -385,11 +436,25 @@ impl ScenePlayer {
         }
     }
 
-    /// 名前指定でクリップを動的差し替え（次ループ頭で切り替え）
-    /// Replace a clip by name (swapped at the next loop boundary)
+    /// 名前指定でクリップを動的差し替え（4 小節グリッドの commit で切り替え）
+    /// Stage a clip replacement by name (applied at the 4-bar grid commit).
     pub fn replace_clip(&mut self, name: &str, clip: CompiledClip) {
         if let Some((_, player)) = self.players.iter_mut().find(|(n, _)| n == name) {
             player.replace_clip(clip);
+        }
+    }
+
+    /// 待機中の差し替えを全 clip に一斉適用する（pending 無しの clip は no-op）。
+    ///
+    /// transport 層が 4 小節グリッド境界で 1 度だけ呼び出す。全 clip が同じ
+    /// グリッド頭で揃って切り替わる（コーディネートされた一斉展開）。
+    ///
+    /// Commit every staged replacement at once (clips without a pending swap
+    /// are untouched). Called by the transport layer at a 4-bar grid boundary
+    /// so all clips switch together on the same downbeat.
+    pub fn commit_pending_clips(&mut self) {
+        for (_, player) in &mut self.players {
+            player.commit_pending();
         }
     }
 
@@ -775,33 +840,63 @@ mod tests {
 
     // --- 動的クリップ差し替えテスト ---
 
-    /// replace_clip後、次のループ頭で新クリップに切り替わることを検証
-    /// Verify that after replace_clip, the new clip takes effect at the next loop boundary
+    /// replace_clip は commit_pending を呼ぶまで適用されず、commit 時点で
+    /// 新クリップが「小節頭」から鳴り始める（phase_origin が現在 tick に移る）。
+    /// Verify replace_clip stays staged until commit_pending, and the new clip
+    /// then starts from its bar head (phase_origin anchors to the current tick).
     #[test]
-    fn clip_player_replace_at_loop_boundary() {
+    fn clip_player_commit_pending_restarts_at_bar_head() {
         let clip_a = make_clip(vec![(0, note_on(60))], 480);
         let clip_b = make_clip(vec![(0, note_on(72))], 480);
         let mut player = ClipPlayer::new(clip_a, true);
 
-        // ループ中盤で差し替えをセット
+        // ループ中盤で差し替えをセット（まだ適用されない）
         player.advance(240);
         player.replace_clip(clip_b);
         assert!(player.has_pending());
 
-        // まだ切り替わっていない（tick=240, clip_aのイベント）
-        let events = player.events_at(240);
-        assert!(events.is_empty()); // tick 240にイベントなし
+        // commit 前は clip_a のまま（tick=240 にイベントなし）
+        assert!(player.events_at(240).is_empty());
 
-        // ループ頭を超える
-        player.advance(240); // tick = 480 → ループ頭到達
-
-        // 切り替わった後はclip_bのイベント（note=72）
+        // 4 小節グリッド境界を模して commit
+        player.commit_pending();
         assert!(!player.has_pending());
+
+        // commit した瞬間の tick(=240) が新 clip の小節頭になる
         let events = player.events_at(player.current_tick());
         assert_eq!(events.len(), 1);
         assert!(matches!(
             events[0].message,
             MidiMessage::NoteOn { note: 72, .. }
+        ));
+    }
+
+    /// グリッドを割り切れない長さ（commit 位置が clip 頭と一致しない）でも、
+    /// commit 後は必ず新クリップの tick 0 から鳴り始めることを検証。
+    /// Even when the commit position is not a multiple of the clip length,
+    /// the new clip starts from its own tick 0 after commit.
+    #[test]
+    fn clip_player_commit_pending_aligns_arbitrary_offset() {
+        // 新 clip は 720 tick 長（4 小節グリッド 7680 を割り切らない想定の縮図）
+        let clip_a = make_clip(vec![(0, note_on(60))], 480);
+        let clip_b = make_clip(vec![(0, note_on(72)), (360, note_on(74))], 720);
+        let mut player = ClipPlayer::new(clip_a, true);
+
+        // 中途半端な位置 500 で差し替え commit
+        player.advance(500);
+        player.replace_clip(clip_b);
+        player.commit_pending();
+
+        // commit 位置(500)が新 clip の tick 0
+        assert!(matches!(
+            player.events_at(500)[0].message,
+            MidiMessage::NoteOn { note: 72, .. }
+        ));
+        // 360 tick 進めば新 clip の 2 つ目イベント(note=74)
+        player.advance(360);
+        assert!(matches!(
+            player.events_at(player.current_tick())[0].message,
+            MidiMessage::NoteOn { note: 74, .. }
         ));
     }
 
@@ -853,7 +948,8 @@ mod tests {
         let mut player = ClipPlayer::new(clip_a, true);
 
         player.replace_clip(clip_b);
-        player.advance(480); // ループ境界越え → swap 発火
+        player.advance(480); // ループ境界越え（swap はまだ起きない）
+        player.commit_pending(); // 4 小節グリッド commit で swap 発火
 
         // 新 clip の tick 0 には event が無い (= 旧 clip の note=60 が
         // 索引に残っているなら誤って返ってしまう)
@@ -1019,8 +1115,8 @@ mod tests {
         assert_eq!(scene.events_at(0).len(), 2);
     }
 
-    /// ScenePlayer経由での動的クリップ差し替え
-    /// Dynamic clip replacement via ScenePlayer
+    /// ScenePlayer経由での動的クリップ差し替え（commit_pending_clips で適用）
+    /// Dynamic clip replacement via ScenePlayer, applied by commit_pending_clips.
     #[test]
     fn scene_player_replace_clip() {
         let mut scene = ScenePlayer::new();
@@ -1033,15 +1129,41 @@ mod tests {
         scene.advance_all(240);
         scene.replace_clip("bass", clip_b);
 
-        // ループ頭を超える
-        scene.advance_all(240);
+        // commit 前は未適用
+        assert!(matches!(
+            scene.events_at(0)[0].message,
+            MidiMessage::NoteOn { note: 60, .. }
+        ));
 
-        // 切り替わっている
-        let events = scene.events_at(0);
+        // 4 小節グリッド境界を模して commit
+        scene.commit_pending_clips();
+
+        // commit 位置(240)が新 clip の小節頭になり、note=72 が鳴る
+        let events = scene.events_at(240);
         assert_eq!(events.len(), 1);
         assert!(matches!(
             events[0].message,
             MidiMessage::NoteOn { note: 72, .. }
+        ));
+    }
+
+    /// commit_pending_clips は pending を持たない clip の位相を一切動かさない。
+    /// commit_pending_clips must not disturb the phase of clips with no pending.
+    #[test]
+    fn scene_player_commit_does_not_touch_non_pending() {
+        let mut scene = ScenePlayer::new();
+        scene.add_clip(
+            "keep".to_string(),
+            make_clip(vec![(0, note_on(60))], 480),
+            true,
+        );
+        scene.advance_all(240);
+        // pending 無しで commit → 位相は変わらない（tick 0 相当が頭のまま）
+        scene.commit_pending_clips();
+        // 元の位相のまま: effective tick 0 (=元 clip の頭) に note 60
+        assert!(matches!(
+            scene.events_at(480)[0].message,
+            MidiMessage::NoteOn { note: 60, .. }
         ));
     }
 

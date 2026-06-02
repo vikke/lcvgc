@@ -506,6 +506,34 @@ impl Evaluator {
             Block::Clip(ref c) => {
                 let name = c.name.clone();
                 self.registry.register_block(block);
+
+                // §7/§12: 再生中の scene が同名 clip を使用している場合、新定義を
+                // コンパイルして差し替え待機 (pending) に積む。実際の swap は
+                // PlaybackDriver が 4 小節グリッド境界で commit_pending_clips を
+                // 呼んだ時点で一斉に適用される。コンパイル失敗時は stage せず
+                // Err を返すため、再生中の旧 clip はそのまま鳴り続ける。
+                //
+                // §7/§12: if the playing scene uses a clip with this name,
+                // compile the new definition and stage it as a pending swap.
+                // The actual swap is applied when the PlaybackDriver commits on
+                // the 4-bar grid. On compile error nothing is staged, so the
+                // currently playing clip keeps sounding unchanged.
+                let in_use = self
+                    .active_scene
+                    .as_ref()
+                    .is_some_and(|scene| scene.has_clip(&name));
+                if in_use {
+                    let clock_snap = self.clock_snapshot();
+                    let clip_def = self
+                        .registry
+                        .get_clip(&name)
+                        .expect("clip was just registered");
+                    let compiled = compile_clip(clip_def, &clock_snap, &self.registry)?;
+                    if let Some(scene) = self.active_scene.as_mut() {
+                        scene.replace_clip(&name, compiled);
+                    }
+                }
+
                 Ok(EvalResult::Registered {
                     kind: "Clip".into(),
                     name,
@@ -2147,6 +2175,65 @@ mod tests {
         let src = scene_setup_source(scene_name, clip_name, "inst", channel);
         eval_src(&mut ev, &src);
         ev
+    }
+
+    /// events 列から最初の NoteOn のノート番号を取り出す小ヘルパ
+    /// Extract the note number of the first NoteOn in an event list.
+    fn first_note_on(events: Vec<&crate::engine::compiler::MidiEvent>) -> Option<u8> {
+        events.iter().find_map(|e| match e.message {
+            crate::midi::message::MidiMessage::NoteOn { note, .. } => Some(note),
+            _ => None,
+        })
+    }
+
+    /// 再生中に同名 clip を eval すると pending swap が積まれ、commit_pending_clips
+    /// （= 4 小節グリッド commit のエミュレート）で初めて新内容へ切り替わる。
+    /// commit 前は旧 clip のまま鳴り続ける。
+    ///
+    /// Re-evaluating a clip while a scene plays stages a pending swap that only
+    /// takes effect on commit_pending_clips (emulating the 4-bar grid commit).
+    /// Before commit the old clip keeps sounding.
+    #[test]
+    fn reeval_clip_while_playing_stages_pending_and_commit_swaps() {
+        let mut ev = setup_with_single_clip("c1", "s1", 1);
+        ev.eval_block(Block::Play(PlayCommand {
+            target: PlayTarget::Scene("s1".into()),
+            repeat: RepeatSpec::Loop,
+        }))
+        .unwrap();
+
+        // 初期 clip (inst c) の NoteOn を取得
+        let before = first_note_on(ev.active_scene().unwrap().events_at(0))
+            .expect("initial NoteOn at tick 0");
+
+        // 再生中に c1 を inst e で上書き → active_scene に pending として積まれる
+        eval_src(&mut ev, "clip c1 [bars 1] {\n  inst e\n}\n");
+
+        // commit 前は旧 clip (inst c) のまま
+        let still = first_note_on(ev.active_scene().unwrap().events_at(0))
+            .expect("NoteOn still present before commit");
+        assert_eq!(still, before, "commit 前に切り替わってはいけない");
+
+        // 4 小節グリッド commit を模す
+        ev.active_scene_mut().unwrap().commit_pending_clips();
+
+        // 新 clip (inst e = inst c の +4 半音) の小節頭が鳴る
+        let after =
+            first_note_on(ev.active_scene().unwrap().events_at(0)).expect("NoteOn after commit");
+        assert_eq!(after, before + 4, "inst e は inst c の +4 半音であるべき");
+    }
+
+    /// 再生していない（active_scene なし）状態での clip 上書きは pending を積まない
+    /// （副作用なく registry 更新のみ）。
+    /// Overwriting a clip while nothing plays stages no pending (registry only).
+    #[test]
+    fn reeval_clip_without_active_scene_is_registry_only() {
+        let mut ev = setup_with_single_clip("c1", "s1", 1);
+        // play していないので active_scene は None
+        assert!(ev.active_scene().is_none());
+        // 上書きしてもエラーや panic にならず、registry 更新のみ
+        eval_src(&mut ev, "clip c1 [bars 1] {\n  inst e\n}\n");
+        assert!(ev.active_scene().is_none());
     }
 
     /// Stop(None) で active_scene の使用中チャンネル分の AllNotesOff が pending に積まれる

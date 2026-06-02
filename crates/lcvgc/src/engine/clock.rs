@@ -91,6 +91,15 @@ impl Clock {
         self.bpm = bpm;
     }
 
+    /// PPQ（四分音符あたりのティック数）を設定する
+    /// Sets the PPQ (ticks per quarter note).
+    ///
+    /// # 引数 / Arguments
+    /// * `ppq` - 新しい PPQ / New pulses per quarter note
+    pub fn set_ppq(&mut self, ppq: u16) {
+        self.ppq = ppq;
+    }
+
     /// 拍子記号を設定する
     /// Sets the time signature
     ///

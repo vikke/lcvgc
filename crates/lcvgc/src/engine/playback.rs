@@ -36,6 +36,23 @@ use crate::engine::evaluator::{Evaluator, SceneTransitionOutcome};
 use crate::engine::midi_sink::MidiSink;
 use crate::midi::message::MidiMessage;
 
+/// scene の clip 差し替えを適用する量子化単位（小節数）。
+///
+/// 再生中の scene 内 clip を上書き（replace_clip で pending 化）しても即座には
+/// 切り替えず、transport 起点からこの小節数グリッドの頭に達した時点で全 clip を
+/// 一斉に commit する。これにより「長い clip だと切替までが遠い」問題を避けつつ、
+/// 全 clip が同じ小節頭で揃って展開する。
+///
+/// 現状は 4/4 専用前提の固定値。変拍子対応や scene 単位の可変化は将来の課題。
+///
+/// Quantization grid (in bars) at which staged clip replacements are applied.
+/// Overwriting a clip used by a playing scene stages a pending swap; the swap
+/// is committed for every clip together when the transport reaches a multiple
+/// of this many bars from the start. This bounds the swap latency for long
+/// clips and keeps all clips switching on the same downbeat. Fixed value for
+/// now (assumes 4/4); odd meters / per-scene configurability are future work.
+const SWAP_QUANTIZE_BARS: u64 = 4;
+
 /// 1 つの論理 device に紐付く MIDI sink エントリ
 ///
 /// Issue #49 で追加された型エイリアス。`PlaybackDriver` は device 論理名を
@@ -202,12 +219,29 @@ impl PlaybackDriver {
             }
         }
 
+        // clip 差し替えを適用する 4 小節グリッド長（tick）。ppq・拍子から算出。
+        // BPM 変更では ticks_per_bar は不変なので、テンポチェンジ中でもグリッドは安定。
+        // The 4-bar grid length (ticks) at which staged clip swaps are applied.
+        let swap_grid = ev
+            .clock_snapshot()
+            .ticks_per_bar()
+            .saturating_mul(SWAP_QUANTIZE_BARS);
+
         let (routed, scene_len, has_active_scene) = match ev.active_scene_mut() {
             Some(scene) => {
                 // None→Some 遷移を検出したら tick を 0 から始める
                 if !self.was_active {
                     self.current_tick = 0;
                     self.was_active = true;
+                }
+
+                // 4 小節グリッドの頭に達したら、待機中の clip 差し替えを一斉適用する。
+                // events_at を読む前に commit することで、グリッド頭の downbeat から
+                // 新 clip の小節頭が鳴り始める。pending の無い clip は触らない。
+                // Commit staged clip swaps on the 4-bar grid downbeat, before
+                // reading events, so the new clips sound from their bar head.
+                if swap_grid > 0 && self.current_tick.is_multiple_of(swap_grid) {
+                    scene.commit_pending_clips();
                 }
 
                 // Issue #49: (device, message) ペアで送出先を確定させる
@@ -1582,5 +1616,71 @@ mod tests {
             WaitStrategy::Sleep(d) => assert_eq!(d, Duration::from_micros(1)),
             other => panic!("expected Sleep just over threshold, got {:?}", other),
         }
+    }
+
+    /// 送出済みメッセージ列から最初の NoteOn のノート番号を取り出す
+    /// Extract the first NoteOn note number from a list of sent messages.
+    fn first_note_on_sent(msgs: &[MidiMessage]) -> Option<u8> {
+        msgs.iter().find_map(|m| match m {
+            MidiMessage::NoteOn { note, .. } => Some(*note),
+            _ => None,
+        })
+    }
+
+    /// 再生中の clip 上書きは「1 小節境界」では切り替わらず、transport 起点の
+    /// 「4 小節グリッド」で初めて新 clip へ一斉 commit される。
+    ///
+    /// ppq を 24 に下げて 1 小節 = 96 tick / 4 小節グリッド = 384 tick とし、
+    /// step 数を現実的に抑えて検証する。
+    ///
+    /// A clip overwrite during playback does NOT swap on a 1-bar boundary; it
+    /// commits to the new clip only on the transport's 4-bar grid. PPQ is
+    /// lowered to 24 (1 bar = 96 ticks, grid = 384 ticks) to keep the step
+    /// count small.
+    #[tokio::test]
+    async fn clip_swap_applies_on_four_bar_grid_not_each_bar() {
+        let evaluator = Arc::new(Mutex::new(Evaluator::new(120.0)));
+        eval(&evaluator, setup_src()).await;
+        // grid を縮めるため play 前に ppq を下げる（compile と grid 双方に効く）
+        {
+            let ev = evaluator.lock().await;
+            ev.clock_handle().write().unwrap().set_ppq(24);
+        }
+        // 4 小節グリッドをまたぐので [loop] 再生にする（既定は Once）
+        eval(&evaluator, "play s1 [loop]\n").await;
+
+        let (sinks, handle) = single_dev_sinks();
+        let mut driver = PlaybackDriver::with_sinks(evaluator.clone(), sinks);
+
+        // tick 0 の NoteOn を基準ノートとして取得（初期 clip = inst c）
+        driver.step_once().await.unwrap();
+        let base = first_note_on_sent(&handle.snapshot()).expect("initial NoteOn at tick 0");
+
+        // 再生中に c1 を inst e (+4 半音) で上書き → pending stage
+        eval(&evaluator, "clip c1 [bars 1] {\n  inst e\n}\n").await;
+
+        // 1 小節境界 (tick 96) では 4 小節グリッドでないので未切替（旧ノートのまま）
+        while driver.current_tick() < 96 {
+            driver.step_once().await.unwrap();
+        }
+        handle.clear();
+        driver.step_once().await.unwrap(); // tick 96 のイベント送出
+        assert_eq!(
+            first_note_on_sent(&handle.snapshot()),
+            Some(base),
+            "1 小節境界では切り替わってはいけない"
+        );
+
+        // 4 小節グリッド (tick 384) で commit → 新ノート (+4) に切り替わる
+        while driver.current_tick() < 384 {
+            driver.step_once().await.unwrap();
+        }
+        handle.clear();
+        driver.step_once().await.unwrap(); // tick 384: commit 後に events_at
+        assert_eq!(
+            first_note_on_sent(&handle.snapshot()),
+            Some(base + 4),
+            "4 小節グリッドで新 clip へ切り替わるべき"
+        );
     }
 }
