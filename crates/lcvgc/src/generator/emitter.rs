@@ -218,7 +218,7 @@ pub fn emit(score: &Score, opts: &GenOptions) -> Result<String, GeneratorError> 
     // The tr808 kit is assumed to be defined in the user's environment; we only
     // emit `use tr808` in drum clips and do not generate the kit block.
     emit_instruments(score, &mut out);
-    emit_clips(score, &mut out)?;
+    emit_clips(score, &mut out, opts)?;
     emit_tempo(score, &mut out);
     emit_scene(score, &mut out);
     emit_play(&mut out);
@@ -378,13 +378,13 @@ fn emit_instruments(score: &Score, out: &mut String) {
 
 /// 各トラックを `clip` として書き出す。
 /// Writes one clip per track.
-fn emit_clips(score: &Score, out: &mut String) -> Result<(), GeneratorError> {
+fn emit_clips(score: &Score, out: &mut String, opts: &GenOptions) -> Result<(), GeneratorError> {
     for t in &score.tracks {
         let bars = bars_for_track(t, score);
         let clip_name = clip_name_for(t);
         match t.kind {
             TrackKind::Melodic => {
-                emit_melodic_clip(&clip_name, t, score, bars, out)?;
+                emit_melodic_clip(&clip_name, t, score, bars, out, opts.bars_per_marker)?;
             }
             TrackKind::Drum => {
                 emit_drum_clip(&clip_name, t, score, bars, out)?;
@@ -399,6 +399,26 @@ fn emit_clips(score: &Score, out: &mut String) -> Result<(), GeneratorError> {
 /// 外側からのみ `Some(BARS_PER_WRAP)` を渡し、内側は `None` を渡す。
 const BARS_PER_WRAP: u32 = 8;
 
+/// 小節先頭トークンの桁位置と小節番号を保持する。
+///
+/// `emit_event_sequence` が本体トークン列を `out` (clip body バッファ) へ
+/// 書き出す過程で、各小節の先頭トークンの「body バッファ内の絶対バイト
+/// オフセット」と「小節番号 (1 始まり)」を記録する。後段の
+/// [`build_bar_comment_lines`] が、これを物理行ごとの行内桁へ変換して
+/// 小節番号コメント行を組み立てる。
+///
+/// Records a bar-head token's byte offset within the clip body and its
+/// (1-based) bar number, used to build aligned bar-number comment lines.
+#[derive(Debug, Clone, Copy)]
+struct BarMarker {
+    /// clip body バッファ内の絶対バイトオフセット (トークン本体の先頭桁)。
+    /// Absolute byte offset of the token within the clip-body buffer.
+    abs_col: usize,
+    /// 小節番号 (1 始まり)。
+    /// 1-based bar number.
+    bar_no: u32,
+}
+
 /// 1 つの Melodic clip を書き出す。
 ///
 /// 同時発音 (同 start_tick) のノートは `[a b c]:dur` に集約する。
@@ -412,6 +432,7 @@ fn emit_melodic_clip(
     score: &Score,
     bars: u32,
     out: &mut String,
+    bars_per_marker: u32,
 ) -> Result<(), GeneratorError> {
     out.push_str(&format!("clip {} [bars {}] {{\n", clip_name, bars));
     let mut cursor: u64 = 0;
@@ -419,19 +440,129 @@ fn emit_melodic_clip(
     body.push_str(&format!("  {}", track.name));
     // clip 単位でキャリー状態を初期化する (parser のデフォルトに合わせる)。
     let mut carry = EmitCarry::new();
+    // 小節先頭トークンの桁位置を集める。
+    let mut markers: Vec<BarMarker> = Vec::new();
     emit_event_sequence(
         &track.events,
         score,
         &mut cursor,
         &mut body,
-        &track.name,
         Some(BARS_PER_WRAP),
         &mut carry,
+        &mut markers,
     )?;
     body.push('\n');
+    // 小節番号コメント行を本体行の直下に差し込む。
+    let body = interleave_bar_comments(&body, &markers, bars_per_marker);
     out.push_str(&body);
     out.push_str("}\n\n");
     Ok(())
+}
+
+/// clip body に小節番号コメント行を差し込んだ文字列を返す。
+///
+/// `body` を物理行 (`\n` 区切り) に分割し、各本体行に属する [`BarMarker`] から
+/// 行内桁を算出して `// ...N...` 形式のコメント行を組み立て、本体行の直後に
+/// 挿入する。`bars_per_marker` の倍数に当たる小節のみを対象とし、先頭小節 (1)
+/// は常に省略する。`bars_per_marker == 0` のときはコメント行を一切挿入しない。
+///
+/// # 引数 / Arguments
+/// * `body` - clip body 文字列 (末尾 `\n` 込み)
+/// * `markers` - 小節先頭トークンの絶対バイトオフセットと小節番号
+/// * `bars_per_marker` - 何小節ごとにマーカーを出すか (0 で無効)
+///
+/// # 戻り値 / Returns
+/// コメント行を差し込んだ body 文字列
+fn interleave_bar_comments(body: &str, markers: &[BarMarker], bars_per_marker: u32) -> String {
+    if bars_per_marker == 0 || markers.is_empty() {
+        return body.to_string();
+    }
+    // 出力対象の小節のみ残す。先頭小節 (bar_no == 1) は省略。
+    // bars_per_marker == N のとき、(bar_no - 1) % N == 0 の小節を出す
+    // (N=1 → 全小節, N=2 → 1,3,5,... のうち 1 を除いた 3,5,...)。
+    let target =
+        |bar_no: u32| -> bool { bar_no >= 2 && (bar_no - 1).is_multiple_of(bars_per_marker) };
+
+    // 各物理行の [start, end) バイト範囲を求める。end は改行を含まない。
+    // body は "  lead ...\n   ...\n}" のように行が連なる。
+    let mut result = String::with_capacity(body.len() + body.len() / 4);
+    let mut line_start = 0usize; // 現在行の body 内開始オフセット
+    let bytes = body.as_bytes();
+    let mut idx = 0usize;
+    while idx <= body.len() {
+        let at_newline = idx < body.len() && bytes[idx] == b'\n';
+        let at_end = idx == body.len();
+        if at_newline || at_end {
+            let line = &body[line_start..idx];
+            result.push_str(line);
+            if at_newline {
+                result.push('\n');
+            }
+            // この行に属するマーカーを集めてコメント行を作る。
+            let comment =
+                build_bar_comment_line(line, line_start, line_start..idx, markers, &target);
+            if let Some(c) = comment {
+                result.push_str(&c);
+                result.push('\n');
+            }
+            line_start = idx + 1;
+        }
+        idx += 1;
+    }
+    result
+}
+
+/// 1 本の本体行に対する小節番号コメント行を組み立てる。
+///
+/// `markers` のうち、行の絶対バイト範囲 `range` に収まり、かつ `target` を
+/// 満たす小節について、行頭からの桁位置に小節番号を配置した `// ...` 文字列を
+/// 返す。該当マーカーが無ければ `None`。
+///
+/// # 引数 / Arguments
+/// * `line` - 本体行文字列 (改行を含まない)
+/// * `line_start` - `line` の body 内開始バイトオフセット
+/// * `range` - `line` の body 内バイト範囲 `[start, end)`
+/// * `markers` - 全 [`BarMarker`]
+/// * `target` - その小節番号を出力対象とするか判定するクロージャ
+///
+/// # 戻り値 / Returns
+/// コメント行文字列 (改行なし)。該当無しなら `None`。
+fn build_bar_comment_line(
+    _line: &str,
+    line_start: usize,
+    range: std::ops::Range<usize>,
+    markers: &[BarMarker],
+    target: &impl Fn(u32) -> bool,
+) -> Option<String> {
+    // (行内桁, 小節番号) を桁昇順で集める。
+    let mut placements: Vec<(usize, u32)> = markers
+        .iter()
+        .filter(|m| range.contains(&m.abs_col) && target(m.bar_no))
+        .map(|m| (m.abs_col - line_start, m.bar_no))
+        .collect();
+    if placements.is_empty() {
+        return None;
+    }
+    placements.sort_by_key(|(col, _)| *col);
+
+    // "//" で始め、各小節番号をその桁位置に空白パディングで配置する。
+    // `col >= s.len()` ならちょうど目的の桁に数字を置けるよう空白で埋める
+    // (col == s.len() のときは埋める空白 0 個でそのまま置ける)。直前の数字が
+    // 長く目的桁を追い越している場合 (col < s.len()) のみ、空白 1 つで区切って
+    // 続ける (桁ズレより可読性を優先)。
+    let mut s = String::from("//");
+    for (col, bar_no) in placements {
+        let num = bar_no.to_string();
+        if col >= s.len() {
+            // 桁位置まで空白で埋める (col == s.len() なら 0 個)。
+            s.push_str(&" ".repeat(col - s.len()));
+        } else {
+            // 既に追い越している場合は空白 1 つで区切る。
+            s.push(' ');
+        }
+        s.push_str(&num);
+    }
+    Some(s)
 }
 
 /// 1 つの Drum clip を書き出す。
@@ -537,24 +668,38 @@ fn velocity_to_hit_symbol(velocity: u8) -> char {
 /// インデントを挿入する。`LoopBlock` 内部の再帰では `None` を渡し、
 /// `(...)*N` 表記内に改行を入れない。
 ///
+/// `markers` には、各小節先頭の本体トークンの「`out` 内絶対バイトオフセット」と
+/// 小節番号 (1 始まり) を追記する。`LoopBlock` 内部では `inner_out` への相対桁で
+/// 集め、呼び出し側が親 `out` への連結オフセットを加算して取り込む。これにより
+/// 後段で桁揃えした小節番号コメント行を組み立てられる。
+///
 /// Serializes a sequence of melodic events into the clip body. When
 /// `wrap_every_n_bars` is `Some(n)`, inserts a newline + indent each time the
 /// bar cursor crosses an n-bar boundary. Pass `None` for recursive
 /// LoopBlock expansion so the `(...)*N` payload stays on a single line.
+/// `markers` accumulates each bar-head token's byte offset within `out` and its
+/// 1-based bar number, used later to build aligned bar-number comment lines.
 fn emit_event_sequence(
     events: &[Event],
     score: &Score,
     cursor: &mut u64,
     out: &mut String,
-    _track_name: &str,
     wrap_every_n_bars: Option<u32>,
     carry: &mut EmitCarry,
+    markers: &mut Vec<BarMarker>,
 ) -> Result<(), GeneratorError> {
     // 1) ノートと LoopBlock を時系列で取り出す
     let mut items: Vec<&Event> = events.iter().collect();
     items.sort_by_key(|e| e.start_tick());
 
     let bar_t = bar_ticks(score);
+
+    // ある tick が属する小節 index (0 始まり) を返す。bar_t==0 のときは None。
+    let bar_index_of = |tick: u64| -> Option<u64> { tick.checked_div(bar_t) };
+    // 直前に書いた本体トークンが属していた小節 index。これと異なる小節の
+    // 先頭トークンを書くとき、その桁にマーカーを記録する。初期値は cursor の
+    // 小節 (=この呼び出しの開始小節)。
+    let mut last_bar: Option<u64> = bar_index_of(*cursor);
 
     // 直前のトークン書き出し時に、これから書く要素の start_tick が前回処理
     // した bar チャンクと異なれば改行 + インデントを挿入する。
@@ -585,6 +730,19 @@ fn emit_event_sequence(
                     let gap = *start_tick - *cursor;
                     write_rest(out, gap, score.ppq, carry);
                     *cursor = *start_tick;
+                }
+                // 本体トークン書き出し直前: 小節先頭ならマーカーを記録する。
+                // write_chord_or_note は先頭にスペースを 1 つ書くため、その分
+                // (+1) を桁に加えてトークン本体の開始桁に合わせる。
+                if let Some(cur_bar) = bar_index_of(*start_tick) {
+                    let is_new_bar = last_bar.is_none_or(|prev| cur_bar > prev);
+                    if is_new_bar {
+                        markers.push(BarMarker {
+                            abs_col: out.len() + 1,       // 先頭スペース分 +1
+                            bar_no: (cur_bar + 1) as u32, // 0 始まり → 1 始まり
+                        });
+                    }
+                    last_bar = Some(cur_bar);
                 }
                 // 同 tick のノートを集約 (和音検出)
                 let mut chord: Vec<(u8, u64)> = Vec::new(); // (midi, end_tick)
@@ -631,22 +789,49 @@ fn emit_event_sequence(
                 let mut inner_out = String::new();
                 let mut inner_cursor: u64 = *start_tick;
                 let mut inner_carry = EmitCarry::unreachable();
+                // ループ内のマーカーは「1 周目の小節番号」を inner_out への相対桁で
+                // 集める。inner_cursor は実 tick で進むため、bar_index_of により
+                // 1 周目の絶対小節番号 (= start_tick からの相対小節) が記録される。
+                let mut inner_markers: Vec<BarMarker> = Vec::new();
                 emit_event_sequence(
                     inner,
                     score,
                     &mut inner_cursor,
                     &mut inner_out,
-                    _track_name,
                     None,
                     &mut inner_carry,
+                    &mut inner_markers,
                 )?;
                 // ループ末尾のキャリー状態を親に反映する。
                 *carry = inner_carry;
                 let one_iter_ticks = inner_cursor.saturating_sub(*start_tick);
+                // 親 out への連結。`" ("` (2 文字) の後に trim_start 済み inner を
+                // 置くため、inner マーカーの相対桁 → 親絶対桁の変換は
+                //   親桁 = (連結直前の out.len()) + 2 + (相対桁 - trimmed_prefix)
+                // となる。trimmed_prefix は inner_out 先頭の空白数。
+                let trimmed = inner_out.trim_start();
+                let trimmed_prefix = inner_out.len() - trimmed.len();
+                let base_col = out.len() + 2; // " (" の 2 文字分
+                for m in &inner_markers {
+                    // trim で削られた先頭空白より前のマーカーは存在しない想定だが、
+                    // 念のため飽和で扱う。
+                    let rel = m.abs_col.saturating_sub(trimmed_prefix);
+                    markers.push(BarMarker {
+                        abs_col: base_col + rel,
+                        bar_no: m.bar_no,
+                    });
+                }
                 out.push_str(" (");
-                out.push_str(inner_out.trim_start());
+                out.push_str(trimmed);
                 out.push_str(&format!(" )*{}", count));
                 *cursor += one_iter_ticks * (*count as u64);
+                // ループ後の通常トークンは N 周分進んだ小節に戻る。last_bar を
+                // ループ末尾の実小節 (start_tick + one_iter_ticks*N の手前) に
+                // 合わせる。次トークンの bar_index_of と比較されるため、ここでは
+                // cursor 直前の小節へ更新しておく。
+                if let Some(b) = bar_index_of((*cursor).saturating_sub(1)) {
+                    last_bar = Some(b);
+                }
                 i += 1;
             }
         }
@@ -996,6 +1181,291 @@ mod tests {
         assert_eq!(drum_before, drum_after, "drum steps must not shift");
         // kick の step 行が含まれること。
         assert!(after.contains("kick "), "kick row missing: {after}");
+    }
+
+    /// 各小節の先頭に 1 拍ノートを置いた `bars` 小節のメロディトラック score。
+    /// tick = bar * bar_ticks にノートを置き、小節先頭の桁揃え検証に使う。
+    /// Builds a `bars`-bar melodic score with one note at each bar head.
+    fn score_with_one_note_per_bar(bars: u32, ppq: u32) -> Score {
+        let bar_t = (ppq as u64) * 4; // 4/4 の 1 小節 tick
+        let events = (0..bars as u64)
+            .map(|b| Event::Note {
+                start_tick: b * bar_t,
+                end_tick: b * bar_t + ppq as u64, // 4 分音符
+                midi_note: 60,
+                velocity: 100,
+            })
+            .collect();
+        Score {
+            ppq,
+            initial_bpm: 120.0,
+            time_signature: TimeSignature::default(),
+            title: None,
+            tracks: vec![Track {
+                name: "lead".into(),
+                midi_channel: 1,
+                kind: TrackKind::Melodic,
+                events,
+            }],
+        }
+    }
+
+    /// clip 本体 (melodic_clip_body の結果) から `//` で始まるコメント行を
+    /// 出現順に取り出す。
+    /// Extracts the bar-number comment lines (those starting with `//`).
+    fn comment_lines(body: &str) -> Vec<&str> {
+        body.lines()
+            .map(|l| l.trim_end())
+            .filter(|l| l.trim_start().starts_with("//"))
+            .collect()
+    }
+
+    /// emit 結果全体について「各コメント行の小節番号の開始桁が、直前の本体行で
+    /// 非空白 (トークン本体の開始) になっている」ことを検証し、桁ズレ件数を返す。
+    /// 数字が隣接して並ぶ密なケースの桁ズレ回帰検出に使う。
+    /// Returns the number of bar-number digits whose column does not line up with
+    /// a non-space token-head character on the preceding body line.
+    fn count_column_misalignments(dsl: &str) -> usize {
+        let mut prev: Option<&str> = None;
+        let mut errors = 0;
+        for line in dsl.lines() {
+            let trimmed = line.trim_start();
+            if trimmed.starts_with("//") {
+                let Some(body_line) = prev else { continue };
+                // コメント行の各数字の開始桁を取り、本体行の同桁が非空白か確認。
+                let bytes = line.as_bytes();
+                let mut i = 0;
+                while i < bytes.len() {
+                    if bytes[i].is_ascii_digit() {
+                        let col = i;
+                        // 数字列の終端まで進める。
+                        while i < bytes.len() && bytes[i].is_ascii_digit() {
+                            i += 1;
+                        }
+                        let ch = body_line.as_bytes().get(col).copied().unwrap_or(b' ');
+                        if ch == b' ' {
+                            errors += 1;
+                        }
+                    } else {
+                        i += 1;
+                    }
+                }
+            } else {
+                prev = Some(line);
+            }
+        }
+        errors
+    }
+
+    #[test]
+    fn bar_marker_aligns_to_bar_head_columns() {
+        // 4 小節・各小節頭に 4 分音符。省略記法で `fm c r:4 r r r c ...` のように
+        // なる。-b 1 (既定) なら 2,3,4 小節目の先頭トークン桁にマーカーが乗る。
+        let s = score_with_one_note_per_bar(4, 480);
+        let dsl = emit(&s, &GenOptions::default()).unwrap();
+        let body = melodic_clip_body(&dsl);
+        let comments = comment_lines(&body);
+        assert_eq!(comments.len(), 1, "コメント行は 1 本のはず: {body:?}");
+        let comment = comments[0];
+        // 本体行 (演奏行) を取り出す。
+        let play_line = body
+            .lines()
+            .find(|l| l.trim_start().starts_with("fm"))
+            .unwrap();
+        // 各小節番号 (2,3,4) がコメント行に含まれる。
+        assert!(comment.contains('2'), "2 がない: {comment:?}");
+        assert!(comment.contains('3'), "3 がない: {comment:?}");
+        assert!(comment.contains('4'), "4 がない: {comment:?}");
+        // 1 (先頭小節) は出さない。コメント先頭の `// ` を除いた残りに 1 は無いはず。
+        // 桁揃え検証: コメント行で `N` が現れる桁に、本体行で小節 N 先頭トークンが
+        // 始まること。小節 2 の先頭トークンを本体から探し、その桁とコメントの
+        // `2` の桁が一致する。
+        let col_2_in_comment = comment.find('2').unwrap();
+        // 本体行で小節 2 先頭 (3 つ目の音 = 2 拍の休符 r を挟んだ後) の桁を求める
+        // のは複雑なので、ここでは「コメントの数字の桁にスペース以外の文字が
+        // 本体行に存在する」ことだけ確認する (厳密な桁一致は round-trip と
+        // 別テストで担保)。
+        assert!(
+            play_line.len() > col_2_in_comment,
+            "本体行がコメントの桁より短い: play={play_line:?} comment={comment:?}"
+        );
+        assert_ne!(
+            play_line.as_bytes()[col_2_in_comment],
+            b' ',
+            "小節 2 のマーカー桁が本体行で空白 (桁ズレ): play={play_line:?} comment={comment:?}"
+        );
+    }
+
+    #[test]
+    fn bars_per_marker_skips_intermediate_bars() {
+        // -b 2: 2 小節ごと → 小節 3, 5, 7 ... にマーカー。先頭 1 と中間は出さない。
+        // 6 小節で検証 (マーカー対象 = 3, 5)。
+        let s = score_with_one_note_per_bar(6, 480);
+        let opts = GenOptions {
+            bars_per_marker: 2,
+            ..Default::default()
+        };
+        let dsl = emit(&s, &opts).unwrap();
+        let body = melodic_clip_body(&dsl);
+        let comments = comment_lines(&body);
+        let joined = comments.join(" ");
+        assert!(joined.contains('3'), "3 がない: {joined:?}");
+        assert!(joined.contains('5'), "5 がない: {joined:?}");
+        // 2, 4, 6 はマーカー対象外。
+        assert!(!joined.contains('2'), "2 が出てはいけない: {joined:?}");
+        assert!(!joined.contains('4'), "4 が出てはいけない: {joined:?}");
+        assert!(!joined.contains('6'), "6 が出てはいけない: {joined:?}");
+    }
+
+    #[test]
+    fn bars_per_marker_zero_disables_comments() {
+        // -b 0: コメント行を一切出さない。
+        let s = score_with_one_note_per_bar(4, 480);
+        let opts = GenOptions {
+            bars_per_marker: 0,
+            ..Default::default()
+        };
+        let dsl = emit(&s, &opts).unwrap();
+        let body = melodic_clip_body(&dsl);
+        assert!(
+            comment_lines(&body).is_empty(),
+            "コメント行が出ている: {body:?}"
+        );
+    }
+
+    #[test]
+    fn bar_marker_does_not_break_roundtrip() {
+        // コメント行を含む生成 DSL が再び eval/compile できる (パーサがコメントを
+        // 無視する) ことを確認する。
+        let s = score_with_one_note_per_bar(5, 480);
+        let got = compile_emitted_note_ons(&s);
+        let want = expected_note_ons(&s);
+        assert_eq!(got, want, "コメント行付き emit が round-trip しない");
+    }
+
+    /// 拍子 1/4 (1 小節 = 1 拍 = ppq tick) で、各小節に短い 1 音を置いた score を
+    /// 作る。小節先頭トークンが出力上で隣接し、コメント行の数字が密に並ぶため
+    /// パディングの off-by-one を検出しやすい。
+    /// Builds a score in 1/4 time so bar-head tokens sit adjacent in the output.
+    fn dense_one_token_per_bar(bars: u32) -> Score {
+        let ppq = 480u32;
+        let bar_t = ppq as u64; // 1/4 → 1 小節 = 1 拍
+        let events = (0..bars as u64)
+            .map(|b| Event::Note {
+                start_tick: b * bar_t,
+                end_tick: (b + 1) * bar_t,
+                midi_note: 60,
+                velocity: 100,
+            })
+            .collect();
+        Score {
+            ppq,
+            initial_bpm: 120.0,
+            time_signature: TimeSignature {
+                numerator: 1,
+                denominator: 4,
+            },
+            title: None,
+            tracks: vec![Track {
+                name: "lead".into(),
+                midi_channel: 1,
+                kind: TrackKind::Melodic,
+                events,
+            }],
+        }
+    }
+
+    #[test]
+    fn bar_markers_align_when_numbers_are_adjacent() {
+        // 小節先頭トークンが隣接する密なケース。コメント行の小節番号が隣り合うと
+        // パディングの off-by-one で桁ズレが起きやすい (回帰防止)。
+        // 8 小節 = 番号 2..8 が密に並ぶ。
+        let s = dense_one_token_per_bar(8);
+        let dsl = emit(&s, &GenOptions::default()).unwrap();
+        assert!(
+            !comment_lines(&melodic_clip_body(&dsl)).is_empty(),
+            "コメント行が出ていない:\n{dsl}"
+        );
+        assert_eq!(
+            count_column_misalignments(&dsl),
+            0,
+            "隣接する小節番号で桁ズレが発生:\n{dsl}"
+        );
+    }
+
+    #[test]
+    fn bar_markers_inside_loop_block_align() {
+        // ループブロック内の小節先頭にもマーカーが付き、(...)*N の桁オフセット
+        // 計算が正しいことを検証する。1/4 拍子で 4 小節を 2 回ループ → (...)*2。
+        // 小節先頭が密に並ぶため、ループ内桁オフセットの off-by-one を検出できる。
+        let ppq = 480u32;
+        let bar_t = ppq as u64; // 1/4 → 1 小節 = 1 拍
+        let inner: Vec<Event> = (0..4u64)
+            .map(|b| Event::Note {
+                start_tick: b * bar_t,
+                end_tick: (b + 1) * bar_t,
+                midi_note: 60,
+                velocity: 100,
+            })
+            .collect();
+        let s = Score {
+            ppq,
+            initial_bpm: 120.0,
+            time_signature: TimeSignature {
+                numerator: 1,
+                denominator: 4,
+            },
+            title: None,
+            tracks: vec![Track {
+                name: "lead".into(),
+                midi_channel: 1,
+                kind: TrackKind::Melodic,
+                events: vec![Event::LoopBlock {
+                    start_tick: 0,
+                    events: inner,
+                    count: 2,
+                }],
+            }],
+        };
+        let dsl = emit(&s, &GenOptions::default()).unwrap();
+        // ループ表記が出ていること。
+        assert!(dsl.contains(")*2"), "ループ表記がない:\n{dsl}");
+        // ループ内マーカー (1 周目の小節番号 2,3,4) が桁揃えされていること。
+        assert_eq!(
+            count_column_misalignments(&dsl),
+            0,
+            "ループ内マーカーで桁ズレが発生:\n{dsl}"
+        );
+    }
+
+    #[test]
+    fn comment_line_handles_adjacent_two_digit_markers() {
+        // off-by-one ピンポイント: 2 桁番号の直後に次のマーカー桁が来る境界
+        // (col == 既存長) で、padding が空白 0 個でちょうど揃うこと。
+        // body 上で `AA`(col5) の直後 `BB`(col7) にマーカー 10, 11 を置く。
+        let body = "  fm AABB\n";
+        let markers = [
+            BarMarker {
+                abs_col: 5,
+                bar_no: 10,
+            },
+            BarMarker {
+                abs_col: 7,
+                bar_no: 11,
+            },
+        ];
+        let out = interleave_bar_comments(body, &markers, 1);
+        // 期待: 本体行の直下にコメント行。`10` が col5、`11` が col7。
+        //   "  fm AABB"
+        //   "//   1011"   (// + 空白3 で col5=`1`, 続けて col7=`1`)
+        let comment = out
+            .lines()
+            .find(|l| l.trim_start().starts_with("//"))
+            .expect("コメント行がない");
+        assert_eq!(comment, "//   1011", "桁揃えが崩れている: {comment:?}");
+        // 念のため col5 に `1`(10 の頭), col7 に `1`(11 の頭) があること。
+        assert_eq!(comment.as_bytes()[5], b'1');
+        assert_eq!(comment.as_bytes()[7], b'1');
     }
 
     #[test]

@@ -56,6 +56,16 @@ pub struct GenOptions {
     /// Threshold (MIDI note) for bass-line detection. A melodic track whose mean
     /// note is below this gets a `bass` name; otherwise `fm`. Defaults to 48 (C3).
     pub bass_max_avg_note: u8,
+
+    /// 何小節ごとに小節番号コメント行を出力するか。
+    /// 各演奏行の直下に、対象小節の先頭トークンの桁位置へ揃えた小節番号を
+    /// `// ...N...` 形式で出力する。先頭小節 (1) は省略する。
+    /// 0 を指定するとコメント行を一切出力しない。既定 1 (毎小節)。
+    ///
+    /// Emit a bar-number comment line every `bars_per_marker` bars, aligned to
+    /// the column of each bar's first token. Bar 1 is omitted. 0 disables the
+    /// comment lines entirely. Defaults to 1 (every bar).
+    pub bars_per_marker: u32,
 }
 
 impl Default for GenOptions {
@@ -63,6 +73,7 @@ impl Default for GenOptions {
         GenOptions {
             octave_shift: 0,
             bass_max_avg_note: 48,
+            bars_per_marker: 1,
         }
     }
 }
