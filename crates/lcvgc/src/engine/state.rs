@@ -414,6 +414,77 @@ impl StateManager {
         }
     }
 
+    /// 更新起因の4小節グリッド強制遷移で、現エントリの残りを捨てて次エントリへ進める
+    ///
+    /// PR #99 の clip 差し替えと同じ4小節グリッド境界で、session が参照する clip /
+    /// scene / session 定義が上書きされた際に、現在再生中 scene を LCM 境界まで待たず
+    /// 次エントリ（別 scene）へ即座に切り替えるために呼ぶ。`scene_loop_complete` と
+    /// 異なり tempo apply は行わず（ループ完了ではなく途中打ち切りのため）、
+    /// `SessionRunner::force_next_entry` で現エントリの repeat 残や Loop に関わらず
+    /// 必ず次エントリへ進める。pending_session の runner 差し替えは従来どおりエントリ
+    /// 境界 commit を踏襲する（force_next_entry は常に境界越えとみなされる）。
+    ///
+    /// session 以外（`PlayingScene` 等）では何もせず `ContinueScene` を返す。
+    ///
+    /// Forced 4-bar-grid transition triggered by an update: discards the current
+    /// entry's remaining repeats and advances to the next entry. Called on the
+    /// same 4-bar grid as PR #99's clip swap when a clip / scene / session
+    /// definition referenced by the playing session is overwritten, so the
+    /// currently playing scene switches to the next entry (a different scene)
+    /// immediately instead of waiting for its LCM boundary. Unlike
+    /// `scene_loop_complete`, it does not apply tempo (this is a mid-loop cut,
+    /// not a loop completion), and uses `SessionRunner::force_next_entry` to move
+    /// on regardless of the current entry's repeat count or Loop. The
+    /// pending_session swap follows the existing entry-boundary-commit semantics
+    /// (force_next_entry always counts as crossing a boundary).
+    ///
+    /// For non-session states (e.g. `PlayingScene`) it is a no-op and returns
+    /// `ContinueScene`.
+    ///
+    /// # Returns
+    /// 次エントリへの `NextAction`（session の場合）、または non-session 時の
+    /// `NextAction::ContinueScene`
+    pub fn force_advance_session_scene(&mut self) -> NextAction {
+        // session 再生中でなければ何もしない
+        if !matches!(self.state, PlaybackState::PlayingSession { .. }) {
+            return NextAction::ContinueScene;
+        }
+        // runner 未設定（レガシー経路）は安全側で継続扱い
+        let Some(runner) = self.session_runner.as_mut() else {
+            return NextAction::ContinueScene;
+        };
+
+        let action = runner.force_next_entry();
+        let crossed = runner.last_advance_crossed_entry();
+
+        // force_next_entry は常にエントリ境界を越えるので、pending_session があれば
+        // ここで新 runner へ差し替える（§12 と同じ commit セマンティクス）。
+        // force_next_entry always crosses an entry boundary, so swap in
+        // pending_session here when present (same §12 commit semantics).
+        if crossed {
+            if let Some(new_def) = self.pending_session.take() {
+                let was_looping = matches!(
+                    &self.state,
+                    PlaybackState::PlayingSession {
+                        repeat: RepeatMode::Loop,
+                        ..
+                    }
+                );
+                let new_runner = if was_looping {
+                    SessionRunner::new_looping(&new_def)
+                } else {
+                    SessionRunner::new(&new_def)
+                };
+                self.session_runner = Some(new_runner);
+                let runner = self.session_runner.as_mut().unwrap();
+                let new_action = runner.advance();
+                return self.finalize_session_action(new_action);
+            }
+        }
+
+        self.finalize_session_action(action)
+    }
+
     /// セッション再生中の 1 シーンループ完了処理
     /// Handles completion of one scene loop during session playback
     ///
@@ -1086,6 +1157,116 @@ mod tests {
         // ループ属性が維持されているので Done にならず先頭に戻る
         assert_eq!(
             sm.scene_loop_complete(),
+            NextAction::NextSessionEntry {
+                scene_name: "x".to_string()
+            }
+        );
+    }
+
+    // --- force_advance_session_scene tests (更新起因の4小節グリッド強制遷移) ---
+
+    /// force_advance_session_scene: Count(N) の途中でも次エントリへ即遷移する
+    /// force_advance_session_scene jumps to the next entry even mid-Count.
+    #[test]
+    fn force_advance_skips_remaining_count() {
+        let mut sm = StateManager::new();
+        let def = session_def(
+            "song",
+            vec![("a", SessionRepeat::Count(4)), ("b", SessionRepeat::Once)],
+        );
+        sm.apply_play_session(&def, RepeatSpec::Loop);
+
+        // 1 ループ目: a を再生
+        assert_eq!(
+            sm.scene_loop_complete(),
+            NextAction::NextSessionEntry {
+                scene_name: "a".to_string()
+            }
+        );
+        // a の Count(4) が残っているが、強制遷移で次エントリ b へ
+        assert_eq!(
+            sm.force_advance_session_scene(),
+            NextAction::NextSessionEntry {
+                scene_name: "b".to_string()
+            }
+        );
+    }
+
+    /// force_advance_session_scene: Loop エントリも次エントリへ抜ける
+    /// force_advance_session_scene also breaks out of a Loop entry.
+    #[test]
+    fn force_advance_breaks_loop_entry() {
+        let mut sm = StateManager::new();
+        let def = session_def(
+            "jam",
+            vec![
+                ("loop_scene", SessionRepeat::Loop),
+                ("next", SessionRepeat::Once),
+            ],
+        );
+        sm.apply_play_session(&def, RepeatSpec::Loop);
+
+        assert_eq!(
+            sm.scene_loop_complete(),
+            NextAction::NextSessionEntry {
+                scene_name: "loop_scene".to_string()
+            }
+        );
+        // 通常 advance なら loop_scene のままだが、強制遷移で next へ
+        assert_eq!(
+            sm.force_advance_session_scene(),
+            NextAction::NextSessionEntry {
+                scene_name: "next".to_string()
+            }
+        );
+    }
+
+    /// force_advance_session_scene: PlayingScene（非 session）では no-op で
+    /// ContinueScene を返す
+    /// During non-session PlayingScene, force_advance_session_scene is a no-op
+    /// returning ContinueScene.
+    #[test]
+    fn force_advance_noop_for_plain_scene() {
+        let mut sm = StateManager::new();
+        sm.apply_command(PlaybackCommand::PlayScene {
+            name: "solo".to_string(),
+            repeat: RepeatSpec::Loop,
+        });
+        assert_eq!(sm.force_advance_session_scene(), NextAction::ContinueScene);
+        // state は変化しない
+        assert!(matches!(sm.state(), PlaybackState::PlayingScene { .. }));
+    }
+
+    /// force_advance_session_scene: pending_session があれば強制遷移でも
+    /// 新定義へ差し替わる（現状維持: エントリ境界 commit）
+    /// force_advance_session_scene swaps in pending_session at the forced entry
+    /// boundary (unchanged semantics: commit at entry boundary).
+    #[test]
+    fn force_advance_swaps_pending_session() {
+        let mut sm = StateManager::new();
+        let def = session_def(
+            "song",
+            vec![("a", SessionRepeat::Loop), ("b", SessionRepeat::Once)],
+        );
+        sm.apply_play_session(&def, RepeatSpec::Loop);
+        assert_eq!(
+            sm.scene_loop_complete(),
+            NextAction::NextSessionEntry {
+                scene_name: "a".to_string()
+            }
+        );
+
+        // 新定義（先頭 scene が x）を pending に積む
+        let def_new = session_def(
+            "song",
+            vec![("x", SessionRepeat::Once), ("y", SessionRepeat::Once)],
+        );
+        sm.notify_session_updated(&def_new);
+
+        // 強制遷移するとエントリ境界を越えるので新 runner に差し替わり、
+        // 新定義先頭 x が再生される
+        assert_eq!(
+            sm.force_advance_session_scene(),
             NextAction::NextSessionEntry {
                 scene_name: "x".to_string()
             }

@@ -497,6 +497,8 @@ The following keywords cannot be used as variable names:
 
 The unit of a playback pattern. Eval'ing a clip with the same name overwrites it, and clips used by a currently playing scene switch to the new content on the next **4-bar grid boundary** measured from the transport start (every staged replacement commits together on the same grid downbeat). This bounds the swap latency to at most 4 bars even for long clips, and the new clip starts playing from its own bar head (tick 0). The grid is a fixed 4/4-only value for now; odd-meter support is future work.
 
+This **4-bar grid** is counted not by the score-relative bar position but by the **number of bars actually played since the transport start (the song head = play start)** — the boundary is the cumulative tick `transport_tick` divided by `4 × ticks-per-bar`. It is not reset by scene transitions or by repeats of a session `[loop]` entry; it is marked consistently every 4 bars from the song head. Even when the scene switches during session playback, it stays on the same grid.
+
 ### 7.1 bars Option
 
 ```
@@ -1522,7 +1524,16 @@ session main {
 
 Sessions can also be overwritten by eval. Overwriting takes effect from the next scene transition.
 
-Adding `[loop]` to a scene within a session causes it to loop infinitely and not advance to the next. To advance, eval a new play command.
+#### Update-triggered 4-bar grid early transition (same grid as §7)
+
+When, during session playback, an element referenced by the session — a clip in use, the composition of the playing scene, or the session definition itself — is overwritten by eval, the currently playing scene does **not wait until its loop (bars) finishes playing**; it is forcibly switched to the next entry (a different scene) on the **nearest boundary of the same 4-bar grid (bars played since the song head)** as in §7. Even for a scene with long bars, the switch latency is bounded to at most 4 bars.
+
+- **Trigger**: any of (1) overwriting a clip used by the playing scene, (2) overwriting the composition of the playing scene (its `scene` definition), or (3) overwriting the playing session definition. Without an update, each entry's `[repeat N]` / `[loop]` is consumed to the end as usual (no early transition occurs).
+- **Repeat handling**: an early transition discards the current entry's remaining `[repeat]` and advances to the next entry. A `[loop]` entry (which normally does not advance) is also forced to the next entry when update-triggered.
+- **On session definition overwrite**: the new session definition staged as pending is swapped into the new runner at the **entry boundary** as before. The early transition only brings that entry boundary forward onto the 4-bar grid; it does not change the swap-timing semantics itself.
+- Per-clip replacement (§7) and the session's scene early transition are both evaluated on the same `transport_tick` (ticks played since the song head) 4-bar grid, so they stay aligned with each other.
+
+Adding `[loop]` to a scene within a session causes it to loop infinitely and not advance to the next. To advance, eval a new play command (or the update-triggered forced transition above).
 
 ```
 session jam {

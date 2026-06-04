@@ -204,6 +204,24 @@ pub struct Evaluator {
     /// `clear_device_connection_error` on success. LSP diagnostic generation
     /// reads this map.
     device_connection_errors: HashMap<String, DeviceConnectionError>,
+    /// 更新起因の session scene 強制遷移を、次の4小節グリッド境界で行うフラグ。
+    ///
+    /// session 再生中に、その session が参照する clip / scene / session 定義が
+    /// 上書き（再 eval）されたとき true にする。`PlaybackDriver` が4小節グリッド
+    /// 境界（PR #99 の clip swap と同じ境界）で `try_force_advance_session_on_grid`
+    /// を呼び、true なら現エントリの LCM 境界を待たず次エントリ（別 scene）へ遷移し、
+    /// フラグを false に戻す。clip 単位の差し替え（pending_clip）とは別経路で、
+    /// 「scene そのものを別 scene へ切り替える」用途を担う。
+    ///
+    /// Flag requesting an update-triggered forced session-scene transition at the
+    /// next 4-bar grid boundary. Set true when a clip / scene / session definition
+    /// referenced by the currently playing session is overwritten (re-evaluated).
+    /// The `PlaybackDriver` calls `try_force_advance_session_on_grid` on the 4-bar
+    /// grid (the same boundary as PR #99's clip swap); when true, the session
+    /// jumps to the next entry (a different scene) without waiting for the current
+    /// scene's LCM boundary, then the flag is cleared. This is a separate path
+    /// from per-clip swaps (pending_clip) and handles switching the whole scene.
+    force_scene_advance_on_grid: bool,
 }
 
 impl Evaluator {
@@ -220,6 +238,7 @@ impl Evaluator {
             pending_transport: Vec::new(),
             device_event_tx: None,
             device_connection_errors: HashMap::new(),
+            force_scene_advance_on_grid: false,
         }
     }
 
@@ -328,10 +347,112 @@ impl Evaluator {
         self.active_scene.as_mut()
     }
 
+    /// 現在 active な scene 名を返す（テスト・検証用）
+    ///
+    /// session の scene 遷移検証で「いまどの scene が再生中か」を直接確認するために
+    /// 使う。内部状態の読み取り専用アクセサ。
+    ///
+    /// Returns the currently active scene name (for tests/verification). Used to
+    /// directly assert which scene is playing during session transition tests.
+    ///
+    /// # Returns
+    /// active な scene 名の `&str`、再生していなければ `None`
+    pub fn active_scene_name_for_test(&self) -> Option<&str> {
+        self.active_scene_name.as_deref()
+    }
+
     /// ScenePlayer を取り出す（Evaluator 側は None に戻る）
     /// Takes the ScenePlayer out, leaving None in the Evaluator
     pub fn take_active_scene(&mut self) -> Option<ScenePlayer> {
         self.active_scene.take()
+    }
+
+    /// session 再生中なら、4小節グリッドでの強制 scene 遷移フラグを立てる
+    ///
+    /// session 以外（停止中・PlayScene 等）では何もしない。clip / scene 定義の
+    /// 上書き検知点から呼び、session が参照する構成更新を次の grid 境界で反映させる。
+    ///
+    /// Sets the 4-bar-grid forced-scene-advance flag when a session is playing.
+    /// No-op otherwise (stopped, plain PlayScene, etc.). Called from clip/scene
+    /// overwrite detection so that composition updates referenced by a session
+    /// take effect on the next grid boundary.
+    fn request_force_scene_advance_if_session(&mut self) {
+        if matches!(
+            self.state.state(),
+            crate::engine::state::PlaybackState::PlayingSession { .. }
+        ) {
+            self.force_scene_advance_on_grid = true;
+        }
+    }
+
+    /// 指定名の session が現在再生中かどうかを返す
+    ///
+    /// # Arguments
+    /// * `name` - 判定対象の session 名
+    ///
+    /// # Returns
+    /// 同名 session を `PlayingSession` として再生中なら true
+    ///
+    /// Returns whether a session with the given name is currently playing.
+    fn is_playing_session_named(&self, name: &str) -> bool {
+        matches!(
+            self.state.state(),
+            crate::engine::state::PlaybackState::PlayingSession { name: n, .. } if n == name
+        )
+    }
+
+    /// 4小節グリッド境界で、更新起因の session scene 強制遷移を試みる
+    ///
+    /// `PlaybackDriver` が4小節グリッド境界（`commit_pending_clips` と同じ境界）で
+    /// 呼ぶ。`force_scene_advance_on_grid` が立っていなければ何もせず `Continue` を
+    /// 返す。立っていればフラグを下ろし、`StateManager::force_advance_session_scene`
+    /// で現エントリの残りを捨てて次エントリへ進め、その結果に応じて `active_scene` を
+    /// 差し替える。tempo apply は行わない（途中打ち切りのため）。
+    ///
+    /// Attempts the update-triggered forced session-scene transition on the 4-bar
+    /// grid. Called by the `PlaybackDriver` at the grid boundary (same boundary as
+    /// `commit_pending_clips`). Returns `Continue` without side effects if the
+    /// flag is not set. When set, clears the flag, advances to the next entry via
+    /// `StateManager::force_advance_session_scene` (discarding the current entry's
+    /// remaining repeats), and swaps `active_scene` accordingly. Does not apply
+    /// tempo (this is a mid-loop cut).
+    ///
+    /// # Errors
+    /// - `EngineError::UnknownScene` - 次エントリの scene が registry に未登録
+    /// - `EngineError::UnknownClip` - 次 scene 内の clip が未登録
+    pub fn try_force_advance_session_on_grid(
+        &mut self,
+    ) -> Result<SceneTransitionOutcome, EngineError> {
+        if !self.force_scene_advance_on_grid {
+            return Ok(SceneTransitionOutcome::Continue);
+        }
+        self.force_scene_advance_on_grid = false;
+
+        let action = self.state.force_advance_session_scene();
+        match action {
+            NextAction::ContinueScene => Ok(SceneTransitionOutcome::Continue),
+            NextAction::SceneComplete => {
+                self.active_scene = None;
+                self.active_scene_name = None;
+                Ok(SceneTransitionOutcome::SceneComplete)
+            }
+            NextAction::SessionComplete => {
+                self.active_scene = None;
+                self.active_scene_name = None;
+                Ok(SceneTransitionOutcome::SessionComplete)
+            }
+            NextAction::NextSessionEntry { scene_name } => {
+                let scene_def = self
+                    .registry
+                    .get_scene(&scene_name)
+                    .ok_or_else(|| EngineError::UnknownScene(scene_name.clone()))?
+                    .clone();
+                let player = self.build_scene_player(&scene_def)?;
+                self.active_scene = Some(player);
+                self.active_scene_name = Some(scene_name.clone());
+                Ok(SceneTransitionOutcome::NextScene { scene_name })
+            }
+        }
     }
 
     /// シーンの1ループ完了を通知し、状態遷移と active_scene の差し替えを行う
@@ -532,6 +653,12 @@ impl Evaluator {
                     if let Some(scene) = self.active_scene.as_mut() {
                         scene.replace_clip(&name, compiled);
                     }
+                    // §12: session 再生中なら、この clip を使う scene を LCM 境界まで
+                    // 待たず4小節グリッドで次エントリ（別 scene）へ進めるよう要求する。
+                    // §12: if a session is playing, request a forced jump to the next
+                    // entry (a different scene) on the 4-bar grid instead of waiting
+                    // for this scene's LCM boundary.
+                    self.request_force_scene_advance_if_session();
                 }
 
                 Ok(EvalResult::Registered {
@@ -541,7 +668,21 @@ impl Evaluator {
             }
             Block::Scene(ref s) => {
                 let name = s.name.clone();
+                // §12: session 再生中に、いま再生中の scene の構成が上書きされた場合、
+                // その scene を LCM 境界まで待たず4小節グリッドで次エントリ（別 scene）へ
+                // 進めるよう要求する。scene の構成変更は再生中 scene へ即時反映する配線が
+                // 無いため、session 文脈では「次 scene へ早送り」で新構成へ移行させる。
+                //
+                // §12: if the scene whose composition was just overwritten is the one
+                // currently playing under a session, request a forced jump to the next
+                // entry on the 4-bar grid. There is no wiring to hot-apply a scene
+                // composition change to the playing scene, so under a session we move
+                // on to the next scene to reach the new arrangement.
+                let is_active_scene = self.active_scene_name.as_deref() == Some(name.as_str());
                 self.registry.register_block(block);
+                if is_active_scene {
+                    self.request_force_scene_advance_if_session();
+                }
                 Ok(EvalResult::Registered {
                     kind: "Scene".into(),
                     name,
@@ -553,6 +694,21 @@ impl Evaluator {
                 // §12: If a session with the same name is currently playing,
                 // queue it to swap in at the next entry transition.
                 self.state.notify_session_updated(s);
+                // §12: いま再生中の session 定義が上書きされた場合、次エントリへの
+                // 切替（pending_session の差し替え commit を含む）を LCM 境界まで
+                // 待たず4小節グリッドで前倒しする。pending_session の runner 差し替え
+                // タイミング自体はエントリ境界 commit のまま（force 遷移がその境界を
+                // 早く作る）。
+                //
+                // §12: if the currently playing session definition was overwritten,
+                // bring forward the transition to the next entry (including the
+                // pending_session swap commit) onto the 4-bar grid instead of the LCM
+                // boundary. The pending_session runner-swap timing itself stays at the
+                // entry boundary; the forced transition just reaches that boundary
+                // sooner.
+                if self.is_playing_session_named(&name) {
+                    self.force_scene_advance_on_grid = true;
+                }
                 self.registry.register_block(block);
                 Ok(EvalResult::Registered {
                     kind: "Session".into(),
@@ -2221,6 +2377,192 @@ mod tests {
         let after =
             first_note_on(ev.active_scene().unwrap().events_at(0)).expect("NoteOn after commit");
         assert_eq!(after, before + 4, "inst e は inst c の +4 半音であるべき");
+    }
+
+    /// 2 clip + 2 scene + 2-entry session（s1=a, s2=b）を構築して Play(Session) する
+    /// Builds 2 clips + 2 scenes + a 2-entry session (s1=a, s2=b) and plays it.
+    fn setup_playing_session_two_entries() -> Evaluator {
+        let mut ev = Evaluator::new(120.0);
+        for name in ["a", "b"] {
+            ev.eval_block(Block::Clip(ClipDef {
+                name: name.into(),
+                options: ClipOptions::default(),
+                body: ClipBody::Pitched(PitchedClipBody {
+                    lines: vec![],
+                    cc_automations: vec![],
+                }),
+            }))
+            .unwrap();
+        }
+        for (scene, clip) in [("s1", "a"), ("s2", "b")] {
+            ev.eval_block(Block::Scene(SceneDef {
+                name: scene.into(),
+                entries: vec![crate::ast::scene::SceneEntry::Clip {
+                    candidates: vec![crate::ast::scene::ShuffleCandidate {
+                        clip: clip.into(),
+                        weight: 1,
+                    }],
+                    probability: None,
+                    muted: false,
+                }],
+            }))
+            .unwrap();
+        }
+        ev.eval_block(Block::Session(SessionDef {
+            name: "song".into(),
+            entries: vec![
+                crate::ast::session::SessionEntry {
+                    scene: "s1".into(),
+                    // Loop: 通常は s1 に留まり続ける → 強制遷移の効果が際立つ
+                    repeat: crate::ast::session::SessionRepeat::Loop,
+                },
+                crate::ast::session::SessionEntry {
+                    scene: "s2".into(),
+                    repeat: crate::ast::session::SessionRepeat::Once,
+                },
+            ],
+        }))
+        .unwrap();
+        ev.eval_block(Block::Play(PlayCommand {
+            target: PlayTarget::Session("song".into()),
+            repeat: RepeatSpec::Loop,
+        }))
+        .unwrap();
+        ev
+    }
+
+    /// §12: session 再生中に使用中 clip を上書きすると force フラグが立ち、
+    /// try_force_advance_session_on_grid で次エントリ（別 scene）へ遷移する。
+    /// Overwriting an in-use clip during session playback sets the force flag and
+    /// try_force_advance_session_on_grid jumps to the next entry.
+    #[test]
+    fn reeval_clip_during_session_forces_scene_advance_on_grid() {
+        let mut ev = setup_playing_session_two_entries();
+        // Loop エントリ s1 を再生中。通常の grid commit では遷移しない（フラグ未設定）
+        assert_eq!(
+            ev.try_force_advance_session_on_grid().unwrap(),
+            SceneTransitionOutcome::Continue
+        );
+        assert_eq!(ev.active_scene_name.as_deref(), Some("s1"));
+
+        // s1 が使う clip a を上書き → force フラグが立つ
+        ev.eval_block(Block::Clip(ClipDef {
+            name: "a".into(),
+            options: ClipOptions::default(),
+            body: ClipBody::Pitched(PitchedClipBody {
+                lines: vec![],
+                cc_automations: vec![],
+            }),
+        }))
+        .unwrap();
+
+        // grid 境界で次エントリ s2 へ強制遷移
+        assert_eq!(
+            ev.try_force_advance_session_on_grid().unwrap(),
+            SceneTransitionOutcome::NextScene {
+                scene_name: "s2".into()
+            }
+        );
+        assert_eq!(ev.active_scene_name.as_deref(), Some("s2"));
+    }
+
+    /// §12: session 再生中に再生中 scene の構成を上書きすると force フラグが立ち、
+    /// grid 境界で次エントリへ遷移する。
+    /// Overwriting the playing scene's composition during a session sets the flag
+    /// and advances on the grid.
+    #[test]
+    fn reeval_active_scene_during_session_forces_advance() {
+        let mut ev = setup_playing_session_two_entries();
+        // 再生中 scene s1 の構成を上書き（clip を b へ差し替え）
+        ev.eval_block(Block::Scene(SceneDef {
+            name: "s1".into(),
+            entries: vec![crate::ast::scene::SceneEntry::Clip {
+                candidates: vec![crate::ast::scene::ShuffleCandidate {
+                    clip: "b".into(),
+                    weight: 1,
+                }],
+                probability: None,
+                muted: false,
+            }],
+        }))
+        .unwrap();
+
+        assert_eq!(
+            ev.try_force_advance_session_on_grid().unwrap(),
+            SceneTransitionOutcome::NextScene {
+                scene_name: "s2".into()
+            }
+        );
+    }
+
+    /// §12: 再生中でない scene の構成を上書きしても force フラグは立たない。
+    /// Overwriting a non-active scene during a session does not set the flag.
+    #[test]
+    fn reeval_inactive_scene_during_session_does_not_force() {
+        let mut ev = setup_playing_session_two_entries();
+        // 再生中でない s2 を上書き
+        ev.eval_block(Block::Scene(SceneDef {
+            name: "s2".into(),
+            entries: vec![crate::ast::scene::SceneEntry::Clip {
+                candidates: vec![crate::ast::scene::ShuffleCandidate {
+                    clip: "a".into(),
+                    weight: 1,
+                }],
+                probability: None,
+                muted: false,
+            }],
+        }))
+        .unwrap();
+        // フラグが立っていないので grid commit は no-op
+        assert_eq!(
+            ev.try_force_advance_session_on_grid().unwrap(),
+            SceneTransitionOutcome::Continue
+        );
+        assert_eq!(ev.active_scene_name.as_deref(), Some("s1"));
+    }
+
+    /// §12: session 定義の上書きで force フラグが立ち、grid 境界で次エントリへ進む。
+    /// Overwriting the session definition sets the flag and advances on the grid.
+    #[test]
+    fn reeval_session_def_forces_advance_on_grid() {
+        let mut ev = setup_playing_session_two_entries();
+        // song を上書き（同名 session 更新）
+        ev.eval_block(Block::Session(SessionDef {
+            name: "song".into(),
+            entries: vec![
+                crate::ast::session::SessionEntry {
+                    scene: "s1".into(),
+                    repeat: crate::ast::session::SessionRepeat::Loop,
+                },
+                crate::ast::session::SessionEntry {
+                    scene: "s2".into(),
+                    repeat: crate::ast::session::SessionRepeat::Once,
+                },
+            ],
+        }))
+        .unwrap();
+        // force フラグが立ち、grid 境界で次エントリへ
+        let outcome = ev.try_force_advance_session_on_grid().unwrap();
+        assert!(matches!(outcome, SceneTransitionOutcome::NextScene { .. }));
+    }
+
+    /// 通常の PlayScene（非 session）では clip 上書きで force フラグは立たない
+    /// （clip swap は PR #99 経由）。grid commit は no-op。
+    /// In a plain PlayScene, overwriting a clip does not set the force flag.
+    #[test]
+    fn reeval_clip_in_plain_scene_does_not_force_advance() {
+        let mut ev = setup_with_single_clip("c1", "s1", 1);
+        ev.eval_block(Block::Play(PlayCommand {
+            target: PlayTarget::Scene("s1".into()),
+            repeat: RepeatSpec::Loop,
+        }))
+        .unwrap();
+        eval_src(&mut ev, "clip c1 [bars 1] {\n  inst e\n}\n");
+        // session ではないので force フラグは立たず no-op
+        assert_eq!(
+            ev.try_force_advance_session_on_grid().unwrap(),
+            SceneTransitionOutcome::Continue
+        );
     }
 
     /// 再生していない（active_scene なし）状態での clip 上書きは pending を積まない

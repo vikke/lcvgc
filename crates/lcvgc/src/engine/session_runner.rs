@@ -107,6 +107,43 @@ impl SessionRunner {
         }
     }
 
+    /// 現エントリの残りリピートを捨てて次のエントリへ強制的に進める
+    ///
+    /// 更新起因（clip / scene / session 定義の上書き）の4小節グリッド強制遷移で
+    /// 使う。`advance()` がリピートモードに従って現エントリを再生し続けるのに対し、
+    /// 本メソッドは Count の残りや Loop に関わらず必ず `current_index` を1つ進め、
+    /// 進んだ先のエントリの scene を返す。末尾を越えた場合、全体ループ中なら先頭へ
+    /// 折り返し、そうでなければ `Done` を返す。常に `last_advance_crossed_entry` を
+    /// true にする（エントリ境界を越えたとみなす）。
+    ///
+    /// Forcibly advances to the next entry, discarding the current entry's
+    /// remaining repeats. Used by the update-triggered 4-bar-grid forced
+    /// transition. Unlike `advance()`, which keeps replaying the current entry
+    /// per its repeat mode, this always moves `current_index` forward by one and
+    /// returns the scene of the entry it lands on. When past the end it wraps to
+    /// the start if session-looping, otherwise returns `Done`. Always sets
+    /// `last_advance_crossed_entry` to true.
+    ///
+    /// # Returns
+    /// 進んだ先エントリの `SessionAction::PlayScene`、または末尾超過時の
+    /// `SessionAction::Done`
+    pub fn force_next_entry(&mut self) -> SessionAction {
+        self.last_advance_crossed_entry = true;
+        self.current_index += 1;
+
+        if self.current_index >= self.entries.len() {
+            if self.session_looping && !self.entries.is_empty() {
+                self.reset();
+            } else {
+                return SessionAction::Done;
+            }
+        }
+
+        self.init_current_repeat();
+        let scene_name = self.entries[self.current_index].scene.clone();
+        SessionAction::PlayScene(scene_name)
+    }
+
     /// 直前の advance() がエントリ境界を越えたか（§12 上書き検出用）
     /// Whether the last advance() crossed an entry boundary (for §12 overwrite detection)
     pub fn last_advance_crossed_entry(&self) -> bool {
@@ -363,5 +400,87 @@ mod tests {
         let s = session(vec![]);
         let runner = SessionRunner::new(&s);
         assert!(runner.is_done());
+    }
+
+    // 13. force_next_entry: Count(N) の途中でも残りを捨てて次エントリへ進む
+    //     (更新起因の4小節グリッド強制遷移)
+    // force_next_entry: discards remaining repeats mid-Count and jumps to the
+    // next entry (update-triggered 4-bar-grid forced transition).
+    #[test]
+    fn force_next_entry_skips_remaining_count() {
+        let s = session(vec![
+            entry("a", SessionRepeat::Count(4)),
+            entry("b", SessionRepeat::Once),
+        ]);
+        let mut runner = SessionRunner::new(&s);
+        // 1 回だけ a を再生した時点（残り Count あり）で強制遷移
+        assert_eq!(runner.advance(), SessionAction::PlayScene("a".to_string()));
+        assert_eq!(runner.current_index(), 0);
+        // force_next_entry は残りの a を捨てて次エントリ b を返す
+        assert_eq!(
+            runner.force_next_entry(),
+            SessionAction::PlayScene("b".to_string())
+        );
+        assert_eq!(runner.current_index(), 1);
+        assert!(runner.last_advance_crossed_entry());
+    }
+
+    // 14. force_next_entry: Loop エントリでも次エントリへ強制進行する
+    // force_next_entry: a Loop entry is also forced to advance to the next entry.
+    #[test]
+    fn force_next_entry_breaks_loop_entry() {
+        let s = session(vec![
+            entry("loop_scene", SessionRepeat::Loop),
+            entry("next", SessionRepeat::Once),
+        ]);
+        let mut runner = SessionRunner::new(&s);
+        // Loop は advance では進まない
+        assert_eq!(
+            runner.advance(),
+            SessionAction::PlayScene("loop_scene".to_string())
+        );
+        assert_eq!(runner.current_index(), 0);
+        // force_next_entry で次エントリへ抜ける
+        assert_eq!(
+            runner.force_next_entry(),
+            SessionAction::PlayScene("next".to_string())
+        );
+        assert_eq!(runner.current_index(), 1);
+    }
+
+    // 15. force_next_entry: 末尾エントリで呼ぶと非ループ時は Done、
+    //     全体ループ時は先頭へ戻る
+    // force_next_entry at the last entry returns Done (non-looping) or wraps to
+    // the first entry (session-looping).
+    #[test]
+    fn force_next_entry_at_last_entry() {
+        // 非ループ: 末尾で force_next_entry → Done
+        let s = session(vec![entry("only", SessionRepeat::Loop)]);
+        let mut runner = SessionRunner::new(&s);
+        assert_eq!(
+            runner.advance(),
+            SessionAction::PlayScene("only".to_string())
+        );
+        assert_eq!(runner.force_next_entry(), SessionAction::Done);
+        assert!(runner.is_done());
+
+        // 全体ループ: 末尾で force_next_entry → 先頭へ戻る
+        let s2 = session(vec![
+            entry("a", SessionRepeat::Loop),
+            entry("b", SessionRepeat::Loop),
+        ]);
+        let mut runner2 = SessionRunner::new_looping(&s2);
+        assert_eq!(runner2.advance(), SessionAction::PlayScene("a".to_string()));
+        // a → b
+        assert_eq!(
+            runner2.force_next_entry(),
+            SessionAction::PlayScene("b".to_string())
+        );
+        // b → 先頭 a へ折り返す
+        assert_eq!(
+            runner2.force_next_entry(),
+            SessionAction::PlayScene("a".to_string())
+        );
+        assert!(runner2.last_advance_crossed_entry());
     }
 }
