@@ -99,8 +99,26 @@ pub struct PlaybackDriver {
     /// device 論理名 -> MIDI sink の共有マップ（Issue #54）
     /// Shared logical device name -> MIDI sink map (Issue #54)
     sinks: SharedSinks,
-    /// 現在の tick 位置 / Current tick position
+    /// 現在の scene 内 tick 位置。scene 遷移（NextScene / session エントリ切替）の
+    /// たびに 0 にリセットされる。`events_at` の読み出しと `scene_len` 境界判定に使う。
+    /// Current tick within the active scene; reset to 0 on every scene transition
+    /// (NextScene / session entry switch). Used for `events_at` and the
+    /// `scene_len` boundary check.
     current_tick: u64,
+    /// 曲頭（play 開始）からの累積「演奏した tick」。scene 遷移や Loop ループでは
+    /// リセットされず、active な step ごとに +1 され、停止（active_scene None）で 0 に
+    /// 戻る。4 小節グリッド境界（clip swap commit と session の更新起因 force 遷移）は
+    /// この値で判定する。要件「曲頭から数えて（楽譜上ではなく）演奏した4小節毎」を
+    /// 満たすため、scene 頭基準の `current_tick` とは独立に持つ。
+    ///
+    /// Cumulative "played ticks" since the song head (play start). Unlike
+    /// `current_tick`, it is NOT reset on scene transitions or loop wraps; it
+    /// increments by 1 every active step and resets to 0 on stop (active_scene
+    /// None). The 4-bar grid boundary (clip-swap commit and the session
+    /// update-triggered forced transition) is evaluated against this value, so
+    /// the grid counts "4 bars actually played from the song head" rather than
+    /// score-relative bars, independent of the scene-relative `current_tick`.
+    transport_tick: u64,
     /// 前回 step 時に active_scene が Some だったか（None→Some の遷移で tick リセット）
     /// Whether the last step observed an active scene (used to reset current_tick on
     /// None→Some transition).
@@ -126,6 +144,7 @@ impl PlaybackDriver {
             evaluator,
             sinks,
             current_tick: 0,
+            transport_tick: 0,
             was_active: false,
         }
     }
@@ -162,6 +181,13 @@ impl PlaybackDriver {
     /// Returns the current tick position.
     pub fn current_tick(&self) -> u64 {
         self.current_tick
+    }
+
+    /// 曲頭からの累積「演奏した tick」を返す（4 小節グリッド判定の基準）
+    /// Returns the cumulative played ticks since the song head (the basis for the
+    /// 4-bar grid boundary).
+    pub fn transport_tick(&self) -> u64 {
+        self.transport_tick
     }
 
     /// 共有 sink マップへのハンドル clone を返す
@@ -227,20 +253,68 @@ impl PlaybackDriver {
             .ticks_per_bar()
             .saturating_mul(SWAP_QUANTIZE_BARS);
 
+        // §12: 4 小節グリッドの頭で、更新起因（clip / scene / session 定義の上書き）の
+        // session scene 強制遷移を試みる。グリッド境界は「曲頭から演奏した tick」の
+        // transport_tick で判定する（scene 頭基準の current_tick だと session の Loop
+        // エントリで scene_len 毎にリセットされ grid が壊れるため）。clip 単位の
+        // commit_pending_clips より前に行い、遷移したら scene 内 tick を 0 に戻して
+        // 新 scene を小節頭から読む。フラグが立っていなければ no-op。was_active=true
+        // （既に再生中で active_scene が Some）のグリッド境界でのみ評価する
+        // （Play 直後の transport_tick=0 で session を即進めない）。
+        //
+        // §12: at the 4-bar grid head, attempt the update-triggered forced session
+        // scene transition. The grid boundary is evaluated against transport_tick
+        // (played ticks since the song head), not the scene-relative current_tick,
+        // because a session Loop entry resets current_tick every scene_len and
+        // would break the grid. Done before the per-clip commit_pending_clips; on
+        // transition, reset the scene-relative tick to 0 so the new scene reads
+        // from its bar head. No-op when the flag is unset. Only evaluated on grid
+        // boundaries while already playing (was_active), so Play's initial
+        // transport_tick=0 does not immediately advance the session.
+        if self.was_active
+            && ev.active_scene().is_some()
+            && swap_grid > 0
+            && self.transport_tick.is_multiple_of(swap_grid)
+        {
+            match ev.try_force_advance_session_on_grid()? {
+                SceneTransitionOutcome::Continue => {}
+                SceneTransitionOutcome::NextScene { .. } => {
+                    // 新 scene へ差し替え済み。小節頭から読むため scene 内 tick を 0 に戻す。
+                    // transport_tick は触らない（曲頭からの累積を維持）。
+                    // Swapped to the new scene; reset the scene-relative tick to read
+                    // from its bar head. transport_tick is left untouched.
+                    self.current_tick = 0;
+                }
+                SceneTransitionOutcome::SceneComplete | SceneTransitionOutcome::SessionComplete => {
+                    // active_scene は None に戻った。下の None アームで was_active を倒す。
+                    // active_scene is now None; the None arm below clears was_active.
+                }
+            }
+        }
+
         let (routed, scene_len, has_active_scene) = match ev.active_scene_mut() {
             Some(scene) => {
-                // None→Some 遷移を検出したら tick を 0 から始める
+                // None→Some 遷移を検出したら tick を 0 から始める。
+                // transport_tick（曲頭からの累積）も play 開始時のみ 0 に据える。
+                // On None→Some (play start), restart both the scene-relative tick
+                // and the cumulative transport_tick from the song head.
                 if !self.was_active {
                     self.current_tick = 0;
+                    self.transport_tick = 0;
                     self.was_active = true;
                 }
 
                 // 4 小節グリッドの頭に達したら、待機中の clip 差し替えを一斉適用する。
-                // events_at を読む前に commit することで、グリッド頭の downbeat から
-                // 新 clip の小節頭が鳴り始める。pending の無い clip は触らない。
-                // Commit staged clip swaps on the 4-bar grid downbeat, before
-                // reading events, so the new clips sound from their bar head.
-                if swap_grid > 0 && self.current_tick.is_multiple_of(swap_grid) {
+                // グリッド境界は force 遷移と同じく transport_tick（曲頭からの累積演奏
+                // tick）で判定し、session/scene どちらでも「曲頭から演奏した4小節毎」で
+                // 揃える。events_at を読む前に commit することで、グリッド頭の downbeat
+                // から新 clip の小節頭が鳴り始める。pending の無い clip は触らない。
+                // Commit staged clip swaps on the 4-bar grid downbeat. The boundary
+                // uses transport_tick (cumulative played ticks since the song head),
+                // same as the forced transition, so the grid aligns to "every 4 bars
+                // played" for both session and scene playback. Committed before
+                // reading events so the new clips sound from their bar head.
+                if swap_grid > 0 && self.transport_tick.is_multiple_of(swap_grid) {
                     scene.commit_pending_clips();
                 }
 
@@ -257,7 +331,11 @@ impl PlaybackDriver {
             None => {
                 // 再生停止中: tick をリセットして次の play に備える
                 // 残っている AllNotesOff / Transport は送出して stop 側面をカバーする
+                // transport_tick も 0 に戻し、次 play で曲頭から数え直す。
+                // Stopped: reset both ticks for the next play; transport_tick
+                // restarts counting from the next song head.
                 self.current_tick = 0;
+                self.transport_tick = 0;
                 self.was_active = false;
                 (Vec::new(), 0, false)
             }
@@ -294,6 +372,9 @@ impl PlaybackDriver {
         }
 
         self.current_tick += 1;
+        // transport_tick は scene 遷移に関わらず単調増加（曲頭からの演奏 tick）。
+        // transport_tick increments monotonically regardless of scene transitions.
+        self.transport_tick += 1;
 
         // scene 境界に到達したらループ完了通知
         if scene_len > 0 && self.current_tick.is_multiple_of(scene_len) {
@@ -1681,6 +1762,130 @@ mod tests {
             first_note_on_sent(&handle.snapshot()),
             Some(base + 4),
             "4 小節グリッドで新 clip へ切り替わるべき"
+        );
+    }
+
+    /// device + instrument + 2 clip + 2 scene + 2-entry session を登録する DSL。
+    /// s1=c1(inst c), s2=c2(inst e)。session の先頭 s1 は [loop]（通常は留まる）。
+    ///
+    /// DSL registering a device, instrument, two clips/scenes, and a 2-entry
+    /// session. s1=c1 (note c), s2=c2 (note e). The first entry s1 is [loop]
+    /// (normally it stays there).
+    fn setup_session_src() -> &'static str {
+        "device dev { port test }\n\
+         instrument inst { device dev\n channel 1 }\n\
+         clip c1 [bars 1] { inst c }\n\
+         clip c2 [bars 1] { inst e }\n\
+         scene s1 { c1 }\n\
+         scene s2 { c2 }\n\
+         session song {\n  s1 [loop]\n  s2\n}\n"
+    }
+
+    /// 指定 transport_tick に到達するまで step を進める小ヘルパ。
+    /// transport_tick は scene 遷移でリセットされないので、session の Loop
+    /// エントリでも確実に目標 tick へ到達できる（current_tick だと循環して無限ループ）。
+    ///
+    /// Steps the driver until transport_tick reaches `target`. transport_tick is
+    /// not reset on scene transitions, so this terminates even on a session Loop
+    /// entry (current_tick would cycle and loop forever).
+    async fn step_until_transport(driver: &mut PlaybackDriver, target: u64) {
+        while driver.transport_tick() < target {
+            driver.step_once().await.unwrap();
+        }
+    }
+
+    /// §12: session 再生中に使用中 clip を上書きすると、現在の Loop scene の LCM 境界を
+    /// 待たず、曲頭から演奏した4 小節グリッド (transport_tick=384) で次エントリ
+    /// （別 scene s2）へ切り替わる。手前の3 小節境界 (288) では未遷移であることも検証。
+    ///
+    /// §12: overwriting an in-use clip during session playback switches to the
+    /// next entry (a different scene s2) on the 4-bar grid measured by played
+    /// ticks from the song head (transport_tick=384), without waiting for the
+    /// current Loop scene's LCM boundary. Also verifies no transition at the
+    /// earlier 3-bar boundary (288).
+    #[tokio::test]
+    async fn session_scene_advances_on_four_bar_grid_on_clip_update() {
+        let evaluator = Arc::new(Mutex::new(Evaluator::new(120.0)));
+        eval(&evaluator, setup_session_src()).await;
+        {
+            let ev = evaluator.lock().await;
+            ev.clock_handle().write().unwrap().set_ppq(24); // 1 小節=96 / grid=384
+        }
+        eval(&evaluator, "play session song [loop]\n").await;
+
+        let (sinks, handle) = single_dev_sinks();
+        let mut driver = PlaybackDriver::with_sinks(evaluator.clone(), sinks);
+
+        // transport_tick 0: s1 の c1 (inst c = note 60) を発音
+        driver.step_once().await.unwrap();
+        let s1_note = first_note_on_sent(&handle.snapshot()).expect("s1 NoteOn at tick 0");
+
+        // 再生中に s1 が使う c1 を inst e (+4 半音) で上書き → force フラグが立つ。
+        // s2 も同じ inst e なので、s2 への遷移は「別 scene への切替」を表す。
+        eval(&evaluator, "clip c1 [bars 1] {\n  inst e\n}\n").await;
+
+        // 3 小節境界 (transport_tick=288) では 4 小節グリッドでないので未遷移。
+        // この時点で s1 は scene_len(96) ループで再 build 済み（新 c1 = +4）だが、
+        // scene 自体は s1 のまま（s2 へは進んでいない）。
+        step_until_transport(&mut driver, 288).await;
+        handle.clear();
+        driver.step_once().await.unwrap(); // transport_tick=288 のイベント
+        assert_eq!(
+            first_note_on_sent(&handle.snapshot()),
+            Some(s1_note + 4),
+            "3 小節境界では s2 へ遷移せず、s1（再 build 後 +4）のままであるべき"
+        );
+
+        // 4 小節グリッド (transport_tick=384) で次エントリ s2 へ強制遷移する。
+        // s2 は c2 = inst e = note 64 (= s1_note + 4)。s1 再 build 後と同じ音高だが、
+        // active_scene_name が s2 へ変わっていることが本質。ここでは音高で間接確認。
+        step_until_transport(&mut driver, 384).await;
+        handle.clear();
+        driver.step_once().await.unwrap(); // transport_tick=384: force 遷移後 events_at
+        assert_eq!(
+            first_note_on_sent(&handle.snapshot()),
+            Some(s1_note + 4),
+            "4 小節グリッドで s2 (inst e = note 64) を発音すべき"
+        );
+        // active_scene が s2 へ切り替わっていることを直接確認
+        {
+            let ev = evaluator.lock().await;
+            assert_eq!(
+                ev.active_scene_name_for_test(),
+                Some("s2"),
+                "4 小節グリッドで active_scene が s2 へ遷移しているべき"
+            );
+        }
+    }
+
+    /// §12: 更新が無ければ Loop エントリは 4 小節グリッドが来ても次 scene へ遷移しない
+    /// （回帰防止）。transport_tick=768（2 グリッド）跨いでも s1 のまま。
+    /// Without an update, a Loop entry must NOT advance to the next scene on the
+    /// 4-bar grid (regression guard). Stays on s1 even past transport_tick=768.
+    #[tokio::test]
+    async fn session_loop_entry_does_not_advance_without_update() {
+        let evaluator = Arc::new(Mutex::new(Evaluator::new(120.0)));
+        eval(&evaluator, setup_session_src()).await;
+        {
+            let ev = evaluator.lock().await;
+            ev.clock_handle().write().unwrap().set_ppq(24);
+        }
+        eval(&evaluator, "play session song [loop]\n").await;
+
+        let (sinks, handle) = single_dev_sinks();
+        let mut driver = PlaybackDriver::with_sinks(evaluator.clone(), sinks);
+
+        driver.step_once().await.unwrap();
+        let _ = handle.snapshot();
+
+        // 更新せずに 4 小節グリッドを 2 回跨ぐ（transport_tick=768 まで）
+        step_until_transport(&mut driver, 768).await;
+        // active_scene は s1 のまま（s2 へ進んでいない）であるべき
+        let ev = evaluator.lock().await;
+        assert_eq!(
+            ev.active_scene_name_for_test(),
+            Some("s1"),
+            "更新が無ければ Loop エントリ s1 のまま留まるべき"
         );
     }
 }
