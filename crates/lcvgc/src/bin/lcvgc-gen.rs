@@ -40,12 +40,25 @@ struct Cli {
         allow_hyphen_values = true
     )]
     octave: i8,
+
+    /// 何小節ごとに小節番号コメント行を出力するか。
+    /// 各演奏行の直下に、対象小節の先頭トークンの桁位置へ揃えた小節番号を
+    /// `// ...N...` 形式で出力する。先頭小節 (1) は省略する。
+    /// 0 を指定するとコメント行を出力しない (既定 1: 毎小節)。
+    #[arg(
+        short = 'b',
+        long = "bars-per-marker",
+        value_name = "N",
+        default_value_t = 1
+    )]
+    bars_per_marker: u32,
 }
 
 fn main() -> ExitCode {
     let cli = Cli::parse();
     let opts = GenOptions {
         octave_shift: cli.octave,
+        bars_per_marker: cli.bars_per_marker,
         ..Default::default()
     };
     match generate_from_path_auto(&cli.input, &opts) {
