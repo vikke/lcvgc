@@ -18,7 +18,51 @@ use super::protocol::{
     PortInfo, Request, Response,
 };
 
+/// リクエストを処理する（panic 防壁付き）。
+///
+/// 実処理は `handle_request_inner` に委譲し、その実行を別タスクへ隔離する。
+/// パース器など下流コードが万一 panic しても、その panic を `JoinError` 経由で
+/// 捕捉して `Response::err` に変換することで、呼び出し元の接続処理タスク
+/// (`server::run_server` の受信ループ) が巻き込まれて切断されるのを防ぐ。
+///
+/// これがないと、診断リクエスト処理中の panic で接続が切れ、エディタ側に
+/// LSP 応答が返らなくなり「一度出たエラー表示が消えない」不具合に繋がる。
+///
+/// Wraps `handle_request_inner` with a panic guard: the inner work runs in a
+/// spawned task so that a panic in downstream code (e.g. the parser) is caught
+/// via `JoinError` and turned into `Response::err`, instead of tearing down the
+/// caller's connection loop and dropping the client.
+///
+/// # 引数 / Arguments
+/// * `evaluator` - 共有された DSL 評価エンジン / Shared DSL evaluator
+/// * `request` - 処理対象のリクエスト / The request to handle
+///
+/// # 戻り値 / Returns
+/// 処理結果のレスポンス（panic 時はエラーレスポンス）
+/// The response (an error response if the inner handler panicked)
 pub async fn handle_request(evaluator: &Arc<Mutex<Evaluator>>, request: Request) -> Response {
+    let ev = evaluator.clone();
+    // 別タスクへ隔離して panic を JoinError として捕捉する。
+    // Isolate into a spawned task so panics surface as a JoinError.
+    match tokio::spawn(async move { handle_request_inner(&ev, request).await }).await {
+        Ok(resp) => resp,
+        Err(join_err) => {
+            // panic 由来のみ握りつぶす。キャンセル等は想定しないが安全側で扱う。
+            // Only swallow panics; other join errors are not expected here.
+            tracing::error!("handle_request inner task panicked: {join_err}");
+            Response::err(format!(
+                "internal error: request handler panicked ({join_err})"
+            ))
+        }
+    }
+}
+
+/// リクエストの実処理本体。
+///
+/// 旧 `handle_request` の中身。panic 防壁は呼び出し元の `handle_request` が担う。
+/// The actual request-handling body (formerly `handle_request`); the panic
+/// guard lives in the wrapping `handle_request`.
+async fn handle_request_inner(evaluator: &Arc<Mutex<Evaluator>>, request: Request) -> Response {
     match request {
         Request::Eval { source } => {
             let mut ev = evaluator.lock().await;
@@ -296,6 +340,49 @@ mod tests {
         assert!(resp.message.unwrap().contains("TempoChanged"));
     }
 
+    /// 防壁回帰テスト: panic 防壁 (spawn 隔離) を通しても、正常リクエストの
+    /// 応答内容が従来と変わらないことを検証する。
+    /// Regression: routing through the panic guard does not change normal responses.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn handle_request_guard_preserves_normal_response() {
+        let ev = Arc::new(Mutex::new(Evaluator::new(120.0)));
+        let resp = handle_request(
+            &ev,
+            Request::Eval {
+                source: "tempo 140".into(),
+            },
+        )
+        .await;
+        assert!(resp.success);
+        assert!(resp.message.unwrap().contains("TempoChanged"));
+    }
+
+    /// 防壁コアの検証: inner 相当の処理が panic しても、`tokio::spawn` で隔離して
+    /// いるため `JoinError(is_panic)` として捕捉でき、`handle_request` と同じ要領で
+    /// `Response::err` に変換できる（=呼び出し元タスクは巻き込まれない）。
+    ///
+    /// `handle_request` の panic 経路を入力で再現するのは困難なため、防壁の構造
+    /// （spawn → JoinError → err 変換）を直接検証する。
+    ///
+    /// Verifies the guard core: a panic in the spawned task surfaces as a
+    /// `JoinError(is_panic)` and can be converted into an error response,
+    /// mirroring `handle_request`'s recovery path.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn spawned_panic_is_caught_as_join_error() {
+        let join = tokio::spawn(async move {
+            panic!("simulated downstream panic");
+        });
+        let result: Result<(), _> = join.await;
+        let err = result.expect_err("panic は JoinError になるはず");
+        assert!(err.is_panic(), "JoinError は panic 由来であるべき");
+
+        // handle_request と同じ変換でエラーレスポンスを作れること
+        // The same conversion handle_request uses yields an error response.
+        let resp = Response::err(format!("internal error: request handler panicked ({err})"));
+        assert!(!resp.success);
+        assert!(resp.error.unwrap().contains("panicked"));
+    }
+
     /// preloadリクエストでplay/stopがスキップされることを検証する
     /// Verifies that preload request skips play/stop blocks
     #[tokio::test]
@@ -404,6 +491,79 @@ mod tests {
         match lsp {
             super::super::protocol::LspResult::Diagnostics { items } => {
                 assert!(items.is_empty());
+            }
+            _ => panic!("Expected Diagnostics"),
+        }
+    }
+
+    /// 統合: resolution < 4 の壊れたドラム clip でも LSP 診断リクエストが
+    /// panic で落ちず、診断付きの成功レスポンスを返すことを検証する。
+    /// (A) パース段階で構文エラー化, (B) 防壁の二段構えが効くことの end-to-end 確認。
+    /// これが効かないと接続が切れ「エラー表示が消えない」症状になる。
+    ///
+    /// Integration: a broken drum clip with resolution < 4 no longer panics the
+    /// diagnostics request; it returns a successful response carrying diagnostics.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn handle_lsp_diagnostics_broken_drum_resolution_does_not_panic() {
+        let ev = Arc::new(Mutex::new(Evaluator::new(120.0)));
+        let source =
+            "clip d [bars 1] {\n  use tr808\n  resolution 1\n\n  cp oooo | oooo\n}\n".to_string();
+        let req = Request::LspDiagnostics {
+            source,
+            include_sources: None,
+        };
+        let resp = handle_request(&ev, req).await;
+        // 接続が切れず、成功レスポンスが返ること
+        // A successful response is returned (connection stays alive).
+        assert!(resp.success, "壊れた入力でも success レスポンスが返るべき");
+        match resp.lsp.unwrap() {
+            super::super::protocol::LspResult::Diagnostics { items } => {
+                // 構文エラーが診断として 1 件以上含まれること
+                // At least one syntax-error diagnostic is reported.
+                assert!(!items.is_empty(), "構文エラー診断が含まれるべき");
+            }
+            _ => panic!("Expected Diagnostics"),
+        }
+    }
+
+    /// 統合: 壊れたドラム clip の診断後、修正済みソースを再診断すると診断が
+    /// 空になり「エラー表示が消える」ことを検証する。
+    /// Integration: after a broken request, re-diagnosing fixed source clears it.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn handle_lsp_diagnostics_recovers_after_fix() {
+        let ev = Arc::new(Mutex::new(Evaluator::new(120.0)));
+
+        // 1) 壊れた状態
+        let broken = "clip d [bars 1] {\n  use tr808\n  resolution 1\n  cp oooo\n}\n".to_string();
+        let r1 = handle_request(
+            &ev,
+            Request::LspDiagnostics {
+                source: broken,
+                include_sources: None,
+            },
+        )
+        .await;
+        assert!(r1.success);
+
+        // 2) 修正後 (resolution を 16 に直す)
+        let fixed =
+            "clip d [bars 1] {\n  use tr808\n  resolution 16\n  cp oooo | oooo | oooo | oooo\n}\n"
+                .to_string();
+        let r2 = handle_request(
+            &ev,
+            Request::LspDiagnostics {
+                source: fixed,
+                include_sources: None,
+            },
+        )
+        .await;
+        assert!(r2.success);
+        match r2.lsp.unwrap() {
+            super::super::protocol::LspResult::Diagnostics { items } => {
+                assert!(
+                    items.is_empty(),
+                    "修正後は診断が空になるべき (エラーが消える)"
+                );
             }
             _ => panic!("Expected Diagnostics"),
         }

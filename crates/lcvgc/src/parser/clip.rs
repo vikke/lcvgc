@@ -410,6 +410,21 @@ fn parse_drum_body(input: &str) -> IResult<&str, DrumClipBody> {
     let (input, _) = ws1(input)?;
     let (input, resolution) = parse_u16(input)?;
 
+    // resolution < 4 だと beats_per_step = resolution/4 = 0 となり、
+    // 下流の `expand_pipe_cells` の `assert!(beats_per_step > 0)` で panic する。
+    // ここで構文エラー (nom Failure) として弾き、panic を未然に防ぐ。
+    // 4/4 拍子では 1 小節 = 4 拍なので、各拍に最低 1 セル割り当てるには
+    // resolution が 4 以上である必要がある。
+    //
+    // resolution < 4 would make beats_per_step (= resolution/4) == 0, which
+    // panics downstream in `expand_pipe_cells`. Reject it here as a parse error.
+    if resolution < 4 {
+        return Err(nom::Err::Failure(nom::error::Error::new(
+            input,
+            nom::error::ErrorKind::Verify,
+        )));
+    }
+
     // 4/4拍子用
     // for 4/4 time
     let beats_per_step = resolution as usize / 4;
@@ -805,6 +820,44 @@ mod tests {
                 assert_eq!(body.rows[0].hits.len(), 16);
                 assert_eq!(body.rows[1].instrument, "snare");
             }
+            _ => panic!("expected drum"),
+        }
+    }
+
+    /// resolution が 4 未満だと beats_per_step = resolution/4 = 0 となり、
+    /// 以前は `expand_pipe_cells` の `assert!(beats_per_step > 0)` で panic していた。
+    /// パース段階で構文エラー (nom Failure) として弾き、panic させないことを検証する。
+    ///
+    /// Verifies that resolution < 4 (which makes beats_per_step == 0) is rejected
+    /// as a syntax error at parse time instead of panicking downstream.
+    #[test]
+    fn test_drum_resolution_below_4_is_parse_error_not_panic() {
+        for res in [0u16, 1, 2, 3] {
+            let input =
+                format!("clip d [bars 1] {{\n  use tr808\n  resolution {res}\n  bd x.| x.\n}}");
+            // panic せず Err として返ること
+            // Returns Err without panicking
+            let parsed = std::panic::catch_unwind(|| parse_clip(&input));
+            assert!(
+                parsed.is_ok(),
+                "resolution {res} で panic してはいけない (catch_unwind が捕捉した)"
+            );
+            assert!(
+                parsed.unwrap().is_err(),
+                "resolution {res} は構文エラー (nom Err) になるべき"
+            );
+        }
+    }
+
+    /// resolution が 4 以上なら従来通りパース成功すること（境界値 4 の確認）。
+    /// Verifies resolution == 4 (the minimum valid value) still parses.
+    #[test]
+    fn test_drum_resolution_4_is_valid() {
+        let input = "clip d [bars 1] {\n  use tr808\n  resolution 4\n  bd x.x.\n}";
+        let (rest, clip) = parse_clip(input).unwrap();
+        assert_eq!(rest, "");
+        match &clip.body {
+            ClipBody::Drum(body) => assert_eq!(body.resolution, 4),
             _ => panic!("expected drum"),
         }
     }
