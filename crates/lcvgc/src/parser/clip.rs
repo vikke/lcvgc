@@ -482,7 +482,9 @@ fn parse_drum_body(input: &str) -> IResult<&str, DrumClipBody> {
                         ))
                     })?;
                 if let Some(last) = rows.last_mut() {
-                    last.probability = Some(prob);
+                    // 確率行を直前ヒット行の長さへ循環タイルで揃える。
+                    // Tile the probability row to the paired hit row's length.
+                    last.probability = Some(tile_probability_to_len(&prob, last.hits.len()));
                 }
             } else {
                 // ヒットパターン行 — `(...)*N` 展開 → トークナイズ → `|` 解決 →
@@ -532,7 +534,9 @@ fn parse_drum_body(input: &str) -> IResult<&str, DrumClipBody> {
                         ))
                     })?;
                 if let Some(last) = rows.last_mut() {
-                    last.probability = Some(prob);
+                    // 確率行を直前ヒット行の長さへ循環タイルで揃える。
+                    // Tile the probability row to the paired hit row's length.
+                    last.probability = Some(tile_probability_to_len(&prob, last.hits.len()));
                 }
             } else {
                 return Err(nom::Err::Failure(nom::error::Error::new(
@@ -608,8 +612,16 @@ fn build_drum_hits(
 /// `expand_pipe_cells` / `expand_bar_jump_cells` の `skip_cell` には
 /// 確率行の意味で「常に発音」を表す 100 を渡す (= drum 行 `Rest` に相当)。
 ///
+/// `>N` (小節ジャンプ) を含む場合のみ `expand_bar_jump_cells` で絶対位置
+/// スナップ + 小節境界への切り上げを行う。含まない場合は、確率行が勝手に
+/// 1 小節長へ膨らむのを避けるため切り上げを行わず、生のセル長のまま返す。
+/// これにより `..1.` (4 セル) のような短い確率行が、呼び出し側で
+/// [`tile_probability_to_len`] によりヒット行長へ正しく循環タイルされる。
+///
 /// Resolve a probability row string into a flat `Vec<u8>` via the new
-/// cell-token pipeline.
+/// cell-token pipeline. When the row contains no `>N` bar jump, the
+/// bar-boundary round-up step is skipped so the row keeps its raw cell
+/// length (letting the caller tile it to the hit row length).
 ///
 /// # Arguments
 /// * `pattern` - 確率行の生文字列 / raw probability row text
@@ -632,8 +644,50 @@ fn build_probability_row(
     // 確率行の `skip_cell` は「ステップなし = 常に発音 (100)」。
     // これは drum 行で `.` = Rest と扱うのと同じ「埋め役」。
     let piped = expand_pipe_cells(&tokens, beats_per_step, &100u8);
+    // `>N` を含まなければ小節切り上げをスキップし、生長を保持する。
+    // `>N` を含む場合のみ絶対位置スナップ (小節境界切り上げ込み) を行う。
+    let has_bar_jump = piped.iter().any(|t| matches!(t, CellToken::BarJump(_)));
+    if !has_bar_jump {
+        let flat: Vec<u8> = piped
+            .into_iter()
+            .filter_map(|t| match t {
+                CellToken::Cell(v) => Some(v),
+                _ => None,
+            })
+            .collect();
+        return Ok(flat);
+    }
     let flat = expand_bar_jump_cells(&piped, steps_per_bar, None, &100u8)?;
     Ok(flat)
+}
+
+/// 確率行を、紐づくヒット行の長さ (`target_len`) まで循環 (タイル) で揃える。
+///
+/// 確率行はヒット行と 1 対 1 で位置対応する。確率行が短い場合、コンパイラ側は
+/// 範囲外を「抽選なし = 100% 発音」として扱うため、`(x.x.) * 8` (32 セル) に対し
+/// `..1.` (4 セル) のように短い確率行を書くと 5 セル目以降が全て鳴ってしまう。
+/// これを避けるため、確率行を `prob[i % prob.len()]` で `target_len` まで繰り返し、
+/// `(..1.) * 8` と書いたのと同じ結果にする。
+///
+/// 長さの揃え方:
+///   - `prob.len() < target_len` : 循環 (タイル) で埋める
+///   - `prob.len() == target_len`: そのまま (値は変化しない)
+///   - `prob.len() > target_len` : `target_len` へ切り詰める
+///   - `prob.is_empty()`         : 循環元が無いので 100 (常に発音) で埋める
+///
+/// # Arguments
+/// * `prob` - 確率行の flat な確率値列 (0-100) / Flat probability values.
+/// * `target_len` - 紐づくヒット行のセル数 / Cell count of the paired hit row.
+///
+/// # Returns
+/// `target_len` 長に揃えた確率値列 / Probability values resized to `target_len`.
+fn tile_probability_to_len(prob: &[u8], target_len: usize) -> Vec<u8> {
+    if prob.is_empty() {
+        // 循環元が無い場合は「常に発音 (100)」で埋め、ゼロ除算を避ける。
+        // No source to tile from: fill with 100 (always fire) and avoid div-by-zero.
+        return vec![100u8; target_len];
+    }
+    (0..target_len).map(|i| prob[i % prob.len()]).collect()
 }
 
 /// 単一のピッチド要素を1つだけパースする。
@@ -1265,6 +1319,78 @@ mod tests {
                 assert_eq!(arp.direction, ArpeggioDirection::Up);
             }
             other => panic!("expected ChordName with arpeggio, got {other:?}"),
+        }
+    }
+
+    // --- 確率行の循環タイル (tile_probability_to_len) テスト ---
+
+    /// 確率行がヒット行より短い場合、循環 (タイル) で hit 長まで埋められる。
+    /// `..1.` (4 セル) を 8 セルへ → `..1...1.`。
+    #[test]
+    fn tile_probability_shorter_is_repeated() {
+        // `.` = 100, `1` = 10
+        let prob = vec![100, 100, 10, 100];
+        let tiled = tile_probability_to_len(&prob, 8);
+        assert_eq!(tiled, vec![100, 100, 10, 100, 100, 100, 10, 100]);
+    }
+
+    /// 割り切れない長さでも循環の途中で打ち切られる。
+    /// `..1.` (4 セル) を 6 セルへ → `..1...`（5,6 セル目は循環先頭の `.`,`.`）。
+    #[test]
+    fn tile_probability_non_divisible_length() {
+        let prob = vec![100, 100, 10, 100];
+        let tiled = tile_probability_to_len(&prob, 6);
+        assert_eq!(tiled, vec![100, 100, 10, 100, 100, 100]);
+    }
+
+    /// 確率行とヒット行が同長なら値は変化しない。
+    #[test]
+    fn tile_probability_same_length_unchanged() {
+        let prob = vec![100, 10, 100, 50];
+        let tiled = tile_probability_to_len(&prob, 4);
+        assert_eq!(tiled, prob);
+    }
+
+    /// 確率行がヒット行より長い場合は hit 長へ切り詰める。
+    #[test]
+    fn tile_probability_longer_is_truncated() {
+        let prob = vec![100, 10, 100, 50, 30, 20];
+        let tiled = tile_probability_to_len(&prob, 4);
+        assert_eq!(tiled, vec![100, 10, 100, 50]);
+    }
+
+    /// 空の確率行は target 長ぶんの 100 (=常に発音) で埋め、ゼロ除算しない。
+    #[test]
+    fn tile_probability_empty_fills_with_100() {
+        let prob: Vec<u8> = vec![];
+        let tiled = tile_probability_to_len(&prob, 3);
+        assert_eq!(tiled, vec![100, 100, 100]);
+    }
+
+    /// E2E: `(x.x.) * 8` + 短い確率行 `..1.` が、parse 後に
+    /// 32 セルへ循環タイルされ、各 `x.x.` の 3 セル目 (index 2,6,10,…) が 10。
+    #[test]
+    fn drum_probability_row_tiled_to_hits_via_parse() {
+        let input =
+            "clip d [bars 2] {\n  use tr808\n  resolution 16\n  cp (x.x.) * 8\n     ..1.\n}";
+        let (rest, clip) = parse_clip(input).unwrap();
+        assert_eq!(rest, "");
+        match &clip.body {
+            ClipBody::Drum(body) => {
+                let row = &body.rows[0];
+                assert_eq!(row.hits.len(), 32, "hits は (x.x.)*8 = 32 セル");
+                let prob = row
+                    .probability
+                    .as_ref()
+                    .expect("probability should be Some");
+                assert_eq!(prob.len(), 32, "probability も hit 長 32 へ揃うはず");
+                // `..1.` の循環: index % 4 == 2 が 10、それ以外は 100。
+                for (i, p) in prob.iter().enumerate() {
+                    let expected = if i % 4 == 2 { 10 } else { 100 };
+                    assert_eq!(*p, expected, "index={i} の確率が想定と異なる");
+                }
+            }
+            _ => panic!("expected drum"),
         }
     }
 }
