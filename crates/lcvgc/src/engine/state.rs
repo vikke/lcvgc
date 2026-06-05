@@ -444,6 +444,38 @@ impl StateManager {
     /// # Returns
     /// 次エントリへの `NextAction`（session の場合）、または non-session 時の
     /// `NextAction::ContinueScene`
+    /// §12 強制遷移を発火したら進む先エントリが存在するか（状態は変更しない）
+    ///
+    /// `force_advance_session_scene` を呼ぶ前の事前判定に使う。`false` の場合、
+    /// 強制遷移しても末尾超過で `SessionComplete`（= active_scene 解放 → MIDI clock
+    /// 含む停止）になるため、呼び出し側は強制遷移せず現 scene を維持すべき。
+    ///
+    /// 判定条件:
+    /// - session 再生中でない / runner 未設定 → 強制遷移自体が no-op なので `false`
+    /// - `pending_session` が有る → 次エントリ境界で新定義 runner へ差し替わり、その
+    ///   先頭エントリへ着地できるので `true`
+    /// - それ以外 → 現 runner の `has_forced_next_entry()` に従う
+    ///
+    /// Whether a §12 forced advance would land on a real entry (no mutation).
+    /// When `false`, a forced advance would hit `SessionComplete` and stop
+    /// playback, so the caller should keep the current scene instead.
+    ///
+    /// # Returns
+    /// 強制遷移で有効な scene へ進めるなら `true`、停止する（進む先が無い）なら `false`
+    pub fn has_forced_next_session_entry(&self) -> bool {
+        if !matches!(self.state, PlaybackState::PlayingSession { .. }) {
+            return false;
+        }
+        let Some(runner) = self.session_runner.as_ref() else {
+            return false;
+        };
+        // pending_session があれば新 runner の先頭エントリへ着地できる
+        if self.pending_session.is_some() {
+            return true;
+        }
+        runner.has_forced_next_entry()
+    }
+
     pub fn force_advance_session_scene(&mut self) -> NextAction {
         // session 再生中でなければ何もしない
         if !matches!(self.state, PlaybackState::PlayingSession { .. }) {
@@ -1091,6 +1123,50 @@ mod tests {
             }
         );
         assert_eq!(sm.scene_loop_complete(), NextAction::SessionComplete);
+    }
+
+    /// §12 回帰: has_forced_next_session_entry が「強制遷移で停止するか」を予測する
+    ///
+    /// 単一エントリ session(`play session NAME` = repeat なし = Once)では
+    /// 進む先が無く false。pending_session があれば新定義の先頭へ着地できるため true。
+    /// この判定が false の時に evaluator が強制遷移を抑止し、停止を防ぐ。
+    #[test]
+    fn has_forced_next_session_entry_predicts_stop() {
+        // 単一エントリ・session 非ループ(Once 再生) → 進む先が無い → false
+        let mut sm = StateManager::new();
+        let single = session_def("song", vec![("s1", SessionRepeat::Loop)]);
+        sm.apply_play_session(&single, RepeatSpec::Once);
+        assert!(
+            !sm.has_forced_next_session_entry(),
+            "単一エントリ Once 再生は強制遷移すると Done(停止)になる"
+        );
+
+        // pending_session を積めば新定義の先頭へ着地できる → true
+        let new_def = session_def("song", vec![("s1", SessionRepeat::Loop)]);
+        sm.notify_session_updated(&new_def);
+        assert!(
+            sm.has_forced_next_session_entry(),
+            "pending_session があれば新 runner の先頭へ進める"
+        );
+
+        // 2 エントリ・先頭 → 次エントリがあるので true
+        let mut sm = StateManager::new();
+        let two = session_def(
+            "song",
+            vec![("s1", SessionRepeat::Loop), ("s2", SessionRepeat::Once)],
+        );
+        sm.apply_play_session(&two, RepeatSpec::Once);
+        assert!(
+            sm.has_forced_next_session_entry(),
+            "先頭からは次エントリ s2 へ進める"
+        );
+
+        // session 再生中でない → false
+        let sm = StateManager::new();
+        assert!(
+            !sm.has_forced_next_session_entry(),
+            "session 再生中でなければ false"
+        );
     }
 
     /// §12: 別名 session の eval は現在の session に影響しない

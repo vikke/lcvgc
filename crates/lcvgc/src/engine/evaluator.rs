@@ -428,6 +428,32 @@ impl Evaluator {
         }
         self.force_scene_advance_on_grid = false;
 
+        // 進む先エントリが無い（単一エントリ / 末尾エントリ非ループ）session では、
+        // 強制遷移すると force_next_entry が末尾超過 Done → SessionComplete を返し、
+        // active_scene=None で MIDI clock 含む送出が停止してしまう。
+        // この場合は次の曲へ進むのではなく「現 scene を新定義で作り直して鳴らし
+        // 続ける」のがユーザーの編集→反映ループの意図に合う（案C）。よって強制遷移
+        // せず、現 active_scene を最新の scene 定義でリビルドして Continue を返す。
+        // clip 単位の上書きは既に replace_clip で pending 反映済みなので、ここでの
+        // リビルドは主に scene 構成上書きを取り込むためのもの。
+        //
+        // When the session has no next entry to advance to (single-entry, or a
+        // non-looping tail entry), a forced advance would return SessionComplete
+        // and clear active_scene, stopping all MIDI output (clock included).
+        // Instead of advancing, rebuild the current scene from its latest
+        // definition and keep playing (case C: this matches the user's
+        // edit→reflect loop intent). Per-clip overwrites are already staged via
+        // replace_clip; this rebuild mainly absorbs scene-composition overwrites.
+        if !self.state.has_forced_next_session_entry() {
+            if let Some(name) = self.active_scene_name.clone() {
+                if let Some(scene_def) = self.registry.get_scene(&name).cloned() {
+                    let player = self.build_scene_player(&scene_def)?;
+                    self.active_scene = Some(player);
+                }
+            }
+            return Ok(SceneTransitionOutcome::Continue);
+        }
+
         let action = self.state.force_advance_session_scene();
         match action {
             NextAction::ContinueScene => Ok(SceneTransitionOutcome::Continue),
@@ -2544,6 +2570,165 @@ mod tests {
         // force フラグが立ち、grid 境界で次エントリへ
         let outcome = ev.try_force_advance_session_on_grid().unwrap();
         assert!(matches!(outcome, SceneTransitionOutcome::NextScene { .. }));
+    }
+
+    /// 1 clip + 1 scene + 単一エントリ session（s1=a, Loop）を構築して Play(Session) する
+    ///
+    /// 進む先エントリが無い session。再生中の再 eval で §12 強制遷移が発火しても
+    /// SessionComplete で止まってはならず、現 scene を維持し続ける事を検証するための土台。
+    ///
+    /// Builds 1 clip + 1 scene + a single-entry (s1=a, Loop) session and plays it.
+    /// There is no next entry to advance to, so a §12 forced transition must not
+    /// stop playback (SessionComplete) but keep the current scene active.
+    fn setup_playing_session_single_entry() -> Evaluator {
+        let mut ev = Evaluator::new(120.0);
+        ev.eval_block(Block::Clip(ClipDef {
+            name: "a".into(),
+            options: ClipOptions::default(),
+            body: ClipBody::Pitched(PitchedClipBody {
+                lines: vec![],
+                cc_automations: vec![],
+            }),
+        }))
+        .unwrap();
+        ev.eval_block(Block::Scene(SceneDef {
+            name: "s1".into(),
+            entries: vec![crate::ast::scene::SceneEntry::Clip {
+                candidates: vec![crate::ast::scene::ShuffleCandidate {
+                    clip: "a".into(),
+                    weight: 1,
+                }],
+                probability: None,
+                muted: false,
+            }],
+        }))
+        .unwrap();
+        ev.eval_block(Block::Session(SessionDef {
+            name: "song".into(),
+            entries: vec![crate::ast::session::SessionEntry {
+                scene: "s1".into(),
+                repeat: crate::ast::session::SessionRepeat::Loop,
+            }],
+        }))
+        .unwrap();
+        // `play session NAME`（repeat 指定なし）は RepeatSpec::Once になる
+        // （parser::playback の default）。これが本不具合の現実の再現条件で、
+        // session 全体は非ループ（session_looping=false）となり、§12 強制遷移時に
+        // 末尾超過 Done → SessionComplete で停止していた。
+        // A bare `play session NAME` parses to RepeatSpec::Once (parser default),
+        // so the session is non-looping — the exact condition that triggered the
+        // stop bug.
+        ev.eval_block(Block::Play(PlayCommand {
+            target: PlayTarget::Session("song".into()),
+            repeat: RepeatSpec::Once,
+        }))
+        .unwrap();
+        ev
+    }
+
+    /// §12 回帰: 単一エントリ session 再生中に使用中 clip を上書きしても、
+    /// 進む先エントリが無いため SessionComplete にならず現 scene を維持する。
+    /// （旧挙動では force_next_entry が末尾超過 Done → active_scene=None で停止していた）
+    ///
+    /// Regression: overwriting an in-use clip during a single-entry session must
+    /// keep the current scene (no SessionComplete, no stop).
+    #[test]
+    fn reeval_clip_in_single_entry_session_keeps_scene() {
+        let mut ev = setup_playing_session_single_entry();
+        assert_eq!(ev.active_scene_name.as_deref(), Some("s1"));
+
+        // s1 が使う clip a を上書き → force フラグが立つ
+        ev.eval_block(Block::Clip(ClipDef {
+            name: "a".into(),
+            options: ClipOptions::default(),
+            body: ClipBody::Pitched(PitchedClipBody {
+                lines: vec![],
+                cc_automations: vec![],
+            }),
+        }))
+        .unwrap();
+
+        // grid 境界: 進む先が無いので Continue（現 scene 維持）であるべき。停止してはならない。
+        assert_eq!(
+            ev.try_force_advance_session_on_grid().unwrap(),
+            SceneTransitionOutcome::Continue
+        );
+        assert_eq!(
+            ev.active_scene_name.as_deref(),
+            Some("s1"),
+            "単一エントリ session では現 scene を維持し続ける（停止しない）"
+        );
+        assert!(
+            ev.active_scene().is_some(),
+            "active_scene が None になってはならない（MIDI clock 停止の原因）"
+        );
+    }
+
+    /// §12 回帰: 単一エントリ session 再生中に再生中 scene の構成を上書きしても停止しない。
+    /// Regression: overwriting the active scene in a single-entry session must not stop.
+    #[test]
+    fn reeval_active_scene_in_single_entry_session_keeps_scene() {
+        let mut ev = setup_playing_session_single_entry();
+        // 再生中 scene s1 の構成を上書き
+        ev.eval_block(Block::Scene(SceneDef {
+            name: "s1".into(),
+            entries: vec![crate::ast::scene::SceneEntry::Clip {
+                candidates: vec![crate::ast::scene::ShuffleCandidate {
+                    clip: "a".into(),
+                    weight: 1,
+                }],
+                probability: None,
+                muted: false,
+            }],
+        }))
+        .unwrap();
+
+        assert_eq!(
+            ev.try_force_advance_session_on_grid().unwrap(),
+            SceneTransitionOutcome::Continue
+        );
+        assert_eq!(ev.active_scene_name.as_deref(), Some("s1"));
+        assert!(ev.active_scene().is_some());
+    }
+
+    /// §12 回帰: 単一エントリ session 定義そのものを上書きしても停止しない。
+    ///
+    /// このケースは `pending_session` 差し替え経路を通り、新 runner の先頭エントリ
+    /// （= 同じ s1）へ着地するため結果は `NextScene { s1 }` になる。clip/scene 上書きと
+    /// 違い `Continue` ではないが、いずれにせよ **active_scene を維持し停止しない**点が
+    /// 本不具合の防止要件。よってここでは「s1 が active のままで、None にならない」事を検証する。
+    ///
+    /// Regression: overwriting the single-entry session definition must not stop.
+    /// This goes through the `pending_session` swap path and lands on the new
+    /// runner's first (same) entry s1, so the outcome is `NextScene { s1 }` rather
+    /// than `Continue`. Either way the requirement is: active_scene stays set.
+    #[test]
+    fn reeval_single_entry_session_def_keeps_scene() {
+        let mut ev = setup_playing_session_single_entry();
+        // song を上書き（同名・単一エントリのまま）
+        ev.eval_block(Block::Session(SessionDef {
+            name: "song".into(),
+            entries: vec![crate::ast::session::SessionEntry {
+                scene: "s1".into(),
+                repeat: crate::ast::session::SessionRepeat::Loop,
+            }],
+        }))
+        .unwrap();
+
+        let outcome = ev.try_force_advance_session_on_grid().unwrap();
+        // 停止系（SceneComplete / SessionComplete）でない事が要件
+        assert!(
+            !matches!(
+                outcome,
+                SceneTransitionOutcome::SceneComplete | SceneTransitionOutcome::SessionComplete
+            ),
+            "停止してはならない（active_scene=None で MIDI clock が止まる）: {outcome:?}"
+        );
+        assert_eq!(ev.active_scene_name.as_deref(), Some("s1"));
+        assert!(
+            ev.active_scene().is_some(),
+            "active_scene が None になってはならない"
+        );
     }
 
     /// 通常の PlayScene（非 session）では clip 上書きで force フラグは立たない

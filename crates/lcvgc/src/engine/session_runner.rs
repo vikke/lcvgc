@@ -169,6 +169,26 @@ impl SessionRunner {
         self.current_index >= self.entries.len()
     }
 
+    /// `force_next_entry()` を呼んだ時に進む先エントリが存在するか（状態は変更しない）
+    ///
+    /// §12 の更新起因強制遷移を発火する前に呼び、`false` なら強制遷移しても
+    /// 進む先が無く `Done`（= 停止）になる事を意味する。`force_next_entry` の
+    /// 折り返し判定（末尾超過時に session_looping なら先頭へ wrap）と同じ条件を
+    /// 副作用なしでミラーする。これにより呼び出し側は「進む先が無いなら強制遷移
+    /// せず現 scene を維持する」分岐を選べる。
+    ///
+    /// Whether `force_next_entry()` would land on a real entry (no mutation).
+    /// Mirrors `force_next_entry`'s wrap rule (advance one; if past the end,
+    /// only session-looping wraps to the start) so callers can avoid triggering
+    /// a forced advance that would otherwise return `Done` (a stop).
+    ///
+    /// # Returns
+    /// 強制遷移で有効なエントリへ着地できるなら `true`、末尾超過で `Done` になるなら `false`
+    pub fn has_forced_next_entry(&self) -> bool {
+        let next = self.current_index + 1;
+        next < self.entries.len() || (self.session_looping && !self.entries.is_empty())
+    }
+
     /// 現在のエントリインデックス
     /// Returns the current entry index
     pub fn current_index(&self) -> usize {
@@ -482,5 +502,56 @@ mod tests {
             SessionAction::PlayScene("a".to_string())
         );
         assert!(runner2.last_advance_crossed_entry());
+    }
+
+    // 16. has_forced_next_entry: force_next_entry が Done になるか否かを副作用なしで予測する
+    // has_forced_next_entry predicts whether force_next_entry would land on a real
+    // entry, without mutating state.
+    #[test]
+    fn has_forced_next_entry_predicts_force_outcome() {
+        // 単一エントリ非ループ: 進む先が無い → false（強制遷移すると Done になる）
+        let single = session(vec![entry("only", SessionRepeat::Loop)]);
+        let runner = SessionRunner::new(&single);
+        assert!(
+            !runner.has_forced_next_entry(),
+            "単一エントリ非ループは進む先が無い"
+        );
+
+        // 2 エントリ非ループ・先頭: 次エントリ b があるので true
+        let two = session(vec![
+            entry("a", SessionRepeat::Loop),
+            entry("b", SessionRepeat::Once),
+        ]);
+        let runner = SessionRunner::new(&two);
+        assert!(
+            runner.has_forced_next_entry(),
+            "先頭からは次エントリ b へ進める"
+        );
+
+        // 2 エントリ非ループ・末尾へ進めた後: 進む先が無い → false
+        let mut runner = SessionRunner::new(&two);
+        runner.force_next_entry(); // a → b（末尾）
+        assert!(
+            !runner.has_forced_next_entry(),
+            "末尾エントリ非ループからは進む先が無い"
+        );
+
+        // 全体ループ・末尾: 先頭へ折り返せるので true
+        let mut looping = SessionRunner::new_looping(&two);
+        looping.force_next_entry(); // a → b（末尾）
+        assert!(
+            looping.has_forced_next_entry(),
+            "全体ループなら末尾からでも先頭へ折り返せる"
+        );
+
+        // 空 session: 進む先が無い → false
+        let empty = session(vec![]);
+        let runner = SessionRunner::new(&empty);
+        assert!(!runner.has_forced_next_entry());
+        let runner = SessionRunner::new_looping(&empty);
+        assert!(
+            !runner.has_forced_next_entry(),
+            "空 session は session_looping でも進む先が無い"
+        );
     }
 }
