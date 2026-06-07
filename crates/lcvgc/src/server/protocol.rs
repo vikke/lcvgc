@@ -88,6 +88,62 @@ pub enum Request {
         #[serde(default)]
         include_sources: Option<Vec<IncludeSource>>,
     },
+    /// MIDI入力購読開始リクエスト。
+    ///
+    /// 指定した MIDI 入力ポートを購読し、以降このコネクション上に演奏内容を
+    /// `midi_in_event`（[`ServerEvent::MidiInEvent`]）として非同期にプッシュする。
+    /// 即時レスポンスとして購読成否（`Response`）を返す。1 コネクションにつき
+    /// 購読は 1 つで、再度送ると購読先を張り替える。
+    ///
+    /// Subscribes to a MIDI input port; subsequently the daemon pushes played
+    /// notes as `midi_in_event` on this connection. An immediate `Response`
+    /// reports success/failure. One subscription per connection; re-sending
+    /// replaces the target port.
+    #[serde(rename = "subscribe_midi_in")]
+    SubscribeMidiIn {
+        /// 購読する入力ポート名（`list_ports` の `direction:"in"` のいずれか）
+        /// Input port name to subscribe (one of `list_ports`' `in` ports)
+        port: String,
+    },
+    /// MIDI入力購読解除リクエスト。
+    ///
+    /// 現在のコネクションの MIDI 入力購読を解除する。購読していない場合も
+    /// 成功レスポンスを返す（冪等）。
+    ///
+    /// Unsubscribes this connection's MIDI input subscription. Idempotent:
+    /// returns success even if not currently subscribed.
+    #[serde(rename = "unsubscribe_midi_in")]
+    UnsubscribeMidiIn,
+}
+
+/// サーバーからクライアントへ非同期にプッシュするイベント電文。
+///
+/// 通常の `Response`（リクエストへの 1:1 応答）とは別系統で、リクエストを
+/// 伴わずサーバー起点で送出される。改行区切り JSON の 1 行として、レスポンスと
+/// 同じコネクションに混在して書き込まれる。クライアントは最上位の `type`
+/// フィールドでイベントとレスポンスを判別する。
+///
+/// Server-initiated push event, distinct from `Response` (1:1 reply). Emitted
+/// without a triggering request and interleaved on the same connection as
+/// newline-delimited JSON. Clients distinguish events from responses via the
+/// top-level `type` field.
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
+#[serde(tag = "type")]
+pub enum ServerEvent {
+    /// MIDI入力イベント: 購読中ポートで受信した発音を DSL トークン化したもの。
+    /// MIDI input event: a received note rendered as a DSL token.
+    #[serde(rename = "midi_in_event")]
+    MidiInEvent {
+        /// DSL トークン（例 `c:4`）。clip 本体に挿入可能な自己完結表記。
+        /// DSL token (e.g. `c:4`); self-contained for insertion into a clip body.
+        dsl: String,
+        /// MIDI ノート番号 (0-127)。クライアント側の追加処理用。
+        /// MIDI note number (0-127), for client-side use.
+        note: u8,
+        /// 受信した生 MIDI バイト列。デバッグ・拡張用。
+        /// Raw received MIDI bytes, for debugging/extension.
+        raw: Vec<u8>,
+    },
 }
 
 /// インクルードファイルのソース情報（Lua側から送信）
@@ -602,6 +658,53 @@ mod tests {
         assert!(resp.error.is_none());
         assert!(resp.ports.is_none());
         assert!(resp.lsp.is_some());
+    }
+
+    #[test]
+    fn deserialize_subscribe_midi_in_request() {
+        let json = r#"{"type":"subscribe_midi_in","port":"IAC Driver Bus 1"}"#;
+        let req: Request = serde_json::from_str(json).unwrap();
+        match req {
+            Request::SubscribeMidiIn { port } => assert_eq!(port, "IAC Driver Bus 1"),
+            _ => panic!("Expected SubscribeMidiIn"),
+        }
+    }
+
+    #[test]
+    fn deserialize_unsubscribe_midi_in_request() {
+        let json = r#"{"type":"unsubscribe_midi_in"}"#;
+        let req: Request = serde_json::from_str(json).unwrap();
+        assert!(matches!(req, Request::UnsubscribeMidiIn));
+    }
+
+    /// `ServerEvent::MidiInEvent` が仕様どおりの JSON にシリアライズされる。
+    /// `ServerEvent::MidiInEvent` serializes to the documented JSON shape.
+    #[test]
+    fn serialize_midi_in_event() {
+        let ev = ServerEvent::MidiInEvent {
+            dsl: "c:4".to_string(),
+            note: 60,
+            raw: vec![0x90, 60, 100],
+        };
+        let json = serde_json::to_string(&ev).unwrap();
+        assert!(json.contains("\"type\":\"midi_in_event\""));
+        assert!(json.contains("\"dsl\":\"c:4\""));
+        assert!(json.contains("\"note\":60"));
+        assert!(json.contains("\"raw\":[144,60,100]"));
+    }
+
+    /// イベント JSON はラウンドトリップ（serialize→deserialize）で一致する。
+    /// The event JSON round-trips (serialize → deserialize).
+    #[test]
+    fn round_trip_midi_in_event() {
+        let ev = ServerEvent::MidiInEvent {
+            dsl: "e:4".to_string(),
+            note: 64,
+            raw: vec![0x90, 64, 90],
+        };
+        let json = serde_json::to_string(&ev).unwrap();
+        let back: ServerEvent = serde_json::from_str(&json).unwrap();
+        assert_eq!(ev, back);
     }
 
     #[test]

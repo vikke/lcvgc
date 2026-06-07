@@ -5,11 +5,13 @@ pub mod cc;
 pub mod channel;
 pub mod chord;
 pub mod gate;
+pub mod input;
 pub mod message;
 pub mod monitor;
 pub mod note;
 pub mod port;
 pub mod probability;
+pub mod transcribe;
 pub mod velocity;
 
 /// MIDI操作に関するエラー型

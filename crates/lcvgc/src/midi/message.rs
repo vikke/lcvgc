@@ -110,6 +110,75 @@ impl MidiMessage {
             MidiMessage::Clock => vec![0xF8],
         }
     }
+
+    /// MIDIバイト列から `MidiMessage` をパースする（ワイヤ受信用）。
+    ///
+    /// MIDI 入力ポートから届いた生バイト列を構造化メッセージへ変換する。
+    /// 対応するのは Note On / Note Off / Control Change / Program Change の
+    /// チャンネルボイスメッセージと、System Real-Time (Start/Stop/Continue/
+    /// Clock) の単一バイトメッセージ。長さ不足や未対応のステータスバイトは
+    /// `None` を返す。ランニングステータスや SysEx は未対応。
+    ///
+    /// Parses a `MidiMessage` from raw wire bytes received on a MIDI input
+    /// port. Supports Note On/Off, Control Change, Program Change channel-voice
+    /// messages plus single-byte System Real-Time messages. Returns `None` for
+    /// truncated input or unsupported status bytes. Running status and SysEx are
+    /// not supported.
+    ///
+    /// # 引数 / Arguments
+    /// * `bytes` - MIDIワイヤバイト列 / MIDI wire byte sequence
+    ///
+    /// # 戻り値 / Returns
+    /// パースできれば `Some(MidiMessage)`、できなければ `None`
+    /// `Some(MidiMessage)` if parseable, otherwise `None`
+    pub fn from_bytes(bytes: &[u8]) -> Option<MidiMessage> {
+        let status = *bytes.first()?;
+
+        // System Real-Time（単一バイト、チャンネルを含まない）。
+        // System Real-Time (single byte, channel-less).
+        match status {
+            0xF8 => return Some(MidiMessage::Clock),
+            0xFA => return Some(MidiMessage::Start),
+            0xFB => return Some(MidiMessage::Continue),
+            0xFC => return Some(MidiMessage::Stop),
+            _ => {}
+        }
+
+        // チャンネルボイスメッセージ: 上位ニブルが種別、下位ニブルが 0-based ch。
+        // Channel-voice messages: high nibble = kind, low nibble = 0-based ch.
+        let kind = status & 0xF0;
+        let channel = MidiChannel::from_zero_based(status & 0x0F).ok()?;
+        match kind {
+            0x80 => {
+                let note = *bytes.get(1)?;
+                let velocity = *bytes.get(2)?;
+                Some(MidiMessage::NoteOff {
+                    channel,
+                    note,
+                    velocity,
+                })
+            }
+            0x90 => {
+                let note = *bytes.get(1)?;
+                let velocity = *bytes.get(2)?;
+                Some(MidiMessage::NoteOn {
+                    channel,
+                    note,
+                    velocity,
+                })
+            }
+            0xB0 => {
+                let cc = *bytes.get(1)?;
+                let value = *bytes.get(2)?;
+                Some(MidiMessage::ControlChange { channel, cc, value })
+            }
+            0xC0 => {
+                let program = *bytes.get(1)?;
+                Some(MidiMessage::ProgramChange { channel, program })
+            }
+            _ => None,
+        }
+    }
 }
 
 #[cfg(test)]
@@ -228,5 +297,119 @@ mod tests {
     #[test]
     fn system_realtime_clock() {
         assert_eq!(MidiMessage::Clock.to_bytes(), vec![0xF8]);
+    }
+
+    // --- from_bytes（ワイヤ受信パース）---
+    // --- from_bytes (wire-receive parsing) ---
+
+    #[test]
+    fn from_bytes_note_on() {
+        let msg = MidiMessage::from_bytes(&[0x90, 60, 100]).unwrap();
+        assert_eq!(
+            msg,
+            MidiMessage::NoteOn {
+                channel: ch0(),
+                note: 60,
+                velocity: 100,
+            }
+        );
+    }
+
+    #[test]
+    fn from_bytes_note_off() {
+        let msg = MidiMessage::from_bytes(&[0x80, 60, 0]).unwrap();
+        assert_eq!(
+            msg,
+            MidiMessage::NoteOff {
+                channel: ch0(),
+                note: 60,
+                velocity: 0,
+            }
+        );
+    }
+
+    #[test]
+    fn from_bytes_note_on_drum_ch9() {
+        let msg = MidiMessage::from_bytes(&[0x99, 36, 127]).unwrap();
+        assert_eq!(
+            msg,
+            MidiMessage::NoteOn {
+                channel: MidiChannel::from_zero_based(9).unwrap(),
+                note: 36,
+                velocity: 127,
+            }
+        );
+    }
+
+    #[test]
+    fn from_bytes_control_change() {
+        let msg = MidiMessage::from_bytes(&[0xB0, 74, 64]).unwrap();
+        assert_eq!(
+            msg,
+            MidiMessage::ControlChange {
+                channel: ch0(),
+                cc: 74,
+                value: 64,
+            }
+        );
+    }
+
+    #[test]
+    fn from_bytes_program_change() {
+        let msg = MidiMessage::from_bytes(&[0xC0, 5]).unwrap();
+        assert_eq!(
+            msg,
+            MidiMessage::ProgramChange {
+                channel: ch0(),
+                program: 5,
+            }
+        );
+    }
+
+    #[test]
+    fn from_bytes_system_realtime() {
+        assert_eq!(
+            MidiMessage::from_bytes(&[0xFA]).unwrap(),
+            MidiMessage::Start
+        );
+        assert_eq!(MidiMessage::from_bytes(&[0xFC]).unwrap(), MidiMessage::Stop);
+        assert_eq!(
+            MidiMessage::from_bytes(&[0xFB]).unwrap(),
+            MidiMessage::Continue
+        );
+        assert_eq!(
+            MidiMessage::from_bytes(&[0xF8]).unwrap(),
+            MidiMessage::Clock
+        );
+    }
+
+    /// 空バイト列・長さ不足は None を返す。
+    /// Empty or truncated byte sequences yield None.
+    #[test]
+    fn from_bytes_too_short_is_none() {
+        assert!(MidiMessage::from_bytes(&[]).is_none());
+        assert!(MidiMessage::from_bytes(&[0x90]).is_none()); // note 欠落
+        assert!(MidiMessage::from_bytes(&[0x90, 60]).is_none()); // velocity 欠落
+        assert!(MidiMessage::from_bytes(&[0xC0]).is_none()); // program 欠落
+    }
+
+    /// 未対応のステータスバイト（例: ピッチベンド 0xE0、SysEx 0xF0）は None。
+    /// Unsupported status bytes (e.g. pitch bend, SysEx) yield None.
+    #[test]
+    fn from_bytes_unsupported_status_is_none() {
+        assert!(MidiMessage::from_bytes(&[0xE0, 0, 64]).is_none()); // pitch bend
+        assert!(MidiMessage::from_bytes(&[0xF0, 0x7E]).is_none()); // SysEx
+    }
+
+    /// to_bytes → from_bytes のラウンドトリップが一致する（対応メッセージ）。
+    /// Round-trip to_bytes → from_bytes is identity for supported messages.
+    #[test]
+    fn round_trip_note_on() {
+        let msg = MidiMessage::NoteOn {
+            channel: MidiChannel::from_zero_based(3).unwrap(),
+            note: 64,
+            velocity: 90,
+        };
+        assert_eq!(MidiMessage::from_bytes(&msg.to_bytes()).unwrap(), msg);
     }
 }
