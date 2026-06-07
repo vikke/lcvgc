@@ -28,6 +28,15 @@ Daemon → Client : JSON response\n
 
 Each request is an independent transaction. No session state is retained between requests.
 
+> **Exception (server-initiated push)**: Only on a connection that has
+> subscribed to MIDI input via `subscribe_midi_in` (4.10), the daemon goes
+> beyond the one-request-equals-one-response rule above and actively emits
+> `midi_in_event` messages (Section 4.12) without a triggering request. This
+> subscription is the only retained session state, scoped to that connection
+> (released on disconnect or via `unsubscribe_midi_in`). Push messages arrive
+> interleaved on the same connection as ordinary responses, as newline-delimited
+> JSON, so the client distinguishes them by the top-level `type` field.
+
 ---
 
 ## 3. Common Response Structure
@@ -471,6 +480,106 @@ Returns a list of symbols (blocks) defined in the source.
 | `lsp.items[].start_col`  | number  | Symbol start column (0-based, byte offset)                |
 | `lsp.items[].end_line`   | number  | Symbol end line (0-based)                                 |
 | `lsp.items[].end_col`    | number  | Symbol end column (0-based, byte offset)                  |
+
+---
+
+### 4.10 subscribe_midi_in (Start MIDI Input Subscription)
+
+Subscribes to the specified MIDI input port. Thereafter, on this connection,
+played notes are received asynchronously as `midi_in_event` messages
+(Section 4.12), each rendered as a DSL token. An immediate response reports
+whether the subscription succeeded.
+
+There is one subscription per connection. Sending `subscribe_midi_in` again
+while subscribed switches the subscription to the new port. The subscription
+continues until the connection closes or `unsubscribe_midi_in` (4.11) is sent.
+
+#### Request
+
+```json
+{"type": "subscribe_midi_in", "port": "IAC Driver Bus 1"}
+```
+
+| Field    | Type   | Description                                                       |
+|----------|--------|-------------------------------------------------------------------|
+| `type`   | string | Fixed value `"subscribe_midi_in"`                                 |
+| `port`   | string | Input port name to subscribe (one of `list_ports`' `direction:"in"` ports) |
+
+#### Response (success)
+
+```json
+{"success": true, "message": "subscribed: IAC Driver Bus 1"}
+```
+
+#### Response (error)
+
+```json
+{"success": false, "error": "<error message>"}
+```
+
+Returns an error when the port is not found or the MIDI subsystem cannot be
+opened. Even on error the connection is not torn down; subsequent requests are
+processed normally.
+
+---
+
+### 4.11 unsubscribe_midi_in (Cancel MIDI Input Subscription)
+
+Cancels this connection's MIDI input subscription. Returns success even when not
+subscribed (idempotent).
+
+#### Request
+
+```json
+{"type": "unsubscribe_midi_in"}
+```
+
+| Field  | Type   | Description                          |
+|--------|--------|--------------------------------------|
+| `type` | string | Fixed value `"unsubscribe_midi_in"`  |
+
+#### Response
+
+```json
+{"success": true, "message": "unsubscribed"}
+```
+
+---
+
+### 4.12 midi_in_event (Server-Initiated Push Message)
+
+An event message that the daemon actively sends, without a triggering request,
+on a connection subscribed via `subscribe_midi_in` (4.10). Each **note onset
+(NoteOn with velocity > 0)** received on the MIDI input port is converted into a
+DSL pitch token and reported one at a time.
+
+> **Note**: This message is a server-initiated push, not a response. Unlike an
+> ordinary response (which carries a `success` field), it carries a top-level
+> `type` field. The client distinguishes the two by the presence of `type` on
+> the received line.
+>
+> **Excluded**: NoteOff, NoteOn with velocity 0, Control Change, Program Change,
+> and System Real-Time (Clock/Start/Stop/Continue) produce no DSL text and are
+> therefore not emitted. SysEx, timing clock, and active sensing are ignored on
+> the daemon side.
+
+#### Message (Daemon → Client)
+
+```json
+{"type": "midi_in_event", "dsl": "c:4", "note": 60, "raw": [144, 60, 100]}
+```
+
+| Field   | Type          | Description                                                  |
+|---------|---------------|-------------------------------------------------------------|
+| `type`  | string        | Fixed value `"midi_in_event"`                               |
+| `dsl`   | string        | DSL pitch token (`name:octave` form, e.g. `c:4` / `c#:4`); a self-contained notation that can be inserted directly into a clip body |
+| `note`  | number        | MIDI note number (0-127)                                     |
+| `raw`   | array(number) | Raw received MIDI bytes (for debugging/extension)           |
+
+> **Octave convention**: `note` 60 = `c:4` (MIDI 60 = C4). Note names use
+> lowercase + `#` notation, conforming to the pitch-token grammar
+> (`instrument note[:octave][:duration]`). No duration or timing is attached
+> (real-time, per-event conversion).
 
 ---
 

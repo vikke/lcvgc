@@ -322,6 +322,19 @@ async fn handle_request_inner(evaluator: &Arc<Mutex<Evaluator>>, request: Reques
                 .collect();
             Response::lsp(LspResult::DocumentSymbols { items })
         }
+        // MIDI 入力購読系は接続レイヤ (`server::handle_connection`) で処理する。
+        // 出力集約チャネルと購読ハンドルのライフタイムが接続スコープに紐づくため、
+        // ステートレスな本ハンドラでは扱えない。万一ここへ到達したら設計不整合
+        // なので、接続を切らずに明示的なエラーレスポンスを返す。
+        //
+        // MIDI input subscription requests are handled in the connection layer
+        // (`server::handle_connection`), since the outbound channel and the
+        // subscription handle are scoped to the connection. Reaching this
+        // stateless handler indicates a routing bug; return an explicit error.
+        Request::SubscribeMidiIn { .. } | Request::UnsubscribeMidiIn => Response::err(
+            "MIDI 入力購読リクエストは接続レイヤで処理されます / \
+             MIDI input subscription requests are handled at the connection layer",
+        ),
     }
 }
 
