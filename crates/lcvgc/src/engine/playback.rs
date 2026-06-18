@@ -1883,6 +1883,90 @@ mod tests {
         assert!(!lock_wait_exceeds_threshold(0, 0));
     }
 
+    /// 案B: ロック競合が無い通常 step では last_lock_wait_us がごく小さいことを確認する。
+    ///
+    /// 演奏状況（play 済み Evaluator）を作り、誰もロックを保持していない状態で
+    /// step_once を回す。ロック取得は即座に成功するはずなので、待ち時間は十分小さく、
+    /// 1ms tick (BPM=120, PPQ=4 相当の現実的 interval) の 50% 閾値を超えない。
+    #[tokio::test]
+    async fn step_once_without_contention_records_negligible_lock_wait() {
+        let evaluator = Arc::new(Mutex::new(Evaluator::new(120.0)));
+        eval(&evaluator, setup_src()).await;
+        eval(&evaluator, "play s1\n").await;
+
+        let (sinks, _handle) = single_dev_sinks();
+        let mut driver = PlaybackDriver::with_sinks(evaluator.clone(), sinks);
+
+        // 数 step 回して計測を安定させる
+        for _ in 0..5 {
+            driver.step_once().await.unwrap();
+        }
+
+        let lock_wait = driver.last_lock_wait_us();
+        // 競合が無ければロック取得は事実上ゼロ待ち。CI のノイズを見込んでも
+        // 現実的な 1ms tick の 50%(=500us) を超えることはまず無い。
+        assert!(
+            !lock_wait_exceeds_threshold(u128::from(lock_wait), 1000),
+            "競合なしで lock_wait={}us が 1ms tick の 50% を超えた（計測の異常）",
+            lock_wait
+        );
+    }
+
+    /// 案B: Evaluator ロックを別タスクで長時間保持した状態で step_once を呼ぶと、
+    /// last_lock_wait_us がその保持時間以上に跳ね上がり、遅延検出が機能することを確認する。
+    ///
+    /// これは「LSP / ホットリロード / device 登録が Evaluator ロックを長く握ると
+    /// 再生 tick が遅れる」という、もたつきの因果そのものを人工的に再現する。
+    /// PR #106 の診断ログ（lock_wait_exceeds_threshold による warn）が現実の駆動で
+    /// 遅れを捕まえられることの証明であり、将来 P1案2（ロックフリー化）を入れた際の
+    /// 回帰検証（競合しても遅れない）の基盤にもなる。
+    #[tokio::test]
+    async fn step_once_under_lock_contention_detects_delay() {
+        let evaluator = Arc::new(Mutex::new(Evaluator::new(120.0)));
+        eval(&evaluator, setup_src()).await;
+        eval(&evaluator, "play s1\n").await;
+
+        let (sinks, _handle) = single_dev_sinks();
+        let mut driver = PlaybackDriver::with_sinks(evaluator.clone(), sinks);
+
+        // 別タスクで Evaluator ロックを 30ms 保持する。step_once はこの間ロック取得で
+        // ブロックされ、保持解放後に初めて取得できる。
+        const HOLD: Duration = Duration::from_millis(30);
+        let ev_for_holder = evaluator.clone();
+        let holding = Arc::new(tokio::sync::Notify::new());
+        let holding_signal = holding.clone();
+        let holder = tokio::spawn(async move {
+            let _guard = ev_for_holder.lock().await;
+            // ロックを掴んだことを呼び出し側に通知してから保持し続ける
+            holding_signal.notify_one();
+            tokio::time::sleep(HOLD).await;
+            // _guard はここで drop され、ロックが解放される
+        });
+
+        // holder がロックを確実に掴むまで待ってから step_once を発行する
+        holding.notified().await;
+        driver.step_once().await.unwrap();
+        holder.await.unwrap();
+
+        let lock_wait = driver.last_lock_wait_us();
+        // 30ms 保持されていたので、ロック待ちは最低でも保持時間の大半を観測するはず。
+        // 計測ノイズを見込んで保持時間の 80% を下限とする。
+        let min_expected_us = (HOLD.as_micros() * 80 / 100) as u64;
+        assert!(
+            lock_wait >= min_expected_us,
+            "ロック 30ms 保持中の step_once で lock_wait={}us（期待: ≥{}us）",
+            lock_wait,
+            min_expected_us
+        );
+        // 1ms tick interval を仮定すると、この待ちは 50% 閾値を明確に超え、
+        // driver は遅延 warn を出すはず（PR #106 の P1案1 診断が発火する状況）。
+        assert!(
+            lock_wait_exceeds_threshold(u128::from(lock_wait), 1000),
+            "lock_wait={}us が 1ms tick の 50% 閾値を超えず、遅延検出が機能していない",
+            lock_wait
+        );
+    }
+
     /// 送出済みメッセージ列から最初の NoteOn のノート番号を取り出す
     /// Extract the first NoteOn note number from a list of sent messages.
     fn first_note_on_sent(msgs: &[MidiMessage]) -> Option<u8> {
