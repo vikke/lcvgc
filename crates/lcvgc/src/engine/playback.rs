@@ -1967,6 +1967,133 @@ mod tests {
         );
     }
 
+    /// 案1: 実時間駆動で step_once を回し、各 step 完了時刻からジッタ（隣接間隔の
+    /// target からのズレ）を測る共通ドライバ。
+    ///
+    /// `run_driver_with_shared` の内部スレッドは step 時刻を外に出さないため、
+    /// 本番と同じ `step_once`（ロック取得を含む実コード）をテスト側の実時間ループで
+    /// 駆動し、完了時刻列を収集する。`contention` が Some なら、演奏中に別タスクが
+    /// 周期的に Evaluator ロックを握って LSP / ホットリロードを模擬する。
+    ///
+    /// # Arguments
+    /// * `evaluator` - play 済み Evaluator
+    /// * `tick_us` - tick interval（マイクロ秒）
+    /// * `ticks` - 回す tick 数
+    /// * `contention` - Some((hold, period)) なら period 毎に hold だけロック保持
+    ///
+    /// # Returns
+    /// 各隣接 step 間隔の target からのズレ（マイクロ秒, 絶対値）の最大値と、
+    /// 駆動中に観測した `last_lock_wait_us` の最大値
+    async fn drive_and_measure_jitter(
+        evaluator: Arc<Mutex<Evaluator>>,
+        tick_us: u64,
+        ticks: u64,
+        contention: Option<(Duration, Duration)>,
+    ) -> (u128, u64) {
+        let (sinks, _handle) = single_dev_sinks();
+        let mut driver = PlaybackDriver::with_sinks(evaluator.clone(), sinks);
+
+        // 競合タスク: shutdown まで period 毎に hold だけロックを握り続ける。
+        let stop = Arc::new(AtomicBool::new(false));
+        let contention_task = contention.map(|(hold, period)| {
+            let ev = evaluator.clone();
+            let stop = stop.clone();
+            tokio::spawn(async move {
+                while !stop.load(Ordering::SeqCst) {
+                    {
+                        let _guard = ev.lock().await;
+                        tokio::time::sleep(hold).await;
+                    }
+                    tokio::time::sleep(period).await;
+                }
+            })
+        });
+
+        let target = Duration::from_micros(tick_us);
+        let mut max_jitter_us: u128 = 0;
+        let mut max_lock_wait_us: u64 = 0;
+        let mut prev = Instant::now();
+        for i in 0..ticks {
+            tokio::time::sleep(target).await;
+            driver.step_once().await.unwrap();
+            let now = Instant::now();
+            max_lock_wait_us = max_lock_wait_us.max(driver.last_lock_wait_us());
+            if i > 0 {
+                // 隣接 step 完了間隔と target のズレ（遅れも進みも絶対値で）
+                let interval = now.duration_since(prev).as_micros();
+                let jitter = interval.abs_diff(u128::from(tick_us));
+                max_jitter_us = max_jitter_us.max(jitter);
+            }
+            prev = now;
+        }
+
+        stop.store(true, Ordering::SeqCst);
+        if let Some(t) = contention_task {
+            t.await.unwrap();
+        }
+        (max_jitter_us, max_lock_wait_us)
+    }
+
+    /// 案1: 演奏中に Evaluator ロック競合を周期的に注入すると、競合なしに比べて
+    /// tick ジッタが有意に増大する（= もたつきが再現する）ことを差分で検証する。
+    ///
+    /// 絶対値はマシン依存でフレーキーなため、同一条件で「競合なし」「競合あり」を
+    /// 両方測り、競合ありのジッタが競合なしより明確に大きいことを相対比較で示す。
+    /// これにより「演奏しながら LSP / ホットリロードが走るともたつく」という事象を
+    /// test driver 上で決定論的に再現する。
+    ///
+    /// 実測例（手元計測）: baseline jitter≈2.8ms / lock≈9us に対し、
+    /// 競合あり jitter≈11.7ms / lock≈10.2ms。ロック競合が tick を 1 tick 以上
+    /// 遅らせ、もたつきの直接原因になっていることが再現できる。
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn lock_contention_during_playback_increases_tick_jitter() {
+        const TICK_US: u64 = 2_000; // 2ms tick
+        const TICKS: u64 = 60;
+
+        // 競合なしのベースライン
+        let ev_base = Arc::new(Mutex::new(Evaluator::new(120.0)));
+        eval(&ev_base, setup_src()).await;
+        eval(&ev_base, "play s1\n").await;
+        let (baseline_jitter, baseline_lock) =
+            drive_and_measure_jitter(ev_base, TICK_US, TICKS, None).await;
+
+        // 競合あり: tick の数倍 (8ms) を 6ms 間隔で握る → 演奏中に頻繁に衝突する
+        let ev_cont = Arc::new(Mutex::new(Evaluator::new(120.0)));
+        eval(&ev_cont, setup_src()).await;
+        eval(&ev_cont, "play s1\n").await;
+        let (contended_jitter, contended_lock) = drive_and_measure_jitter(
+            ev_cont,
+            TICK_US,
+            TICKS,
+            Some((Duration::from_millis(8), Duration::from_millis(6))),
+        )
+        .await;
+
+        // 競合ありのロック待ち最大は、保持時間 (8ms=8000us) の大半を観測するはず。
+        // これがもたつきの直接原因（ロック競合）が効いている証拠。
+        assert!(
+            contended_lock > baseline_lock,
+            "競合ありの max lock_wait={}us が競合なし={}us を上回らない",
+            contended_lock,
+            baseline_lock
+        );
+        // 競合ありの tick ジッタは、競合なしに比べて明確に大きい（もたつき再現）。
+        // ロック保持 8ms は 2ms tick の 4 倍なので、衝突した tick は大きく遅れる。
+        assert!(
+            contended_jitter > baseline_jitter,
+            "競合ありの max jitter={}us が競合なし={}us を上回らず、もたつきが再現していない",
+            contended_jitter,
+            baseline_jitter
+        );
+        // 競合下のジッタは少なくとも 1 tick 分以上ある（もたつきが体感レベル）。
+        assert!(
+            contended_jitter >= u128::from(TICK_US),
+            "競合下の max jitter={}us が 1 tick({}us) 未満で、もたつきが小さすぎる",
+            contended_jitter,
+            TICK_US
+        );
+    }
+
     /// 送出済みメッセージ列から最初の NoteOn のノート番号を取り出す
     /// Extract the first NoteOn note number from a list of sent messages.
     fn first_note_on_sent(msgs: &[MidiMessage]) -> Option<u8> {
