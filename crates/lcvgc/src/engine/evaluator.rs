@@ -137,7 +137,16 @@ pub struct DeviceConnectionError {
 /// evalコマンドディスパッチャ
 #[derive(Debug)]
 pub struct Evaluator {
-    registry: Registry,
+    /// DSL 定義レジストリ。`Arc` で保持することで、LSP（補完 / 診断 / hover）が
+    /// Evaluator ロック内で `Registry` を deep clone する代わりに `Arc::clone`
+    /// （参照カウント増のみ）で snapshot を取れる。これにより演奏中にエディタが
+    /// 打鍵するたびに再生スレッドを長くブロックする競合（P1）を解消する。
+    /// 定義の登録は `Arc::make_mut` による copy-on-write で行う。
+    ///
+    /// Registry held behind `Arc` so the LSP can snapshot it via `Arc::clone`
+    /// (refcount bump) instead of deep-cloning the whole `Registry` while holding
+    /// the Evaluator lock. Writes use `Arc::make_mut` (copy-on-write).
+    registry: Arc<Registry>,
     state: StateManager,
     /// テンポ・PPQ を保持する Clock。`PlaybackDriver` と共有するために
     /// `Arc<RwLock<Clock>>` で保持する。`tempo` 評価は `write()` で更新し、
@@ -228,7 +237,7 @@ impl Evaluator {
     /// 指定BPMで初期化
     pub fn new(bpm: f64) -> Self {
         Self {
-            registry: Registry::new(),
+            registry: Arc::new(Registry::new()),
             state: StateManager::new(),
             clock: Arc::new(RwLock::new(Clock::new(bpm))),
             scope: ScopeChain::new(),
@@ -592,7 +601,7 @@ impl Evaluator {
             Block::Device(ref d) => {
                 let name = d.name.clone();
                 let port = d.port.clone();
-                self.registry.register_block(block);
+                Arc::make_mut(&mut self.registry).register_block(block);
                 // tx が設定されていれば DeviceEvent::Upsert を通知する。
                 // 受信側が drop されている場合の SendError は意図的に握り潰す
                 // （LSP テストのノイズ抑制および後方互換のため）。
@@ -628,7 +637,7 @@ impl Evaluator {
                 // Resolve unresolved variable references via resolver (§6 variable expansion)
                 resolver::resolve_instrument(&mut inst, &self.scope)?;
                 self.scope.pop_scope();
-                self.registry.register_block(Block::Instrument(inst));
+                Arc::make_mut(&mut self.registry).register_block(Block::Instrument(inst));
                 Ok(EvalResult::Registered {
                     kind: "Instrument".into(),
                     name,
@@ -644,7 +653,7 @@ impl Evaluator {
                 // 未解決変数参照を resolver で解決（§6 変数展開）
                 // Resolve unresolved variable references via resolver (§6 variable expansion)
                 resolver::resolve_kit(&mut kit, &self.scope)?;
-                self.registry.register_block(Block::Kit(kit));
+                Arc::make_mut(&mut self.registry).register_block(Block::Kit(kit));
                 Ok(EvalResult::Registered {
                     kind: "Kit".into(),
                     name,
@@ -652,7 +661,7 @@ impl Evaluator {
             }
             Block::Clip(ref c) => {
                 let name = c.name.clone();
-                self.registry.register_block(block);
+                Arc::make_mut(&mut self.registry).register_block(block);
 
                 // §7/§12: 再生中の scene が同名 clip を使用している場合、新定義を
                 // コンパイルして差し替え待機 (pending) に積む。実際の swap は
@@ -705,7 +714,7 @@ impl Evaluator {
                 // composition change to the playing scene, so under a session we move
                 // on to the next scene to reach the new arrangement.
                 let is_active_scene = self.active_scene_name.as_deref() == Some(name.as_str());
-                self.registry.register_block(block);
+                Arc::make_mut(&mut self.registry).register_block(block);
                 if is_active_scene {
                     self.request_force_scene_advance_if_session();
                 }
@@ -735,7 +744,7 @@ impl Evaluator {
                 if self.is_playing_session_named(&name) {
                     self.force_scene_advance_on_grid = true;
                 }
-                self.registry.register_block(block);
+                Arc::make_mut(&mut self.registry).register_block(block);
                 Ok(EvalResult::Registered {
                     kind: "Session".into(),
                     name,
@@ -754,11 +763,11 @@ impl Evaluator {
                     clock.apply_tempo(t);
                     clock.bpm()
                 };
-                self.registry.register_block(block);
+                Arc::make_mut(&mut self.registry).register_block(block);
                 Ok(EvalResult::TempoChanged(new_bpm))
             }
             Block::Scale(_) => {
-                self.registry.register_block(block);
+                Arc::make_mut(&mut self.registry).register_block(block);
                 Ok(EvalResult::ScaleChanged)
             }
             Block::Var(ref v) => {
@@ -766,7 +775,7 @@ impl Evaluator {
                 // グローバルスコープに変数を定義（§6 変数）
                 // Define variable in global scope (§6 variables)
                 self.scope.define_global(v.name.clone(), v.value.clone());
-                self.registry.register_block(block);
+                Arc::make_mut(&mut self.registry).register_block(block);
                 Ok(EvalResult::VarDefined { name })
             }
             Block::Play(cmd) => {
@@ -1148,6 +1157,20 @@ impl Evaluator {
     /// Registry参照
     pub fn registry(&self) -> &Registry {
         &self.registry
+    }
+
+    /// Registry の共有スナップショットを返す（`Arc::clone` = 参照カウント増のみ）
+    ///
+    /// P1: LSP（補完 / 診断 / hover）が Evaluator ロック内で `Registry` を deep clone
+    /// する代わりに、本メソッドで `Arc` を clone して即ロックを解放できる。deep clone
+    /// （8 個の HashMap の複製）がロック外に出るため、演奏中の打鍵が再生スレッドを
+    /// ブロックする時間が激減する。
+    ///
+    /// Returns a shared snapshot of the registry via `Arc::clone` (refcount bump
+    /// only). Lets the LSP release the Evaluator lock immediately instead of
+    /// deep-cloning the registry inside the lock (P1 lock-contention fix).
+    pub fn registry_snapshot(&self) -> Arc<Registry> {
+        Arc::clone(&self.registry)
     }
 
     /// 共有 Clock のハンドル (Arc clone)
