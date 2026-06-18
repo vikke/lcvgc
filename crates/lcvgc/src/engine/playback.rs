@@ -123,6 +123,19 @@ pub struct PlaybackDriver {
     /// Whether the last step observed an active scene (used to reset current_tick on
     /// None→Some transition).
     was_active: bool,
+    /// 直近 `step_once` で Evaluator ロック取得に要した待ち時間（マイクロ秒）。
+    ///
+    /// 再生スレッドが毎 tick `evaluator.lock().await` を取得する際、LSP / ホット
+    /// リロード / device 動的登録など他タスクが同じロックを保持していると、ここで
+    /// 待たされ tick が遅延する。もたつきの原因切り分け（ロック競合か否か）のため、
+    /// `driver_blocking_loop` がこの値を読んで診断ログを出す（P1案1: 実測ログ化）。
+    /// 計測は `step_once` 冒頭の最初のロック取得分のみで、scene 境界の再ロックは含めない。
+    ///
+    /// Microseconds spent waiting to acquire the Evaluator lock in the most recent
+    /// `step_once`. The blocking driver reads this to diagnose whether playback
+    /// hiccups stem from lock contention with editor/hot-reload/device tasks. Only
+    /// the initial lock acquisition is measured, not the scene-boundary re-lock.
+    last_lock_wait_us: u64,
 }
 
 impl PlaybackDriver {
@@ -146,6 +159,7 @@ impl PlaybackDriver {
             current_tick: 0,
             transport_tick: 0,
             was_active: false,
+            last_lock_wait_us: 0,
         }
     }
 
@@ -190,6 +204,18 @@ impl PlaybackDriver {
         self.transport_tick
     }
 
+    /// 直近 `step_once` の Evaluator ロック取得待ち時間（マイクロ秒）を返す
+    ///
+    /// P1案1: 再生 tick のもたつきがロック競合由来かを診断するための実測値。
+    /// `step_once` を一度も呼んでいない場合は 0。
+    ///
+    /// Returns the microseconds spent acquiring the Evaluator lock in the most
+    /// recent `step_once` (0 before the first call). Used to diagnose whether
+    /// playback hiccups are caused by lock contention.
+    pub fn last_lock_wait_us(&self) -> u64 {
+        self.last_lock_wait_us
+    }
+
     /// 共有 sink マップへのハンドル clone を返す
     ///
     /// Issue #54: テストや外部の receiver タスクから driver と同じ
@@ -218,7 +244,15 @@ impl PlaybackDriver {
         // ---------------- 1. Evaluator ロック内で送出すべき情報を集める ----------------
         // ロック順序「Evaluator → Sinks」を守るため、まず Evaluator から必要な情報を
         // 取り出して drop し、その後で sinks をロックする。
+        //
+        // P1案1: ロック取得待ち時間を計測する。他タスク（LSP / ホットリロード /
+        // device 登録）がロックを保持していると、再生スレッドがここで待たされ tick が
+        // 遅延する。待ち時間を `last_lock_wait_us` に記録し、driver 側で診断ログを出す。
+        // Measure how long acquiring the Evaluator lock takes so the driver can
+        // diagnose playback hiccups caused by lock contention with other tasks.
+        let lock_wait_start = Instant::now();
         let mut ev = self.evaluator.lock().await;
+        self.last_lock_wait_us = lock_wait_start.elapsed().as_micros().min(u64::MAX as u128) as u64;
 
         // Evaluator ロック中に AllNotesOff / Transport キューを吸い上げる（借用を短く保つ）
         // Issue #50: System Real-Time Start/Stop は Play/Stop 評価で積まれる。
@@ -561,6 +595,59 @@ fn next_wait_strategy(now: Instant, deadline: Instant) -> WaitStrategy {
     }
 }
 
+/// tick wait 遅延の診断レベル（P3: 段階化）
+///
+/// `driver_blocking_loop` が実 wait と target interval を比較して決める診断段階。
+/// Diagnostic severity for tick-wait latency (P3).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TickWaitDiag {
+    /// 正常範囲（ログ不要）/ Within normal range; no log.
+    Ok,
+    /// 予兆（target の 2x 超〜5x 以下）: `debug` で記録 / Onset of drift; log at debug.
+    Debug,
+    /// 異常（target の 5x 超）: `warn` で記録 / Anomalous; log at warn.
+    Warn,
+}
+
+/// 実 wait 時間と target interval から tick wait 診断レベルを決める純粋関数（P3）
+///
+/// # Arguments
+/// * `waited_us` - 実測の wait 時間（マイクロ秒）
+/// * `target_us` - 目標 tick interval（マイクロ秒）。0 の場合は 1 とみなす
+///
+/// # Returns
+/// `TickWaitDiag`（Ok / Debug / Warn）
+///
+/// Pure classifier: maps the actual wait vs target interval to a diagnostic level.
+fn classify_tick_wait(waited_us: u128, target_us: u128) -> TickWaitDiag {
+    let target = target_us.max(1);
+    if waited_us > target.saturating_mul(TICK_WAIT_WARN_MULT) {
+        TickWaitDiag::Warn
+    } else if waited_us > target.saturating_mul(TICK_WAIT_DEBUG_MULT) {
+        TickWaitDiag::Debug
+    } else {
+        TickWaitDiag::Ok
+    }
+}
+
+/// Evaluator ロック取得待ちが診断しきい値を超えたか判定する純粋関数（P1案1）
+///
+/// 待ち時間が target interval の `LOCK_WAIT_WARN_PERCENT` % を超えたら true。
+///
+/// # Arguments
+/// * `lock_wait_us` - `step_once` のロック取得待ち（マイクロ秒）
+/// * `target_us` - 目標 tick interval（マイクロ秒）。0 の場合は 1 とみなす
+///
+/// # Returns
+/// しきい値超過なら true（呼び出し側で warn を出す）
+///
+/// Pure predicate: true when lock-wait exceeds the configured percentage of the
+/// tick interval (P1 plan-1).
+fn lock_wait_exceeds_threshold(lock_wait_us: u128, target_us: u128) -> bool {
+    let target = target_us.max(1);
+    lock_wait_us.saturating_mul(100) > target.saturating_mul(LOCK_WAIT_WARN_PERCENT)
+}
+
 /// `SharedSinks` + `SinksNotify` 版の再生ドライバランナ（Issue #54）
 ///
 /// sinks が空の間は `notify.notified().await` でブロックし、receiver タスクが
@@ -757,9 +844,12 @@ fn driver_blocking_loop(
             error!("再生ドライバエラー: {}", e);
         }
         let step_us = before_step.elapsed().as_micros();
+        // P1案1: step_once 内で記録された Evaluator ロック取得待ちを取り出す。
+        // Retrieve the Evaluator lock-wait recorded inside step_once (P1 plan-1).
+        let lock_wait_us = u128::from(driver.last_lock_wait_us());
         debug!(
-            "tick: waited={}us step={}us (target_interval={}us)",
-            waited_us, step_us, last_dur_us
+            "tick: waited={}us step={}us lock_wait={}us (target_interval={}us)",
+            waited_us, step_us, lock_wait_us, last_dur_us
         );
 
         // 次 tick の deadline を加算。step_once 中の経過時間も含めて累積し、
@@ -768,16 +858,40 @@ fn driver_blocking_loop(
         // absorbed by `wait_until`'s `NoWait` path on the next iteration.
         next_deadline += Duration::from_micros(last_dur_us);
 
-        // 診断 warn: 実 wait が target の 5 倍を超えていたら異常。
-        // PR #60 の busy/sleep 化後はほぼ出ないはずだが、回帰検知用に残す。
-        // Diagnostic warn (kept as a regression check after PR #60).
         let target_us_u128 = u128::from(last_dur_us.max(1));
-        if waited_us > target_us_u128.saturating_mul(5) {
+
+        // P1案1: ロック取得待ちが tick interval の閾値割合を超えたら警告する。
+        // もたつきがロック競合（LSP / ホットリロード / device 登録との競合）由来かを
+        // 切り分けるための実測ログ。step 全体ではなくロック待ち単独を示すのが要点。
+        // P1 plan-1: warn when lock-wait dominates the tick, isolating contention
+        // (vs. OS timer / heavy step) as the hiccup cause.
+        if lock_wait_exceeds_threshold(lock_wait_us, target_us_u128) {
             warn!(
-                "tick wait 異常: target={}us 実測={}us (≧5x). \
-                 OS timer resolution が要求粒度に追いついていない可能性あり",
-                last_dur_us, waited_us
+                "tick ロック待ち過大: target={}us lock_wait={}us (≧{}%). \
+                 LSP/ホットリロード/device登録との Evaluator ロック競合が再生を遅延させている可能性あり",
+                last_dur_us, lock_wait_us, LOCK_WAIT_WARN_PERCENT
             );
+        }
+
+        // P3: 実 wait と target interval の比から診断レベルを段階化する。
+        // 2x 超は予兆として debug、5x 超は異常として warn。予兆段階を拾うことで
+        // 「警告が出た時には手遅れ」を避け、もたつき開始の傾向を観測できる。
+        // P3: staged tick-wait diagnostic — debug at >2x (precursor), warn at >5x.
+        match classify_tick_wait(waited_us, target_us_u128) {
+            TickWaitDiag::Ok => {}
+            TickWaitDiag::Debug => {
+                debug!(
+                    "tick wait 遅延予兆: target={}us 実測={}us (>{}x). 遅れ始めの可能性",
+                    last_dur_us, waited_us, TICK_WAIT_DEBUG_MULT
+                );
+            }
+            TickWaitDiag::Warn => {
+                warn!(
+                    "tick wait 異常: target={}us 実測={}us (>{}x). \
+                     OS timer resolution が要求粒度に追いついていない可能性あり",
+                    last_dur_us, waited_us, TICK_WAIT_WARN_MULT
+                );
+            }
         }
     }
 }
@@ -791,6 +905,33 @@ fn driver_blocking_loop(
 /// Maximum duration of a single `thread::sleep` slice in `wait_until`. Keeps
 /// shutdown latency bounded.
 const SLEEP_SLICE_CAP: Duration = Duration::from_millis(50);
+
+/// tick wait 遅延の「予兆」段階のしきい値（target interval の倍数）
+///
+/// P3: 実 wait が target の 2 倍を超えたら `debug` で記録する。5x の warn が出る
+/// 前のじわじわ遅れ始めを実測ログで拾うための予兆段階。debug なので通常運用では
+/// 出力されず、`RUST_LOG=debug` 時のみ観測できる。
+///
+/// P3: warn-precursor multiplier. When the actual wait exceeds 2x the target
+/// interval, log at `debug` to capture the onset of drift before the 5x warn.
+const TICK_WAIT_DEBUG_MULT: u128 = 2;
+
+/// tick wait 遅延の「異常」段階のしきい値（target interval の倍数）
+///
+/// P3: 実 wait が target の 5 倍を超えたら `warn` で記録する（従来の閾値を定数化）。
+///
+/// P3: warn-level multiplier (the former inline `5`), now a named constant.
+const TICK_WAIT_WARN_MULT: u128 = 5;
+
+/// ロック取得待ちの診断しきい値（target interval に対する割合, パーセント）
+///
+/// P1案1: `step_once` の Evaluator ロック取得待ちが tick interval の 50% を超えたら
+/// `warn` で記録する。再生スレッドが他タスクのロック保持で待たされ、tick の半分以上を
+/// ロック待ちに費やしている = もたつきの直接原因、という切り分けに使う。
+///
+/// P1 plan-1: when lock acquisition exceeds this percentage of the tick interval,
+/// warn — the playback thread is spending over half a tick waiting on contention.
+const LOCK_WAIT_WARN_PERCENT: u128 = 50;
 
 /// 指定 deadline まで sleep + spin で待つ
 ///
@@ -1697,6 +1838,49 @@ mod tests {
             WaitStrategy::Sleep(d) => assert_eq!(d, Duration::from_micros(1)),
             other => panic!("expected Sleep just over threshold, got {:?}", other),
         }
+    }
+
+    /// P3: classify_tick_wait が 2x 以下を Ok、2x 超〜5x を Debug、5x 超を Warn に
+    /// 分類することを境界値で検証する。
+    #[test]
+    fn classify_tick_wait_stages_by_multiplier() {
+        let target = 1000u128; // 1ms target
+                               // 正常: target ちょうど・2x ちょうどまでは Ok
+        assert_eq!(classify_tick_wait(1000, target), TickWaitDiag::Ok);
+        assert_eq!(classify_tick_wait(2000, target), TickWaitDiag::Ok); // 2x ちょうどは未超過
+                                                                        // 予兆: 2x 超〜5x ちょうど
+        assert_eq!(classify_tick_wait(2001, target), TickWaitDiag::Debug);
+        assert_eq!(classify_tick_wait(5000, target), TickWaitDiag::Debug); // 5x ちょうどは未超過
+                                                                           // 異常: 5x 超
+        assert_eq!(classify_tick_wait(5001, target), TickWaitDiag::Warn);
+        assert_eq!(classify_tick_wait(100_000, target), TickWaitDiag::Warn);
+    }
+
+    /// P3: target=0 は 1us とみなしてゼロ除算を避ける（クロック未初期化等の保険）。
+    #[test]
+    fn classify_tick_wait_zero_target_treated_as_one() {
+        // target=0 → 1us 扱い。1us は 2x(=2us) 以下なので Ok、3us は Debug。
+        assert_eq!(classify_tick_wait(1, 0), TickWaitDiag::Ok);
+        assert_eq!(classify_tick_wait(3, 0), TickWaitDiag::Debug);
+        assert_eq!(classify_tick_wait(6, 0), TickWaitDiag::Warn);
+    }
+
+    /// P1案1: lock_wait_exceeds_threshold が target の 50% を境に true/false を返す。
+    #[test]
+    fn lock_wait_threshold_at_fifty_percent() {
+        let target = 1000u128; // 1ms target, 50% = 500us
+        assert!(!lock_wait_exceeds_threshold(499, target)); // 50% 未満
+        assert!(!lock_wait_exceeds_threshold(500, target)); // 50% ちょうどは未超過
+        assert!(lock_wait_exceeds_threshold(501, target)); // 50% 超
+        assert!(lock_wait_exceeds_threshold(1000, target)); // tick 丸ごとロック待ち
+    }
+
+    /// P1案1: target=0 でもゼロ除算せず、待ち時間が少しでもあれば超過扱いになる。
+    #[test]
+    fn lock_wait_threshold_zero_target() {
+        // target=0 → 1us 扱い。50% = 0.5us なので 1us 待てば超過。
+        assert!(lock_wait_exceeds_threshold(1, 0));
+        assert!(!lock_wait_exceeds_threshold(0, 0));
     }
 
     /// 送出済みメッセージ列から最初の NoteOn のノート番号を取り出す
