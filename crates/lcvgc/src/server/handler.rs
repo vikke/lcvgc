@@ -130,7 +130,7 @@ async fn handle_request_inner(evaluator: &Arc<Mutex<Evaluator>>, request: Reques
                 .map(|incs| incs.iter().map(|i| i.source.as_str()).collect())
                 .unwrap_or_default();
             ev.preload_from_source(&source, &additional);
-            let mut analyzer = LspAnalyzer::with_base_registry(ev.registry().clone());
+            let mut analyzer = LspAnalyzer::with_base_registry(ev.registry_snapshot());
             drop(ev);
             if let Some(ref includes) = include_sources {
                 analyzer.update_with_include_sources(source, includes);
@@ -163,7 +163,7 @@ async fn handle_request_inner(evaluator: &Arc<Mutex<Evaluator>>, request: Reques
                 .map(|incs| incs.iter().map(|i| i.source.as_str()).collect())
                 .unwrap_or_default();
             ev.preload_from_source(&source, &additional);
-            let mut analyzer = LspAnalyzer::with_base_registry(ev.registry().clone());
+            let mut analyzer = LspAnalyzer::with_base_registry(ev.registry_snapshot());
             drop(ev);
             if let Some(ref includes) = include_sources {
                 analyzer.update_with_include_sources(source, includes);
@@ -188,7 +188,7 @@ async fn handle_request_inner(evaluator: &Arc<Mutex<Evaluator>>, request: Reques
                 .map(|incs| incs.iter().map(|i| i.source.as_str()).collect())
                 .unwrap_or_default();
             ev.preload_from_source(&source, &additional);
-            let mut analyzer = LspAnalyzer::with_base_registry(ev.registry().clone());
+            let mut analyzer = LspAnalyzer::with_base_registry(ev.registry_snapshot());
             // PR #55: device 接続失敗 diagnostic 用に Evaluator のエラー状態を退避
             // PR #55: snapshot the device connection errors for diagnostic generation
             let device_connection_errors = ev.device_connection_errors().clone();
@@ -265,7 +265,7 @@ async fn handle_request_inner(evaluator: &Arc<Mutex<Evaluator>>, request: Reques
                 .map(|incs| incs.iter().map(|i| i.source.as_str()).collect())
                 .unwrap_or_default();
             ev.preload_from_source(&source, &additional);
-            let mut analyzer = LspAnalyzer::with_base_registry(ev.registry().clone());
+            let mut analyzer = LspAnalyzer::with_base_registry(ev.registry_snapshot());
             drop(ev);
             if let Some(ref includes) = include_sources {
                 analyzer.update_with_include_sources(source.clone(), includes);
@@ -298,7 +298,7 @@ async fn handle_request_inner(evaluator: &Arc<Mutex<Evaluator>>, request: Reques
                 .map(|incs| incs.iter().map(|i| i.source.as_str()).collect())
                 .unwrap_or_default();
             ev.preload_from_source(&source, &additional);
-            let mut analyzer = LspAnalyzer::with_base_registry(ev.registry().clone());
+            let mut analyzer = LspAnalyzer::with_base_registry(ev.registry_snapshot());
             drop(ev);
             if let Some(ref includes) = include_sources {
                 analyzer.update_with_include_sources(source.clone(), includes);

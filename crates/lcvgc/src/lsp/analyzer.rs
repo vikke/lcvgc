@@ -4,6 +4,7 @@
 //! ブロック情報・エラー情報・レジストリを管理する。
 
 use std::collections::HashSet;
+use std::sync::Arc;
 
 use super::span_parser::{span_parse_source, SpanError, SpannedBlock};
 use crate::engine::registry::Registry;
@@ -18,7 +19,14 @@ pub struct LspAnalyzer {
     registry: Registry,
     /// Evaluator由来のベースレジストリ（update時にリセットされない）
     /// Base registry from Evaluator (not reset on update)
-    base_registry: Option<Registry>,
+    ///
+    /// P1: `Arc<Registry>` で保持する。Evaluator のロック内では `registry_snapshot()`
+    /// が返す `Arc` をそのまま受け取れるため、ロック内での deep clone が不要になる。
+    /// `update` 時の registry 復元（`registry` フィールドへの deep clone）はロック外で
+    /// 行われるため、再生スレッドとの競合には影響しない。
+    /// Held as `Arc<Registry>` so the snapshot from the Evaluator can be taken
+    /// without deep-cloning inside the lock (P1).
+    base_registry: Option<Arc<Registry>>,
     /// スパン情報付きの解析済みブロック一覧
     spanned_blocks: Vec<SpannedBlock>,
     /// パース時に発生したエラー一覧
@@ -51,16 +59,21 @@ impl LspAnalyzer {
     /// 既存のレジストリをベースにした解析器を生成する
     /// Creates an analyzer with an existing registry as the base
     ///
-    /// Evaluator が保持する registry を clone して渡すことで、
-    /// eval 済みの定義（instrument, kit, device 等）を LSP 機能で参照可能にする。
-    /// By cloning and passing the registry held by the Evaluator,
-    /// eval'd definitions (instrument, kit, device, etc.) become available to LSP features.
+    /// Evaluator の `registry_snapshot()` が返す `Arc<Registry>` を受け取る。
+    /// 呼び出し側は Evaluator ロック内で `Arc::clone`（参照カウント増のみ）だけ行えば
+    /// よく、deep clone はロック解放後の本コンストラクタ内で発生するため、再生
+    /// スレッドとの競合を生まない（P1）。
+    /// Takes the `Arc<Registry>` from `Evaluator::registry_snapshot()`. Callers
+    /// only `Arc::clone` inside the lock; the deep clone happens here, outside the
+    /// lock, avoiding contention with the playback thread (P1).
     ///
     /// # Arguments
-    /// * `base_registry` - ベースとなるレジストリ / Base registry to start from
-    pub fn with_base_registry(base_registry: Registry) -> Self {
+    /// * `base_registry` - ベースとなるレジストリの共有スナップショット
+    ///   / Shared snapshot of the base registry
+    pub fn with_base_registry(base_registry: Arc<Registry>) -> Self {
         Self {
-            registry: base_registry.clone(),
+            // 解析用の作業 registry はベースの実体を複製して持つ（update で復元される）
+            registry: (*base_registry).clone(),
             base_registry: Some(base_registry),
             spanned_blocks: Vec::new(),
             errors: Vec::new(),
@@ -79,7 +92,13 @@ impl LspAnalyzer {
         self.source = new_source;
         // ベースレジストリがある場合はそこから復元、なければ空で初期化
         // Restore from base registry if available, otherwise initialize empty
-        self.registry = self.base_registry.as_ref().cloned().unwrap_or_default();
+        // base_registry は Arc 保持なので、実体を deep clone して作業 registry にする。
+        // ここはロック外で呼ばれるため deep clone のコストは再生に影響しない。
+        self.registry = self
+            .base_registry
+            .as_ref()
+            .map(|arc| (**arc).clone())
+            .unwrap_or_default();
         self.spanned_blocks.clear();
         self.errors.clear();
 
@@ -343,7 +362,7 @@ mod tests {
             base.register_block(sb.block.clone());
         }
 
-        let mut a = LspAnalyzer::with_base_registry(base);
+        let mut a = LspAnalyzer::with_base_registry(Arc::new(base));
         // 子ファイルのソースのみでupdate（instrumentの定義なし）
         // Update with child file source only (no instrument definition)
         a.update("clip bass_main [bars 4] {\n  vbass c:2:16 c c c\n}".into());
@@ -381,7 +400,7 @@ mod tests {
             base.register_block(sb.block.clone());
         }
 
-        let mut a = LspAnalyzer::with_base_registry(base);
+        let mut a = LspAnalyzer::with_base_registry(Arc::new(base));
         a.update("tempo 140".into());
 
         // ソースの定義（140）がベース（120）を上書きする
