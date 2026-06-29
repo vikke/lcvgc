@@ -2,7 +2,6 @@
 //! MIDI-related modules
 
 pub mod cc;
-pub mod channel;
 pub mod chord;
 pub mod gate;
 pub mod input;

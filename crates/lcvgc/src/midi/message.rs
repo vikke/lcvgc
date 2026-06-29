@@ -1,4 +1,4 @@
-use crate::midi::channel::MidiChannel;
+use crate::domain::channel::MidiChannel;
 
 /// MIDIメッセージ
 /// MIDI message representation

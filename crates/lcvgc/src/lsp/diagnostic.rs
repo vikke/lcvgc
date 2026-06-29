@@ -340,7 +340,7 @@ mod tests {
     use crate::ast::scene::{SceneDef, SceneEntry, ShuffleCandidate};
     use crate::ast::session::{SessionDef, SessionEntry, SessionRepeat};
     use crate::ast::tempo::Tempo;
-    use crate::midi::channel::MidiChannel;
+    use crate::domain::channel::MidiChannel;
     use crate::parser::clip_options::ClipOptions;
 
     fn make_span(start: usize, end: usize) -> Span {

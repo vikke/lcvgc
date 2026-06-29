@@ -619,7 +619,7 @@ impl CompletionProvider {
 mod tests {
     use super::*;
     use crate::ast::instrument::CcMapping;
-    use crate::midi::channel::MidiChannel;
+    use crate::domain::channel::MidiChannel;
 
     #[test]
     fn test_keyword_completions_count() {

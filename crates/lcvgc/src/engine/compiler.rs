@@ -4,10 +4,10 @@ use crate::ast::clip::{ClipBody, ClipDef, PitchedClipBody, PitchedElement, Pitch
 use crate::ast::clip_cc::{CcAutomation, Interpolation};
 use crate::ast::clip_drum::HitSymbol;
 use crate::ast::clip_note::NoteEvent;
+use crate::domain::channel::MidiChannel;
 use crate::engine::clock::Clock;
 use crate::engine::error::EngineError;
 use crate::engine::registry::Registry;
-use crate::midi::channel::MidiChannel;
 use crate::midi::chord::chord_notes;
 use crate::midi::message::MidiMessage;
 use crate::midi::note::note_number;

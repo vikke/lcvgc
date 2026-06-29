@@ -13,6 +13,9 @@
 //! breaks the inter-module dependency cycles. `domain` itself depends on no
 //! other in-crate module.
 
+/// MIDIチャンネルドメイン型
+/// MIDI channel domain type
+pub mod channel;
 /// コード種別ドメイン型
 /// Chord quality domain type
 pub mod chord;

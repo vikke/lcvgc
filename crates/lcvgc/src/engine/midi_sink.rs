@@ -1,5 +1,5 @@
+use crate::domain::channel::MidiChannel;
 use crate::engine::error::EngineError;
-use crate::midi::channel::MidiChannel;
 use crate::midi::message::MidiMessage;
 use crate::midi::port::PortManager;
 

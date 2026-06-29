@@ -1426,7 +1426,7 @@ mod tests {
         use crate::ast::device::DeviceDef;
         use crate::ast::instrument::InstrumentDef;
         use crate::ast::Block;
-        use crate::midi::channel::MidiChannel;
+        use crate::domain::channel::MidiChannel;
 
         let ctx = CompletionContext::PitchedClipLineStart {
             scale: Some((NoteName::D, ScaleType::Minor)),
@@ -1474,7 +1474,7 @@ mod tests {
         use crate::ast::device::DeviceDef;
         use crate::ast::instrument::InstrumentDef;
         use crate::ast::Block;
-        use crate::midi::channel::MidiChannel;
+        use crate::domain::channel::MidiChannel;
 
         let ctx = CompletionContext::PitchedClipAfterInstrument {
             scale: Some((NoteName::D, ScaleType::Minor)),

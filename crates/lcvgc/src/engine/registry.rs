@@ -282,8 +282,8 @@ mod tests {
     use crate::ast::playback::{PlayCommand, PlayTarget, RepeatSpec, StopCommand};
     use crate::ast::scale::ScaleType;
     use crate::ast::var::VarDef;
+    use crate::domain::channel::MidiChannel;
     use crate::domain::pitch::NoteName;
-    use crate::midi::channel::MidiChannel;
     use crate::parser::clip_options::ClipOptions;
 
     #[test]

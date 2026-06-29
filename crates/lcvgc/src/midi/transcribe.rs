@@ -71,7 +71,7 @@ pub fn message_to_dsl(msg: &MidiMessage) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::midi::channel::MidiChannel;
+    use crate::domain::channel::MidiChannel;
 
     fn ch0() -> MidiChannel {
         MidiChannel::from_zero_based(0).unwrap()

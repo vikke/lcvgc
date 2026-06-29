@@ -1,6 +1,6 @@
 use crate::ast::unresolved::UnresolvedKitInstrumentVarRefs;
+use crate::domain::channel::MidiChannel;
 use crate::domain::pitch::NoteName;
-use crate::midi::channel::MidiChannel;
 
 /// キット内インストゥルメントのノート指定
 /// Note specification for an instrument within a kit

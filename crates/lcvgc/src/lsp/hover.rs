@@ -135,8 +135,8 @@ mod tests {
     use crate::ast::session::SessionDef;
     use crate::ast::tempo::Tempo;
     use crate::ast::var::VarDef;
+    use crate::domain::channel::MidiChannel;
     use crate::domain::pitch::NoteName;
-    use crate::midi::channel::MidiChannel;
     use crate::parser::clip_options::ClipOptions;
 
     fn sb(block: Block) -> SpannedBlock {

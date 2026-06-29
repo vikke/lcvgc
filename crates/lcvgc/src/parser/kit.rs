@@ -8,9 +8,9 @@ use nom::{
 
 use crate::ast::kit::{KitDef, KitInstrument, KitInstrumentNote};
 use crate::ast::unresolved::UnresolvedKitInstrumentVarRefs;
+use crate::domain::channel::MidiChannel;
 #[cfg(test)]
 use crate::domain::pitch::NoteName;
-use crate::midi::channel::MidiChannel;
 use crate::parser::common::{
     identifier, note_name, parse_u8, parse_u8_or_identifier, ws, ws1, Either,
 };
