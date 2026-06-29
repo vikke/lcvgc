@@ -65,8 +65,17 @@ pub async fn handle_request(evaluator: &Arc<Mutex<Evaluator>>, request: Request)
 async fn handle_request_inner(evaluator: &Arc<Mutex<Evaluator>>, request: Request) -> Response {
     match request {
         Request::Eval { source } => {
-            let mut ev = evaluator.lock().await;
-            match ev.eval_source(&source) {
+            // ロック外 eval (prepare/apply 分離): 重い parse+compile を再生ドライバと
+            // 同じ Evaluator ロックの外で行い、apply だけ短時間ロックする。
+            // Off-lock eval (prepare/apply split): heavy parse+compile runs outside
+            // the shared Evaluator lock; only apply takes a short lock.
+            let snapshot = { evaluator.lock().await.snapshot_for_prepare() };
+            let prepared = match snapshot.prepare_source(&source) {
+                Ok(prepared) => prepared,
+                Err(e) => return Response::err(e.to_string()),
+            };
+            let apply_result = { evaluator.lock().await.apply_prepared(prepared) };
+            match apply_result {
                 Ok(results) => {
                     let msg = results
                         .iter()
@@ -79,8 +88,15 @@ async fn handle_request_inner(evaluator: &Arc<Mutex<Evaluator>>, request: Reques
             }
         }
         Request::Preload { source } => {
-            let mut ev = evaluator.lock().await;
-            match ev.eval_source_preload(&source) {
+            // ロック外 eval (prepare/apply 分離)。preload は play/stop を除外する。
+            // Off-lock eval (prepare/apply split); preload excludes play/stop.
+            let snapshot = { evaluator.lock().await.snapshot_for_prepare() };
+            let prepared = match snapshot.prepare_source_preload(&source) {
+                Ok(prepared) => prepared,
+                Err(e) => return Response::err(e.to_string()),
+            };
+            let apply_result = { evaluator.lock().await.apply_prepared(prepared) };
+            match apply_result {
                 Ok(results) => {
                     let msg = results
                         .iter()

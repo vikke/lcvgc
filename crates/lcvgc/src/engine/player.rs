@@ -387,7 +387,15 @@ fn build_events_by_tick(clip: &CompiledClip) -> BTreeMap<u64, Vec<usize>> {
 /// 複数クリップを並行管理するシーンプレイヤー
 ///
 /// ポリリズム対応：各クリップは独自のtotal_ticksを持つ
-#[derive(Debug)]
+///
+/// `Clone` はロック外 eval (prepare/apply 分離) で使用する。snapshot 時に
+/// 現在の active_scene を使い捨て Evaluator へ複製し、Play 評価で構築した
+/// ScenePlayer を PreparedProgram に記録するために必要。
+///
+/// `Clone` is used by off-lock eval (prepare/apply split): snapshotting the
+/// current active scene into a throwaway Evaluator, and recording a ScenePlayer
+/// built during Play evaluation into a PreparedProgram.
+#[derive(Debug, Clone)]
 pub struct ScenePlayer {
     /// (クリップ名, プレイヤー) のリスト
     players: Vec<(String, ClipPlayer)>,

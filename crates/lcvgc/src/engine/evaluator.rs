@@ -10,7 +10,7 @@ use crate::ast::playback::PlayTarget;
 use crate::ast::scene::SceneDef;
 use crate::ast::Block;
 use crate::engine::clock::Clock;
-use crate::engine::compiler::compile_clip;
+use crate::engine::compiler::{compile_clip, CompiledClip};
 use crate::engine::device_event::{DeviceEvent, DeviceEventTx};
 use crate::engine::error::EngineError;
 use crate::engine::player::ScenePlayer;
@@ -134,6 +134,235 @@ pub struct DeviceConnectionError {
     pub message: String,
 }
 
+/// ロック外 eval (prepare/apply 分離) のためのコンパイル成果物キャッシュモード。
+///
+/// 再生もたつき対策として、重い parse+compile を再生スレッドと同じ `Evaluator`
+/// ロックの外で行い、結果差し替え (swap) だけを短時間ロックで行うために使う。
+/// `eval_block` 内の 2 つの compile 箇所 (Clip 差し替え時の `compile_clip`、Play 時の
+/// `build_scene_player`) だけがこのモードを参照する。
+///
+/// - `Off`: 通常評価。compile をその場で行う (既存挙動)。
+/// - `Record`: 使い捨て Evaluator 上 (ロック外) で compile を実行し、成果物を名前キーで
+///   記録する。`prepare_*` が使用。
+/// - `Replay`: live Evaluator 上 (ロック内) で、記録済み成果物があれば compile を省略して
+///   再利用する。キャッシュミス時は通常 compile にフォールバックする。`apply_prepared` が使用。
+///
+/// Compile-artifact cache mode for off-lock eval (the prepare/apply split).
+/// Heavy parse+compile runs outside the `Evaluator` lock shared with the playback
+/// thread; only the swap of results happens under a short lock. Only the two
+/// compile sites inside `eval_block` (the `compile_clip` on clip replacement and
+/// `build_scene_player` on Play) consult this mode.
+#[derive(Debug, Default)]
+enum PrecompileMode {
+    /// 通常評価 (その場で compile)。 / Normal evaluation (compile in place).
+    #[default]
+    Off,
+    /// ロック外で compile し成果物を記録する。 / Compile off-lock and record artifacts.
+    Record {
+        clips: HashMap<String, CompiledClip>,
+        players: HashMap<String, ScenePlayer>,
+    },
+    /// 記録済み成果物を再利用する (ミス時は通常 compile)。 / Reuse recorded artifacts (compile on miss).
+    Replay {
+        clips: HashMap<String, CompiledClip>,
+        players: HashMap<String, ScenePlayer>,
+    },
+}
+
+/// `prepare_*` に渡す不変スナップショット。
+///
+/// snapshot は live `Evaluator` ロックを**短時間**だけ握って取得し、以降のロック外
+/// prepare (parse + compile) はこのスナップショットのみに依存する。`StateManager` は
+/// 非 Clone かつ prepare には不要なので含めない。`active_scene` は Clip 差し替えの
+/// in_use 判定を忠実に再現するために複製する。
+///
+/// Immutable snapshot passed to `prepare_*`. Taken while holding the live
+/// `Evaluator` lock only briefly; the subsequent off-lock prepare depends solely
+/// on this snapshot. `StateManager` is excluded (non-Clone and unneeded for
+/// prepare). `active_scene` is cloned so the throwaway can faithfully reproduce
+/// the in-use decision for clip replacement.
+pub struct EvalSnapshot {
+    /// registry は `Arc<Registry>` (PR #107 で Arc 化済み) なので、snapshot は
+    /// deep clone ではなく Arc クローン (参照カウント増加) で済む。throwaway 側で
+    /// `register_block` するときに初めて copy-on-write される。
+    ///
+    /// `registry` is `Arc<Registry>` (Arc-ified in PR #107), so snapshotting is a
+    /// cheap refcount bump rather than a deep clone; copy-on-write happens only when
+    /// the throwaway calls `register_block`.
+    registry: Arc<Registry>,
+    scope: ScopeChain,
+    clock: Clock,
+    active_scene: Option<ScenePlayer>,
+    active_scene_name: Option<String>,
+}
+
+/// ロック外 prepare の成果物。`apply_prepared` がこれを live state へ機械適用する。
+///
+/// `blocks` は (include 展開済みの) 評価対象ブロック列。`clips`/`players` は
+/// prepare 時に compile 済みの成果物 (名前キー)。apply は `blocks` を live 上で
+/// `eval_block` 評価するが、compile は `clips`/`players` から再利用するため
+/// ロック保持時間が compile コストに依存しない。
+///
+/// Result of off-lock prepare; `apply_prepared` applies it to live state. `blocks`
+/// is the (include-expanded) block list to evaluate; `clips`/`players` are the
+/// artifacts pre-compiled during prepare (keyed by name). apply evaluates `blocks`
+/// on live via `eval_block` but reuses compiled artifacts, so lock-hold time does
+/// not depend on compile cost.
+pub struct PreparedProgram {
+    blocks: Vec<Block>,
+    clips: HashMap<String, CompiledClip>,
+    players: HashMap<String, ScenePlayer>,
+}
+
+impl EvalSnapshot {
+    /// `eval_source` のロック外 prepare 版。parse と compile をロック外で行う。
+    ///
+    /// `Evaluator::apply_prepared` と組で使うと `eval_source` と意味的に等価になる。
+    ///
+    /// Off-lock prepare counterpart of `eval_source`; combined with
+    /// `Evaluator::apply_prepared` it is semantically equivalent to `eval_source`.
+    pub fn prepare_source(self, source: &str) -> Result<PreparedProgram, EngineError> {
+        let (_, blocks) = crate::parser::parse_source(source)
+            .map_err(|e| EngineError::ParseError(e.to_string()))?;
+        self.prepare_blocks(blocks)
+    }
+
+    /// `eval_source_preload` のロック外 prepare 版 (play/stop を除外)。
+    ///
+    /// Off-lock prepare counterpart of `eval_source_preload` (play/stop excluded).
+    pub fn prepare_source_preload(self, source: &str) -> Result<PreparedProgram, EngineError> {
+        let (_, blocks) = crate::parser::parse_source(source)
+            .map_err(|e| EngineError::ParseError(e.to_string()))?;
+        let filtered: Vec<Block> = blocks
+            .into_iter()
+            .filter(|b| !matches!(b, Block::Play(_) | Block::Stop(_)))
+            .collect();
+        self.prepare_blocks(filtered)
+    }
+
+    /// `eval_file` のロック外 prepare 版。include 展開・parse・compile をロック外で行う。
+    ///
+    /// include 展開は `expand_file_blocks` が `Evaluator::eval_file_recursive` と
+    /// 同順序のフラットなブロック列へ畳み込む。展開結果を `prepare_blocks` へ渡す。
+    ///
+    /// Off-lock prepare counterpart of `eval_file`: include expansion, parse, and
+    /// compile all run off-lock. `expand_file_blocks` flattens includes in the same
+    /// order as `Evaluator::eval_file_recursive`.
+    pub fn prepare_file(self, path: &Path) -> Result<PreparedProgram, EngineError> {
+        let canonical = path
+            .canonicalize()
+            .map_err(|_| EngineError::IncludeNotFound(path.display().to_string()))?;
+        let mut include_stack = HashSet::new();
+        include_stack.insert(canonical.clone());
+        let mut included_files = HashSet::new();
+        included_files.insert(canonical.clone());
+        let mut blocks = Vec::new();
+        expand_file_blocks(
+            &canonical,
+            &mut include_stack,
+            &mut included_files,
+            &mut blocks,
+        )?;
+        self.prepare_blocks(blocks)
+    }
+
+    /// ブロック列をロック外 prepare する (内部共通処理)。
+    ///
+    /// 使い捨て Evaluator を `Record` モードで起動し、`blocks` のクローンを
+    /// `eval_block` 評価して compile 成果物を収集する。元の `blocks` は
+    /// `PreparedProgram` に保持し、後で `Evaluator::apply_prepared` が live 上で
+    /// 再評価する。
+    ///
+    /// Off-lock prepare for a block list: runs a throwaway in `Record` mode over a
+    /// clone of `blocks` to collect compiled artifacts, keeping the originals for
+    /// `Evaluator::apply_prepared` to re-evaluate on live.
+    fn prepare_blocks(self, blocks: Vec<Block>) -> Result<PreparedProgram, EngineError> {
+        let mut throwaway = Evaluator::from_snapshot(
+            self,
+            PrecompileMode::Record {
+                clips: HashMap::new(),
+                players: HashMap::new(),
+            },
+        );
+        for block in blocks.iter().cloned() {
+            throwaway.eval_block(block)?;
+        }
+        let (clips, players) = match throwaway.precompile {
+            PrecompileMode::Record { clips, players } => (clips, players),
+            _ => (HashMap::new(), HashMap::new()),
+        };
+        Ok(PreparedProgram {
+            blocks,
+            clips,
+            players,
+        })
+    }
+}
+
+/// ファイルを読み・parse し、include を再帰展開してフラットなブロック列を作る。
+///
+/// `Evaluator::eval_file_recursive` の評価を伴わない版。include の先頭限定・
+/// 循環検出・重複スキップのルールを同一に保ち、評価対象 (非 include) ブロックを
+/// 評価されるのと同じ順序で `out` へ push する。
+///
+/// File-read + parse + recursive include expansion into a flat block list. A
+/// non-evaluating twin of `Evaluator::eval_file_recursive` that preserves the same
+/// include-at-top / cycle / dedup rules and pushes evaluable (non-include) blocks to
+/// `out` in evaluation order.
+fn expand_file_blocks(
+    path: &Path,
+    include_stack: &mut HashSet<PathBuf>,
+    included_files: &mut HashSet<PathBuf>,
+    out: &mut Vec<Block>,
+) -> Result<(), EngineError> {
+    let source = std::fs::read_to_string(path).map_err(|e| EngineError::IncludeReadError {
+        path: path.display().to_string(),
+        reason: e.to_string(),
+    })?;
+    let (_, blocks) =
+        crate::parser::parse_source(&source).map_err(|e| EngineError::ParseError(e.to_string()))?;
+
+    let mut include_phase_ended = false;
+    for block in blocks {
+        match block {
+            Block::Include(ref inc) => {
+                if include_phase_ended {
+                    return Err(EngineError::IncludeNotAtTop(inc.path.clone()));
+                }
+                let base_dir = path.parent().unwrap_or(Path::new("."));
+                let include_path = base_dir.join(&inc.path);
+                let canonical = include_path
+                    .canonicalize()
+                    .map_err(|_| EngineError::IncludeNotFound(inc.path.clone()))?;
+                // 重複インクルードは展開しない (eval_file_recursive と同じ)。
+                // Skip duplicate includes (matches eval_file_recursive).
+                if !included_files.insert(canonical.clone()) {
+                    continue;
+                }
+                // 循環検出。 / Cycle detection.
+                if !include_stack.insert(canonical.clone()) {
+                    let chain: Vec<String> = include_stack
+                        .iter()
+                        .map(|p| p.display().to_string())
+                        .collect();
+                    return Err(EngineError::CircularInclude(format!(
+                        "{} -> {}",
+                        chain.join(" -> "),
+                        canonical.display()
+                    )));
+                }
+                expand_file_blocks(&canonical, include_stack, included_files, out)?;
+                include_stack.remove(&canonical);
+            }
+            _ => {
+                include_phase_ended = true;
+                out.push(block);
+            }
+        }
+    }
+    Ok(())
+}
+
 /// evalコマンドディスパッチャ
 #[derive(Debug)]
 pub struct Evaluator {
@@ -231,6 +460,16 @@ pub struct Evaluator {
     /// scene's LCM boundary, then the flag is cleared. This is a separate path
     /// from per-clip swaps (pending_clip) and handles switching the whole scene.
     force_scene_advance_on_grid: bool,
+    /// ロック外 eval (prepare/apply 分離) のための compile キャッシュモード。
+    /// 通常は `Off`。`prepare_*` が使い捨て Evaluator 上で `Record` にして compile
+    /// 成果物を記録し、`apply_prepared` が live 上で `Replay` にして再利用する。
+    /// `eval_block` 内の 2 つの compile 箇所だけがこのフィールドを参照する。
+    ///
+    /// Compile-cache mode for off-lock eval (the prepare/apply split). Normally
+    /// `Off`. `prepare_*` sets `Record` on a throwaway Evaluator to capture compiled
+    /// artifacts; `apply_prepared` sets `Replay` on live to reuse them. Only the two
+    /// compile sites inside `eval_block` consult this field.
+    precompile: PrecompileMode,
 }
 
 impl Evaluator {
@@ -248,6 +487,7 @@ impl Evaluator {
             device_event_tx: None,
             device_connection_errors: HashMap::new(),
             force_scene_advance_on_grid: false,
+            precompile: PrecompileMode::Off,
         }
     }
 
@@ -595,6 +835,142 @@ impl Evaluator {
         Ok(player)
     }
 
+    /// `PrecompileMode` を尊重して clip を compile する。
+    ///
+    /// - `Replay`: 記録済み成果物があれば compile を省略して clone を返す。
+    ///   ミス時は通常 compile にフォールバックする。
+    /// - `Record`: 通常 compile した結果を名前キーで記録してから返す。
+    /// - `Off`: 通常 compile (既存挙動)。
+    ///
+    /// 呼び出し元 (`Block::Clip` 差し替えパス) が直前に同名 clip を registry へ
+    /// 登録しているため、registry からの取得は `expect` で十分。
+    ///
+    /// Compiles a clip honoring `PrecompileMode`. `Replay` reuses a recorded
+    /// artifact (falling back to a real compile on miss); `Record` records the
+    /// freshly compiled artifact keyed by name; `Off` compiles normally.
+    fn compile_clip_cached(&mut self, name: &str) -> Result<CompiledClip, EngineError> {
+        if let PrecompileMode::Replay { clips, .. } = &self.precompile {
+            if let Some(compiled) = clips.get(name) {
+                return Ok(compiled.clone());
+            }
+        }
+        let compiled = {
+            let clock_snap = self.clock_snapshot();
+            let clip_def = self
+                .registry
+                .get_clip(name)
+                .expect("clip was just registered");
+            compile_clip(clip_def, &clock_snap, &self.registry)?
+        };
+        if let PrecompileMode::Record { clips, .. } = &mut self.precompile {
+            clips.insert(name.to_string(), compiled.clone());
+        }
+        Ok(compiled)
+    }
+
+    /// `PrecompileMode` を尊重して ScenePlayer を構築する。
+    ///
+    /// `compile_clip_cached` の ScenePlayer 版。`Replay` は scene 名キーで記録済み
+    /// プレイヤーを clone 再利用し、`Record` は構築結果を記録する。`Off` は
+    /// `build_scene_player` をそのまま呼ぶ。
+    ///
+    /// ScenePlayer counterpart of `compile_clip_cached`: `Replay` reuses a recorded
+    /// player by scene name, `Record` records the built one, `Off` builds directly.
+    fn build_scene_player_cached(
+        &mut self,
+        scene_name: &str,
+        scene_def: &SceneDef,
+    ) -> Result<ScenePlayer, EngineError> {
+        if let PrecompileMode::Replay { players, .. } = &self.precompile {
+            if let Some(player) = players.get(scene_name) {
+                return Ok(player.clone());
+            }
+        }
+        let player = self.build_scene_player(scene_def)?;
+        if let PrecompileMode::Record { players, .. } = &mut self.precompile {
+            players.insert(scene_name.to_string(), player.clone());
+        }
+        Ok(player)
+    }
+
+    /// live `Evaluator` から prepare 用の不変スナップショットを取得する。
+    ///
+    /// 呼び出し側は live ロックを**短時間**だけ握ってこれを取得し、ロックを解放
+    /// してから `prepare_*` (重い parse+compile) を実行する。`StateManager` は
+    /// 非 Clone かつ prepare に不要なので含めない。
+    ///
+    /// Captures an immutable snapshot for the off-lock prepare. Callers hold the
+    /// live lock only briefly to take this, release it, then run `prepare_*`.
+    pub fn snapshot_for_prepare(&self) -> EvalSnapshot {
+        EvalSnapshot {
+            registry: self.registry.clone(),
+            scope: self.scope.clone(),
+            clock: self.clock_snapshot(),
+            active_scene: self.active_scene.clone(),
+            active_scene_name: self.active_scene_name.clone(),
+        }
+    }
+
+    /// スナップショットから使い捨て (throwaway) Evaluator を構築する。
+    ///
+    /// prepare 専用。live と state を共有せず (`StateManager::new`)、`device_event_tx`
+    /// も持たない (prepare 中に DeviceEvent を発火させない)。`clock` はスナップショット
+    /// 値を新しい `Arc<RwLock<_>>` で包み直す。
+    ///
+    /// Builds a throwaway Evaluator from a snapshot for prepare only: no shared
+    /// state, no `device_event_tx` (prepare must not emit DeviceEvents), and a fresh
+    /// `Arc<RwLock<Clock>>` wrapping the snapshot value.
+    fn from_snapshot(snapshot: EvalSnapshot, precompile: PrecompileMode) -> Self {
+        Self {
+            registry: snapshot.registry,
+            state: StateManager::new(),
+            clock: Arc::new(RwLock::new(snapshot.clock)),
+            scope: snapshot.scope,
+            active_scene: snapshot.active_scene,
+            active_scene_name: snapshot.active_scene_name,
+            pending_all_notes_off: Vec::new(),
+            pending_transport: Vec::new(),
+            device_event_tx: None,
+            device_connection_errors: HashMap::new(),
+            force_scene_advance_on_grid: false,
+            precompile,
+        }
+    }
+
+    /// `PreparedProgram` を live state へ適用する (ロック内・短時間)。
+    ///
+    /// `Replay` モードで `blocks` を `eval_block` 評価する。compile は prepare 時の
+    /// 成果物 (`clips`/`players`) から再利用されるため、ロック保持時間が compile
+    /// コストに依存しない。評価終了後は必ず `Off` に戻す。
+    ///
+    /// Applies a `PreparedProgram` to live state under a short lock. Evaluates
+    /// `blocks` in `Replay` mode so compile is reused from prepare-time artifacts;
+    /// lock-hold time is independent of compile cost. The mode is always reset to
+    /// `Off` afterward.
+    pub fn apply_prepared(
+        &mut self,
+        prepared: PreparedProgram,
+    ) -> Result<Vec<EvalResult>, EngineError> {
+        let PreparedProgram {
+            blocks,
+            clips,
+            players,
+        } = prepared;
+        self.precompile = PrecompileMode::Replay { clips, players };
+        let mut results = Vec::with_capacity(blocks.len());
+        for block in blocks {
+            match self.eval_block(block) {
+                Ok(r) => results.push(r),
+                Err(e) => {
+                    self.precompile = PrecompileMode::Off;
+                    return Err(e);
+                }
+            }
+        }
+        self.precompile = PrecompileMode::Off;
+        Ok(results)
+    }
+
     /// 単一ブロックを評価
     pub fn eval_block(&mut self, block: Block) -> Result<EvalResult, EngineError> {
         match block {
@@ -679,12 +1055,7 @@ impl Evaluator {
                     .as_ref()
                     .is_some_and(|scene| scene.has_clip(&name));
                 if in_use {
-                    let clock_snap = self.clock_snapshot();
-                    let clip_def = self
-                        .registry
-                        .get_clip(&name)
-                        .expect("clip was just registered");
-                    let compiled = compile_clip(clip_def, &clock_snap, &self.registry)?;
+                    let compiled = self.compile_clip_cached(&name)?;
                     if let Some(scene) = self.active_scene.as_mut() {
                         scene.replace_clip(&name, compiled);
                     }
@@ -795,7 +1166,7 @@ impl Evaluator {
                             .get_scene(&name)
                             .ok_or_else(|| EngineError::UnknownScene(name.clone()))?
                             .clone();
-                        let player = self.build_scene_player(&scene_def)?;
+                        let player = self.build_scene_player_cached(&name, &scene_def)?;
                         self.active_scene = Some(player);
                         self.active_scene_name = Some(name.clone());
                         self.state.apply_command(PlaybackCommand::PlayScene {
@@ -819,7 +1190,8 @@ impl Evaluator {
                                             EngineError::UnknownScene(first.scene.clone())
                                         })?
                                         .clone();
-                                    let player = self.build_scene_player(&scene_def)?;
+                                    let player =
+                                        self.build_scene_player_cached(&first.scene, &scene_def)?;
                                     self.active_scene = Some(player);
                                     self.active_scene_name = Some(first.scene.clone());
                                 } else {
@@ -4449,6 +4821,139 @@ instrument bass {
         assert!(
             ev.active_scene().unwrap().is_muted("b"),
             "chorus の宣言で b は初期 mute に再初期化される（前 scene の動的 mute は引き継がない）"
+        );
+    }
+
+    // ===== ロック外 eval (prepare/apply 分離) の意味的等価性テスト =====
+    // Semantic-equivalence tests for off-lock eval (the prepare/apply split).
+
+    /// 代表的なマルチブロック source で `snapshot→prepare→apply` の評価結果列が
+    /// `eval_source` と完全一致すること (Play の active_scene 構築まで含む)。
+    ///
+    /// prepare/apply round-trip yields the exact same `EvalResult` sequence as
+    /// `eval_source`, including building the active scene on Play.
+    #[test]
+    fn prepare_apply_equivalent_to_eval_source() {
+        let src = "device d { port test }\n\
+                   instrument lead { device d\n channel 1 }\n\
+                   clip riff [bars 1] { lead c e g c }\n\
+                   scene s { riff }\n\
+                   play s [loop]\n";
+
+        let mut direct = Evaluator::new(120.0);
+        let direct_results = direct.eval_source(src).expect("eval_source");
+
+        let mut split = Evaluator::new(120.0);
+        let prepared = split
+            .snapshot_for_prepare()
+            .prepare_source(src)
+            .expect("prepare_source");
+        let split_results = split.apply_prepared(prepared).expect("apply_prepared");
+
+        assert_eq!(
+            direct_results, split_results,
+            "prepare+apply の結果列が eval_source と一致しない"
+        );
+        // どちらも同じ scene を active にしている。
+        assert_eq!(
+            direct.active_scene_name_for_test(),
+            split.active_scene_name_for_test()
+        );
+        assert!(split.active_scene().expect("active scene").has_clip("riff"));
+        // apply 後はモードが Off に戻り、通常 eval が継続できる。
+        assert!(matches!(split.precompile, PrecompileMode::Off));
+    }
+
+    /// 同一 source 内で先に定義した instrument を、後続 clip の compile が
+    /// 解決できること (prepare 時の throwaway 上で register→compile の順序が保たれる)。
+    ///
+    /// A clip compiled during prepare resolves an instrument defined earlier in the
+    /// same source (register-before-compile order is preserved on the throwaway).
+    #[test]
+    fn prepare_apply_resolves_instrument_defined_in_same_source() {
+        let src = "device d { port test }\n\
+                   instrument lead { device d\n channel 3 }\n\
+                   clip riff [bars 1] { lead c e g }\n\
+                   scene s { riff }\n\
+                   play s [loop]\n";
+
+        let mut ev = Evaluator::new(120.0);
+        let prepared = ev
+            .snapshot_for_prepare()
+            .prepare_source(src)
+            .expect("prepare_source");
+        ev.apply_prepared(prepared)
+            .expect("apply must resolve same-source instrument");
+
+        // clip が registry に登録され、active_scene に積まれている = compile 成功。
+        assert!(ev.registry().get_clip("riff").is_some());
+        assert!(ev.active_scene().expect("active scene").has_clip("riff"));
+    }
+
+    /// preload 版 prepare/apply が `eval_source_preload` と等価 (play/stop 除外) で、
+    /// play がスキップされ active_scene が構築されないこと。
+    ///
+    /// The preload prepare/apply variant matches `eval_source_preload` (play/stop
+    /// excluded): play is skipped and no active scene is built.
+    #[test]
+    fn prepare_apply_preload_skips_play() {
+        let src = "device d { port test }\n\
+                   instrument lead { device d\n channel 1 }\n\
+                   clip riff [bars 1] { lead c e g }\n\
+                   scene s { riff }\n\
+                   play s [loop]\n";
+
+        let mut direct = Evaluator::new(120.0);
+        let direct_results = direct
+            .eval_source_preload(src)
+            .expect("eval_source_preload");
+
+        let mut split = Evaluator::new(120.0);
+        let prepared = split
+            .snapshot_for_prepare()
+            .prepare_source_preload(src)
+            .expect("prepare_source_preload");
+        let split_results = split.apply_prepared(prepared).expect("apply_prepared");
+
+        assert_eq!(direct_results, split_results);
+        assert!(
+            split.active_scene().is_none(),
+            "preload では play がスキップされ active_scene は構築されない"
+        );
+    }
+
+    /// 再生中(active_scene あり)に in-use clip を prepare/apply で再定義した結果が
+    /// `eval_source` 経路と一致すること。差し替え後も active_scene が clip を保持し、
+    /// 再生カーソル保持経路 (replace_clip) を壊さない。
+    ///
+    /// Redefining an in-use clip via prepare/apply matches the `eval_source` path:
+    /// the active scene keeps the clip after the swap, leaving the cursor-preserving
+    /// `replace_clip` path intact.
+    #[test]
+    fn prepare_apply_redefines_in_use_clip() {
+        let setup = "device d { port test }\n\
+                     instrument lead { device d\n channel 1 }\n\
+                     clip riff [bars 1] { lead c e g }\n\
+                     scene s { riff }\n\
+                     play s [loop]\n";
+        let redef = "clip riff [bars 1] { lead g e c }\n";
+
+        let mut direct = Evaluator::new(120.0);
+        direct.eval_source(setup).expect("setup");
+        let direct_results = direct.eval_source(redef).expect("redef eval_source");
+
+        let mut split = Evaluator::new(120.0);
+        split.eval_source(setup).expect("setup");
+        let prepared = split
+            .snapshot_for_prepare()
+            .prepare_source(redef)
+            .expect("prepare redef");
+        let split_results = split.apply_prepared(prepared).expect("apply redef");
+
+        assert_eq!(direct_results, split_results);
+        assert!(
+            split.active_scene().expect("active scene").has_clip("riff"),
+            "差し替え後も active_scene が riff を保持する"
         );
     }
 }
