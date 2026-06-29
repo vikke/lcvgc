@@ -3,6 +3,13 @@
 - **厳守**: claude code を起動したら、activate & onbording を自動で行なう事。
 - **厳守**: claude code でpromptを指示されたら、promptを実行する前に、activate & onbording を自動で行なう事。
 
+## アーキテクチャ
+
+- 依存は必ず上→下の一方向。複数層から共有する値型は依存ゼロの `domain` に置く。
+  `domain` は他モジュールを import しない。
+- 探査・調査・新規ファイル配置の前に @ARCHITECTURE.ja.md
+  （層構造・鉄則・早見表・既知の循環）を読む事。`make deps` で `deps.svg` 再生成。
+
 ## 思考
 
 - **厳守**: 仕様書等大きなファイルを読んで大きなタスク実行を行なう場合は、planモードで何をどうするかを綿密に事前に計画する事。
