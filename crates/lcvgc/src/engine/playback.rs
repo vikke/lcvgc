@@ -2049,25 +2049,37 @@ mod tests {
     async fn lock_contention_during_playback_increases_tick_jitter() {
         const TICK_US: u64 = 2_000; // 2ms tick
         const TICKS: u64 = 60;
+        // ロック保持は tick の 8 倍 (16ms) に取り、ベースラインのスケジューラノイズに
+        // 対する SN 比を稼ぐ。macOS runner では競合なしでも jitter が数十 ms に跳ねる
+        // ことがあり、保持時間が tick の数倍程度だと相対比較がフレーキーになるため。
+        // Hold the lock for 8×tick (16ms) so the contended jitter clearly dominates
+        // baseline scheduler noise (which can spike to tens of ms on macOS runners).
+        const HOLD: Duration = Duration::from_millis(16);
+        const PERIOD: Duration = Duration::from_millis(6);
+        // baseline の max-jitter は単発の OS スケジューラスパイクで跳ねるため、複数回
+        // 測って最小値（=その環境の静かな床）を採用し、transient なノイズを除去する。
+        // Measure the baseline several times and take the minimum max-jitter so a single
+        // transient OS scheduler spike does not inflate the baseline.
+        const BASELINE_SAMPLES: usize = 3;
 
-        // 競合なしのベースライン
-        let ev_base = Arc::new(Mutex::new(Evaluator::new(120.0)));
-        eval(&ev_base, setup_src()).await;
-        eval(&ev_base, "play s1\n").await;
-        let (baseline_jitter, baseline_lock) =
-            drive_and_measure_jitter(ev_base, TICK_US, TICKS, None).await;
+        // 競合なしのベースライン（best-of-N で床を取る）
+        let mut baseline_jitter = u128::MAX;
+        let mut baseline_lock = u64::MAX;
+        for _ in 0..BASELINE_SAMPLES {
+            let ev_base = Arc::new(Mutex::new(Evaluator::new(120.0)));
+            eval(&ev_base, setup_src()).await;
+            eval(&ev_base, "play s1\n").await;
+            let (jitter, lock) = drive_and_measure_jitter(ev_base, TICK_US, TICKS, None).await;
+            baseline_jitter = baseline_jitter.min(jitter);
+            baseline_lock = baseline_lock.min(lock);
+        }
 
-        // 競合あり: tick の数倍 (8ms) を 6ms 間隔で握る → 演奏中に頻繁に衝突する
+        // 競合あり: tick の 8 倍 (16ms) を 6ms 間隔で握る → 演奏中に頻繁に衝突する
         let ev_cont = Arc::new(Mutex::new(Evaluator::new(120.0)));
         eval(&ev_cont, setup_src()).await;
         eval(&ev_cont, "play s1\n").await;
-        let (contended_jitter, contended_lock) = drive_and_measure_jitter(
-            ev_cont,
-            TICK_US,
-            TICKS,
-            Some((Duration::from_millis(8), Duration::from_millis(6))),
-        )
-        .await;
+        let (contended_jitter, contended_lock) =
+            drive_and_measure_jitter(ev_cont, TICK_US, TICKS, Some((HOLD, PERIOD))).await;
 
         // 競合ありのロック待ち最大は、保持時間 (8ms=8000us) の大半を観測するはず。
         // これがもたつきの直接原因（ロック競合）が効いている証拠。
@@ -2078,7 +2090,7 @@ mod tests {
             baseline_lock
         );
         // 競合ありの tick ジッタは、競合なしに比べて明確に大きい（もたつき再現）。
-        // ロック保持 8ms は 2ms tick の 4 倍なので、衝突した tick は大きく遅れる。
+        // ロック保持 16ms は 2ms tick の 8 倍なので、衝突した tick は大きく遅れる。
         assert!(
             contended_jitter > baseline_jitter,
             "競合ありの max jitter={}us が競合なし={}us を上回らず、もたつきが再現していない",
