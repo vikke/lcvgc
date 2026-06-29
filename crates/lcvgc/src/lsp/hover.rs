@@ -123,6 +123,7 @@ mod tests {
     use super::super::span_parser::{Span, SpannedBlock};
     use super::*;
     use crate::ast::clip::{ClipBody, ClipDef, PitchedClipBody};
+    use crate::ast::clip_options::ClipOptions;
     use crate::ast::device::DeviceDef;
     use crate::ast::include::IncludeDef;
     use crate::ast::instrument::{CcMapping, InstrumentDef};
@@ -137,7 +138,6 @@ mod tests {
     use crate::ast::var::VarDef;
     use crate::domain::channel::MidiChannel;
     use crate::domain::pitch::NoteName;
-    use crate::parser::clip_options::ClipOptions;
 
     fn sb(block: Block) -> SpannedBlock {
         SpannedBlock {

@@ -278,13 +278,13 @@ impl Registry {
 mod tests {
     use super::*;
     use crate::ast::clip::{ClipBody, PitchedClipBody};
+    use crate::ast::clip_options::ClipOptions;
     use crate::ast::include::IncludeDef;
     use crate::ast::playback::{PlayCommand, PlayTarget, RepeatSpec, StopCommand};
     use crate::ast::scale::ScaleType;
     use crate::ast::var::VarDef;
     use crate::domain::channel::MidiChannel;
     use crate::domain::pitch::NoteName;
-    use crate::parser::clip_options::ClipOptions;
 
     #[test]
     fn new_is_empty() {

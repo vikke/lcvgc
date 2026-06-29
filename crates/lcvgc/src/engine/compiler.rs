@@ -1280,10 +1280,10 @@ mod tests {
     use super::*;
     use crate::ast::clip::{ClipDef, PitchedClipBody, PitchedLine};
     use crate::ast::clip_note::NoteEvent;
+    use crate::ast::clip_options::ClipOptions;
     use crate::ast::instrument::InstrumentDef;
     use crate::ast::kit::{KitDef, KitInstrument, KitInstrumentNote};
     use crate::domain::pitch::NoteName;
-    use crate::parser::clip_options::ClipOptions;
 
     fn make_registry_with_bass() -> Registry {
         let mut registry = Registry::default();
@@ -2719,7 +2719,7 @@ mod tests {
             vec![PitchedLine {
                 instrument: "bass".to_string(),
                 elements: vec![PitchedElement::Repetition(
-                    crate::parser::clip_repetition::Repetition {
+                    crate::ast::clip_repetition::Repetition {
                         content: "c:3:8 c eb".to_string(),
                         count: 4,
                     },
@@ -2749,7 +2749,7 @@ mod tests {
             vec![PitchedLine {
                 instrument: "bass".to_string(),
                 elements: vec![PitchedElement::Repetition(
-                    crate::parser::clip_repetition::Repetition {
+                    crate::ast::clip_repetition::Repetition {
                         content: "c:3:8".to_string(),
                         count: 2,
                     },
@@ -2935,7 +2935,7 @@ mod tests {
             vec![PitchedLine {
                 instrument: "bass".to_string(),
                 elements: vec![PitchedElement::Repetition(
-                    crate::parser::clip_repetition::Repetition {
+                    crate::ast::clip_repetition::Repetition {
                         content: "cm7:4:4".to_string(),
                         count: 2,
                     },

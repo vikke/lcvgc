@@ -336,12 +336,12 @@ impl DiagnosticProvider {
 mod tests {
     use super::*;
     use crate::ast::clip::{ClipBody, ClipDef, PitchedClipBody, PitchedLine};
+    use crate::ast::clip_options::ClipOptions;
     use crate::ast::instrument::InstrumentDef;
     use crate::ast::scene::{SceneDef, SceneEntry, ShuffleCandidate};
     use crate::ast::session::{SessionDef, SessionEntry, SessionRepeat};
     use crate::ast::tempo::Tempo;
     use crate::domain::channel::MidiChannel;
-    use crate::parser::clip_options::ClipOptions;
 
     fn make_span(start: usize, end: usize) -> Span {
         Span { start, end }
