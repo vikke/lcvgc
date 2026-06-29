@@ -79,6 +79,8 @@ binstall: ## ビルド済みバイナリを Release から取得 (cargo-binstall
 	$(CARGO) binstall --git $(REPO) lcvgc --force
 
 ## ── その他 ──────────────────────────────────────────
+deps: ## 依存図の生成
+	$(CARGO) modules dependencies --lib -p lcvgc --no-externs --no-fns --no-sysroot  | dot -Tsvg > deps.svg
 
 clean: ## ビルド成果物削除
 	$(CARGO) clean
