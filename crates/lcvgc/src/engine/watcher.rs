@@ -156,8 +156,26 @@ pub async fn run_hot_reload(
 
         info!("ファイル変更検知: {}", file_path.display());
 
-        let mut ev = evaluator.lock().await;
-        match ev.eval_file(&file_path) {
+        // ロック外 eval (prepare/apply 分離): 重い parse+compile を再生ドライバと
+        // 同じ Evaluator ロックの外で行い、結果差し替え (apply) だけ短時間ロックする。
+        // (1) snapshot を短時間ロックで取得。
+        // (2) ロックを解放してから prepare (include 展開 + parse + compile)。
+        // (3) 再ロックして apply (差し替えのみ)。
+        //
+        // Off-lock eval (prepare/apply split): the heavy parse+compile runs outside
+        // the Evaluator lock shared with the playback driver; only the swap (apply)
+        // takes a short lock. (1) snapshot under a brief lock, (2) prepare off-lock,
+        // (3) re-lock and apply.
+        let snapshot = { evaluator.lock().await.snapshot_for_prepare() };
+        let prepared = match snapshot.prepare_file(&file_path) {
+            Ok(prepared) => prepared,
+            Err(e) => {
+                warn!("ホットリロード失敗: {}: {}", file_path.display(), e);
+                continue;
+            }
+        };
+        let apply_result = { evaluator.lock().await.apply_prepared(prepared) };
+        match apply_result {
             Ok(results) => {
                 info!(
                     "ホットリロード成功: {} ブロック評価 ({})",
