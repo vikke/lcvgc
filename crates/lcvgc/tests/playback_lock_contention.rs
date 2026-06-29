@@ -3,16 +3,19 @@
 //!
 //! 実ドライバ (`run_driver_with_shared`) をループ clip で走らせ、NoteOn の配送時刻を
 //! タイムスタンプ付きで記録する。平常時(baseline)と、並行タスクが共有 `Evaluator`
-//! ロックを保持しつつ実 parse+compile を行う競合時(contention)とで、NoteOn 配送間隔
-//! (ジッタ)を比較する。競合時にだけ間隔が跳ね上がれば、もたつきの主因がロック競合で
-//! あることが直接示される。
+//! ロックを確定時間保持する競合時(contention)とで、NoteOn 配送間隔(ジッタ)を比較する。
+//! 競合時にだけ間隔が跳ね上がれば、もたつきの主因がロック競合であることが直接示される。
+//! ロック保持時間は eval 速度(マシン性能)に依存しない固定値で模擬するため、高速環境でも
+//! 決定論的に再現できる。
 //!
-//! Measurement test that confirms playback stuttering cause #1: a heavy eval
-//! (hot reload / LSP) contends for the same `Evaluator` lock the playback driver
-//! takes every tick. We run the real driver on a looping clip and timestamp every
-//! NoteOn delivery, then compare inter-NoteOn gaps between a quiet baseline window
-//! and a contention window in which a concurrent task holds the shared `Evaluator`
-//! lock while doing a real parse+compile (a faithful stand-in for hot reload).
+//! Measurement test that confirms playback stuttering cause #1: anything holding
+//! the same `Evaluator` lock the playback driver takes every tick (hot reload /
+//! LSP) stalls NoteOn delivery. We run the real driver on a looping clip and
+//! timestamp every NoteOn delivery, then compare inter-NoteOn gaps between a quiet
+//! baseline window and a contention window in which a concurrent task holds the
+//! shared `Evaluator` lock for a fixed duration. Holding for a fixed time (rather
+//! than for a real parse+compile) makes the test independent of eval speed, so it
+//! reproduces deterministically even on fast machines.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex as StdMutex};
@@ -72,24 +75,6 @@ fn playback_src() -> &'static str {
      scene s1 { c1 }\n"
 }
 
-/// 「大きめのライブコーディングファイル」を模した DSL を生成する。
-/// instrument/clip を多数定義し、各 clip に 32 ノートを並べてパース+コンパイル負荷を作る。
-///
-/// Builds a large DSL string standing in for a sizeable live-coding file, to make
-/// parse+compile cost measurable.
-fn build_large_src(n_clips: usize, notes_per_clip: usize) -> String {
-    let mut s = String::with_capacity(n_clips * notes_per_clip * 3 + 4096);
-    s.push_str("device bigdev { port test }\n");
-    let notes: String = "c ".repeat(notes_per_clip);
-    for i in 0..n_clips {
-        s.push_str(&format!(
-            "instrument binst{i} {{ device bigdev\n channel 1 }}\n"
-        ));
-        s.push_str(&format!("clip bclip{i} [bars 1] {{ binst{i} {notes}}}\n"));
-    }
-    s
-}
-
 /// 連続するイベント時刻列から、隣接間隔(ms)の列を作る。
 /// Computes inter-event gaps (ms) from a sequence of timestamps.
 fn gaps_ms(times: &[Instant]) -> Vec<f64> {
@@ -114,22 +99,6 @@ fn stats(gaps: &[f64]) -> (usize, f64, f64, f64) {
     (sorted.len(), mean, p95, max)
 }
 
-/// 実 eval(大きめ DSL の parse+compile)が新規 Evaluator 上で何ms かかるかを実測する。
-/// これがホットリロード/LSP が共有ロックを保持しうる現実的な時間の目安になる。
-///
-/// Measures how long a real parse+compile of a large DSL takes on a fresh Evaluator —
-/// the realistic duration for which hot reload / LSP would hold the shared lock.
-fn measure_real_eval_ms(src: &str, iters: usize) -> f64 {
-    let mut total = 0.0;
-    for _ in 0..iters {
-        let mut ev = Evaluator::new(240.0);
-        let t = Instant::now();
-        ev.eval_source(src).expect("large eval");
-        total += t.elapsed().as_secs_f64() * 1000.0;
-    }
-    total / iters as f64
-}
-
 #[cfg_attr(
     windows,
     ignore = "Windows のデフォルト timer resolution (15.6ms) では tick=520us が丸められて測定不能。\
@@ -138,13 +107,12 @@ fn measure_real_eval_ms(src: &str, iters: usize) -> f64 {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn hot_reload_lock_contention_causes_noteon_stutter() {
     const BPM: f64 = 240.0;
-    // 競合フェーズで共有ロックを保持しながら実 parse+compile する DSL のサイズ。
-    let big_src = build_large_src(120, 32);
+    // 旧来のロック内 eval が共有 Evaluator ロックを握り続ける時間を、マシン性能
+    // (eval 速度) に依存しない確定値で模擬する。NoteOn 周期 (~31ms @ BPM240) に対し
+    // 十分大きく取り、ロック競合が NoteOn 配送遅延を起こすことを決定論的に再現する。
+    const LOCK_HOLD_MS: u64 = 20;
 
-    // 1) 実 eval の所要時間を単体計測 (現実的なロック保持時間の目安)。
-    let real_eval_ms = measure_real_eval_ms(&big_src, 3);
-
-    // 2) ドライバを起動してループ再生。
+    // 1) ドライバを起動してループ再生。
     let evaluator = Arc::new(Mutex::new(Evaluator::new(BPM)));
     {
         let mut ev = evaluator.lock().await;
@@ -173,20 +141,20 @@ async fn hot_reload_lock_contention_causes_noteon_stutter() {
     sleep(Duration::from_millis(1500)).await;
     let contention_start = Instant::now();
 
-    // 4) 競合窓: 並行タスクが共有 Evaluator ロックを保持しつつ実 parse+compile。
-    //    ホットリロード(watcher.rs:159-160 の lock 内 eval_file)を忠実に模擬する。
-    //    state を汚さないよう compile は使い捨て Evaluator 上で行い、保持するのは
-    //    再生ドライバと競合する「共有ロック」のみ。
+    // 4) 競合窓: 並行タスクが共有 Evaluator ロックを確定時間保持する。
+    //    ホットリロード(watcher.rs の lock 内 eval_file)など「重い処理がロックを長時間
+    //    握る」状況を、eval 速度に依存しない固定時間で忠実に模擬する。guard を保持した
+    //    まま sleep することで、その間 再生ドライバ (step_once の毎 tick lock) を確実に
+    //    待たせる。
     let interference = {
         let ev = Arc::clone(&evaluator);
-        let big = big_src.clone();
         tokio::spawn(async move {
             for _ in 0..6 {
                 sleep(Duration::from_millis(250)).await;
-                let _guard = ev.lock().await; // 再生ドライバが毎 tick 奪い合うのと同じロック
-                let mut throwaway = Evaluator::new(BPM);
-                let _ = throwaway.eval_source(&big); // 実 parse+compile = ロック保持
-                                                     // _guard drop でロック解放
+                // 再生ドライバが毎 tick 奪い合うのと同じ共有ロックを確定時間保持する。
+                let _guard = ev.lock().await;
+                sleep(Duration::from_millis(LOCK_HOLD_MS)).await;
+                // _guard drop でロック解放
             }
         })
     };
@@ -224,7 +192,7 @@ async fn hot_reload_lock_contention_causes_noteon_stutter() {
 
     println!("=== playback lock-contention measurement (BPM={BPM}) ===");
     println!("理論 NoteOn 周期 (32 分音符) ≈ {expected_gap_ms:.2} ms");
-    println!("実 eval (大きめ DSL: 120 clips x 32 notes) compile = {real_eval_ms:.2} ms / 回");
+    println!("競合タスクのロック保持時間 = {LOCK_HOLD_MS} ms / 回 (固定)");
     println!("baseline   gaps: n={bn} mean={bmean:.2} p95={bp95:.2} max={bmax:.2} ms");
     println!("contention gaps: n={cn} mean={cmean:.2} p95={cp95:.2} max={cmax:.2} ms");
     println!(
@@ -239,13 +207,13 @@ async fn hot_reload_lock_contention_causes_noteon_stutter() {
         "サンプル不足: baseline={bn}, contention={cn} (driver/sink が機能していない可能性)"
     );
 
-    // 主張: 競合窓では最大 NoteOn 間隔が、平常時 + 実 eval 所要時間の相当分まで悪化する。
+    // 主張: 競合窓では最大 NoteOn 間隔が、ロック保持時間の相当分まで悪化する。
     // = ロック競合がもたつき(配送遅延)を引き起こしている直接証拠。
-    // しきい値はジッタ余裕を見て実 eval 時間の 50% を採用。
+    // しきい値はジッタ余裕を見てロック保持時間の 50% を採用。
     let degradation = cmax - bmax;
     assert!(
-        degradation >= real_eval_ms * 0.5,
-        "競合による max gap 悪化 {degradation:.2} ms が実 eval {real_eval_ms:.2} ms に対し小さすぎる。\
+        degradation >= LOCK_HOLD_MS as f64 * 0.5,
+        "競合による max gap 悪化 {degradation:.2} ms がロック保持 {LOCK_HOLD_MS} ms に対し小さすぎる。\
          ロック競合がもたつきの主因という仮説と不整合"
     );
 }
