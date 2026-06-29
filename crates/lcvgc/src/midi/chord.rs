@@ -1,5 +1,5 @@
-use crate::ast::clip_note::ChordSuffix;
-use crate::ast::common::NoteName;
+use crate::domain::chord::ChordSuffix;
+use crate::domain::pitch::NoteName;
 use crate::midi::note::note_number;
 
 /// ChordSuffixから構成音のインターバル（半音数）リストを返す

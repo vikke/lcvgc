@@ -409,7 +409,7 @@ pub struct Evaluator {
     /// Queue of `(device, channel)` pairs that the caller should emit
     /// AllNotesOff (CC#123 value=0) on after Stop/mute. Extended from a bare
     /// channel list to support multi-device routing (Issue #49).
-    pending_all_notes_off: Vec<(String, crate::midi::channel::MidiChannel)>,
+    pending_all_notes_off: Vec<(String, crate::domain::channel::MidiChannel)>,
     /// Play/Stop 評価時に `transport = true` の device へ送出する MIDI System
     /// Real-Time メッセージ (`Start` / `Stop`) のキュー。呼び出し側（tick
     /// driver / daemon）は device 名をキーに対応する `MidiSink` を選び、
@@ -547,7 +547,7 @@ impl Evaluator {
     /// name and emits CC#123 value=0 on each channel (Issue #49).
     pub fn take_pending_all_notes_off(
         &mut self,
-    ) -> Vec<(String, crate::midi::channel::MidiChannel)> {
+    ) -> Vec<(String, crate::domain::channel::MidiChannel)> {
         std::mem::take(&mut self.pending_all_notes_off)
     }
 
@@ -1852,7 +1852,7 @@ impl Evaluator {
 mod tests {
     use super::*;
     use crate::ast::clip::{ClipBody, ClipDef, PitchedClipBody};
-    use crate::ast::common::NoteName;
+    use crate::ast::clip_options::ClipOptions;
     use crate::ast::device::DeviceDef;
     use crate::ast::include::IncludeDef;
     use crate::ast::instrument::InstrumentDef;
@@ -1863,9 +1863,9 @@ mod tests {
     use crate::ast::session::SessionDef;
     use crate::ast::tempo::Tempo;
     use crate::ast::var::VarDef;
+    use crate::domain::channel::MidiChannel;
+    use crate::domain::pitch::NoteName;
     use crate::engine::state::PlaybackState;
-    use crate::midi::channel::MidiChannel;
-    use crate::parser::clip_options::ClipOptions;
 
     #[test]
     fn eval_device_registered() {

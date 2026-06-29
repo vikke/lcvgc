@@ -1,7 +1,7 @@
-use crate::ast::common::NoteName;
 use crate::ast::unresolved::UnresolvedVarRefs;
 use crate::ast::var::VarDef;
-use crate::midi::channel::MidiChannel;
+use crate::domain::channel::MidiChannel;
+use crate::domain::pitch::NoteName;
 
 /// CCパラメータのエイリアスマッピング
 /// CC parameter alias mapping

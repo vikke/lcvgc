@@ -465,7 +465,7 @@ impl PlaybackDriver {
     /// evaluator to the matching sink, warning and skipping unknown devices.
     fn dispatch_all_notes_off(
         sinks: &mut MutexGuard<'_, HashMap<String, BoxedSink>>,
-        pairs: &[(String, crate::midi::channel::MidiChannel)],
+        pairs: &[(String, crate::domain::channel::MidiChannel)],
     ) -> Result<(), EngineError> {
         for (device, ch) in pairs {
             let msg = MidiMessage::ControlChange {
@@ -992,8 +992,8 @@ fn read_tick_duration_us(clock: &Arc<RwLock<Clock>>) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::domain::channel::MidiChannel;
     use crate::engine::midi_sink::SharedMockSink;
-    use crate::midi::channel::MidiChannel;
 
     /// eval_source で DSL を評価する小ヘルパ
     async fn eval(evaluator: &Arc<Mutex<Evaluator>>, source: &str) {

@@ -57,13 +57,13 @@ mod tests {
     use super::super::span_parser::{Span, SpannedBlock};
     use super::*;
     use crate::ast::clip::{ClipBody, ClipDef, PitchedClipBody};
+    use crate::ast::clip_options::ClipOptions;
     use crate::ast::device::DeviceDef;
     use crate::ast::instrument::InstrumentDef;
     use crate::ast::scene::SceneDef;
     use crate::ast::tempo::Tempo;
     use crate::ast::var::VarDef;
-    use crate::midi::channel::MidiChannel;
-    use crate::parser::clip_options::ClipOptions;
+    use crate::domain::channel::MidiChannel;
 
     fn device_block(name: &str, span: Span, name_span: Option<Span>) -> SpannedBlock {
         SpannedBlock {

@@ -141,7 +141,7 @@ impl DocumentSymbolProvider {
 mod tests {
     use super::*;
     use crate::ast::clip::{ClipBody, ClipDef, PitchedClipBody};
-    use crate::ast::common::NoteName;
+    use crate::ast::clip_options::ClipOptions;
     use crate::ast::device::DeviceDef;
     use crate::ast::include::IncludeDef;
     use crate::ast::playback::{
@@ -152,7 +152,7 @@ mod tests {
     use crate::ast::session::SessionDef;
     use crate::ast::tempo::Tempo;
     use crate::ast::var::VarDef;
-    use crate::parser::clip_options::ClipOptions;
+    use crate::domain::pitch::NoteName;
 
     fn make_spanned(block: Block, start: usize, end: usize) -> SpannedBlock {
         SpannedBlock {

@@ -1,9 +1,14 @@
 /// ASTモジュール: DSLの抽象構文木を定義する
 /// AST module: defines the abstract syntax tree for the DSL
 pub mod clip;
+pub mod clip_arpeggio;
+pub mod clip_articulation;
+pub mod clip_bar_jump;
 pub mod clip_cc;
 pub mod clip_drum;
 pub mod clip_note;
+pub mod clip_options;
+pub mod clip_repetition;
 pub mod common;
 pub mod device;
 pub mod include;

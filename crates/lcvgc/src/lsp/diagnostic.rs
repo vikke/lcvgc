@@ -336,12 +336,12 @@ impl DiagnosticProvider {
 mod tests {
     use super::*;
     use crate::ast::clip::{ClipBody, ClipDef, PitchedClipBody, PitchedLine};
+    use crate::ast::clip_options::ClipOptions;
     use crate::ast::instrument::InstrumentDef;
     use crate::ast::scene::{SceneDef, SceneEntry, ShuffleCandidate};
     use crate::ast::session::{SessionDef, SessionEntry, SessionRepeat};
     use crate::ast::tempo::Tempo;
-    use crate::midi::channel::MidiChannel;
-    use crate::parser::clip_options::ClipOptions;
+    use crate::domain::channel::MidiChannel;
 
     fn make_span(start: usize, end: usize) -> Span {
         Span { start, end }
@@ -817,9 +817,9 @@ mod tests {
 
     // --- arpeggio_missing_duration_diagnostics テスト ---
 
-    use crate::ast::common::NoteName;
-    use crate::parser::clip_arpeggio::{Arpeggio, ArpeggioDirection};
-    use crate::parser::clip_articulation::Articulation;
+    use crate::ast::clip_arpeggio::{Arpeggio, ArpeggioDirection};
+    use crate::ast::clip_articulation::Articulation;
+    use crate::domain::pitch::NoteName;
 
     /// テスト用に1つの `PitchedElement::ChordBracket` を持つ clip block を作る。
     fn make_chord_clip_block(
@@ -910,7 +910,7 @@ mod tests {
 
     // --- ChordName + arp 診断テスト ---
 
-    use crate::ast::clip_note::ChordSuffix;
+    use crate::domain::chord::ChordSuffix;
 
     /// テスト用に1つの ChordName(arp) を持つ clip block を作る。
     fn make_chord_name_clip_block(

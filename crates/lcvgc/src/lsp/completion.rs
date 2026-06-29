@@ -6,9 +6,9 @@
 use std::path::Path;
 
 use super::diatonic;
-use crate::ast::common::NoteName;
 use crate::ast::instrument::InstrumentDef;
 use crate::ast::scale::ScaleType;
+use crate::domain::pitch::NoteName;
 
 /// 補完候補アイテム
 ///
@@ -619,7 +619,7 @@ impl CompletionProvider {
 mod tests {
     use super::*;
     use crate::ast::instrument::CcMapping;
-    use crate::midi::channel::MidiChannel;
+    use crate::domain::channel::MidiChannel;
 
     #[test]
     fn test_keyword_completions_count() {

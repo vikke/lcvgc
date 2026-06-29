@@ -211,7 +211,7 @@ async fn apply_to_existing_sink_sends_all_notes_off_to_old_sink() {
     // Confirm the sink stored in the map is the new handle by sending a probe
     // message through the boxed sink and observing it through `new_handle`.
     let probe = MidiMessage::NoteOn {
-        channel: lcvgc::midi::channel::MidiChannel::from_zero_based(7).unwrap(),
+        channel: lcvgc::domain::channel::MidiChannel::from_zero_based(7).unwrap(),
         note: 42,
         velocity: 99,
     };

@@ -1,4 +1,4 @@
-use crate::ast::common::NoteName;
+use crate::domain::pitch::NoteName;
 
 /// スケールの種類
 /// Scale type

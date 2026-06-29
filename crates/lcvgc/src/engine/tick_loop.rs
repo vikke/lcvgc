@@ -115,9 +115,9 @@ impl<S: MidiSink> TickLoop<S> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::domain::channel::MidiChannel;
     use crate::engine::compiler::{CompiledClip, MidiEvent};
     use crate::engine::midi_sink::MockSink;
-    use crate::midi::channel::MidiChannel;
     use crate::midi::message::MidiMessage;
 
     fn note_on(note: u8) -> MidiMessage {

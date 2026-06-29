@@ -8,9 +8,9 @@
 
 use crate::ast::instrument::InstrumentDef;
 use crate::ast::kit::KitDef;
+use crate::domain::channel::MidiChannel;
 use crate::engine::error::EngineError;
 use crate::engine::scope::ScopeChain;
-use crate::midi::channel::MidiChannel;
 
 /// 変数参照を u8 値に解決するヘルパー
 /// Helper to resolve a variable reference to a u8 value
@@ -174,9 +174,9 @@ pub fn resolve_kit(kit: &mut KitDef, scope: &ScopeChain) -> Result<(), EngineErr
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ast::common::NoteName;
     use crate::ast::kit::{KitInstrument, KitInstrumentNote};
     use crate::ast::unresolved::{UnresolvedKitInstrumentVarRefs, UnresolvedVarRefs};
+    use crate::domain::pitch::NoteName;
 
     #[test]
     fn resolve_instrument_device() {

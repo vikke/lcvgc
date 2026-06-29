@@ -1,7 +1,7 @@
 //! ノートナンバー変換モジュール
 //! Note number conversion module
 
-use crate::ast::common::NoteName;
+use crate::domain::pitch::NoteName;
 
 /// 音名とオクターブからMIDIノートナンバー(0-127)に変換する
 /// Converts note name and octave to MIDI note number (0-127)

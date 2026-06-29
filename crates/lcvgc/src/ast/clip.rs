@@ -1,12 +1,12 @@
+use crate::ast::clip_arpeggio::Arpeggio;
+use crate::ast::clip_articulation::Articulation;
+use crate::ast::clip_bar_jump::BarJump;
 use crate::ast::clip_cc::CcAutomation;
 use crate::ast::clip_drum::DrumRow;
 use crate::ast::clip_note::NoteEvent;
-use crate::ast::common::NoteName;
-use crate::parser::clip_arpeggio::Arpeggio;
-use crate::parser::clip_articulation::Articulation;
-use crate::parser::clip_bar_jump::BarJump;
-use crate::parser::clip_options::ClipOptions;
-use crate::parser::clip_repetition::Repetition;
+use crate::ast::clip_options::ClipOptions;
+use crate::ast::clip_repetition::Repetition;
+use crate::domain::pitch::NoteName;
 
 /// 音程付きインストゥルメントラインの単一要素
 /// A single element in a pitched instrument line.

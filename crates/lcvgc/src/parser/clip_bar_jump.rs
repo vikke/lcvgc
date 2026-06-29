@@ -1,16 +1,8 @@
 use nom::character::complete::char;
 use nom::IResult;
 
+use crate::ast::clip_bar_jump::BarJump;
 use crate::parser::common::parse_u32;
-
-/// 小節ジャンプを表す構造体。
-/// Represents a bar jump.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct BarJump {
-    /// ジャンプ先の小節番号（1始まり）
-    /// Target bar number (1-based)
-    pub bar_number: u32,
-}
 
 /// `>N` 形式の小節ジャンプをパースする。
 /// Parses a bar jump in `>N` format.

@@ -39,7 +39,7 @@ pub fn parse_scale(input: &str) -> IResult<&str, ScaleDef> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ast::common::NoteName;
+    use crate::domain::pitch::NoteName;
 
     #[test]
     fn test_scale_c_minor() {

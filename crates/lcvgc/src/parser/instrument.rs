@@ -3,7 +3,7 @@ use nom::{bytes::complete::tag, IResult};
 use crate::ast::instrument::{CcMapping, InstrumentDef, InstrumentNote};
 use crate::ast::unresolved::UnresolvedVarRefs;
 use crate::ast::var::VarDef;
-use crate::midi::channel::MidiChannel;
+use crate::domain::channel::MidiChannel;
 use crate::parser::common::{
     identifier, note_name, parse_u8, parse_u8_or_identifier, ws, ws1, Either,
 };
@@ -336,7 +336,7 @@ pub fn parse_instrument(input: &str) -> IResult<&str, InstrumentDef> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ast::common::NoteName;
+    use crate::domain::pitch::NoteName;
 
     #[test]
     fn test_full_instrument() {
