@@ -1,4 +1,4 @@
-use crate::ast::clip_note::ChordSuffix;
+use crate::domain::chord::ChordSuffix;
 use crate::domain::pitch::NoteName;
 use crate::midi::note::note_number;
 

@@ -831,7 +831,8 @@ pub fn parse_repetition_content(content: &str) -> Result<Vec<PitchedElement>, St
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ast::clip_note::{ChordSuffix, NoteEvent};
+    use crate::ast::clip_note::NoteEvent;
+    use crate::domain::chord::ChordSuffix;
     use crate::domain::pitch::NoteName;
 
     #[test]

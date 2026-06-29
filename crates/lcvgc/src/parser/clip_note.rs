@@ -2,7 +2,8 @@ use nom::bytes::complete::tag;
 use nom::combinator::opt;
 use nom::IResult;
 
-use crate::ast::clip_note::{ChordSuffix, NoteEvent};
+use crate::ast::clip_note::NoteEvent;
+use crate::domain::chord::ChordSuffix;
 use crate::parser::common::{note_name, parse_u16, parse_u8};
 
 /// 最長一致戦略でコードサフィックスをパースする。

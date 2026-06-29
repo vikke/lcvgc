@@ -13,6 +13,9 @@
 //! breaks the inter-module dependency cycles. `domain` itself depends on no
 //! other in-crate module.
 
+/// コード種別ドメイン型
+/// Chord quality domain type
+pub mod chord;
 /// 音高ドメイン型（音名・オクターブ）
 /// Pitch domain types (note name, octave)
 pub mod pitch;

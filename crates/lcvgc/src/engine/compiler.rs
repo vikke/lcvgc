@@ -2783,7 +2783,7 @@ mod tests {
 
     // --- ChordName コンパイルテスト ---
 
-    use crate::ast::clip_note::ChordSuffix;
+    use crate::domain::chord::ChordSuffix;
 
     /// Cm7:4:2 → 4音(C4=60, Eb4=63, G4=67, Bb4=70)、gate80%
     /// Cm7:4:2 → 4 notes (C4=60, Eb4=63, G4=67, Bb4=70), gate 80%

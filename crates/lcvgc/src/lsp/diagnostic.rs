@@ -910,7 +910,7 @@ mod tests {
 
     // --- ChordName + arp 診断テスト ---
 
-    use crate::ast::clip_note::ChordSuffix;
+    use crate::domain::chord::ChordSuffix;
 
     /// テスト用に1つの ChordName(arp) を持つ clip block を作る。
     fn make_chord_name_clip_block(
