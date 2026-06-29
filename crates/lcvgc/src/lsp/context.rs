@@ -1,6 +1,6 @@
 use super::completion::{CompletionItem, CompletionKind, CompletionProvider};
-use crate::ast::common::NoteName;
 use crate::ast::scale::ScaleType;
+use crate::domain::pitch::NoteName;
 use crate::engine::registry::Registry;
 use crate::midi::port::list_ports;
 use crate::parser::scale::parse_scale;

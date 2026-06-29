@@ -278,11 +278,11 @@ impl Registry {
 mod tests {
     use super::*;
     use crate::ast::clip::{ClipBody, PitchedClipBody};
-    use crate::ast::common::NoteName;
     use crate::ast::include::IncludeDef;
     use crate::ast::playback::{PlayCommand, PlayTarget, RepeatSpec, StopCommand};
     use crate::ast::scale::ScaleType;
     use crate::ast::var::VarDef;
+    use crate::domain::pitch::NoteName;
     use crate::midi::channel::MidiChannel;
     use crate::parser::clip_options::ClipOptions;
 

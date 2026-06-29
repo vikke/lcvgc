@@ -1,7 +1,7 @@
 use crate::ast::clip_cc::CcAutomation;
 use crate::ast::clip_drum::DrumRow;
 use crate::ast::clip_note::NoteEvent;
-use crate::ast::common::NoteName;
+use crate::domain::pitch::NoteName;
 use crate::parser::clip_arpeggio::Arpeggio;
 use crate::parser::clip_articulation::Articulation;
 use crate::parser::clip_bar_jump::BarJump;

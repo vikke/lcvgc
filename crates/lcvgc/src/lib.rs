@@ -16,6 +16,9 @@
 /// 抽象構文木定義モジュール
 /// Abstract syntax tree definition module
 pub mod ast;
+/// 依存ゼロの共有ドメイン語彙モジュール（音名・オクターブ・コード種別・MIDIチャンネル）
+/// Dependency-free shared domain vocabulary module (note name, octave, chord quality, MIDI channel)
+pub mod domain;
 /// 評価エンジンモジュール（コンパイラ・評価器・クロック等）
 /// Evaluation engine module (compiler, evaluator, clock, etc.)
 pub mod engine;

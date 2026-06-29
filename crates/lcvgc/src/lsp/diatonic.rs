@@ -4,8 +4,8 @@
 //! スケールのルート音とタイプからダイアトニックコードを生成する。
 //! Generates diatonic chords from a scale's root note and type.
 
-use crate::ast::common::NoteName;
 use crate::ast::scale::ScaleType;
+use crate::domain::pitch::NoteName;
 
 /// ダイアトニックコード情報
 /// Diatonic chord information

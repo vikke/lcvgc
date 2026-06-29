@@ -6,9 +6,9 @@
 use std::path::Path;
 
 use super::diatonic;
-use crate::ast::common::NoteName;
 use crate::ast::instrument::InstrumentDef;
 use crate::ast::scale::ScaleType;
+use crate::domain::pitch::NoteName;
 
 /// 補完候補アイテム
 ///

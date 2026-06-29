@@ -171,7 +171,7 @@ pub fn parse_note_event(input: &str) -> IResult<&str, NoteEvent> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ast::common::NoteName;
+    use crate::domain::pitch::NoteName;
 
     // --- Single note tests ---
 

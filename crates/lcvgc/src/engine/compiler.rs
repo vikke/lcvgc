@@ -1280,9 +1280,9 @@ mod tests {
     use super::*;
     use crate::ast::clip::{ClipDef, PitchedClipBody, PitchedLine};
     use crate::ast::clip_note::NoteEvent;
-    use crate::ast::common::NoteName;
     use crate::ast::instrument::InstrumentDef;
     use crate::ast::kit::{KitDef, KitInstrument, KitInstrumentNote};
+    use crate::domain::pitch::NoteName;
     use crate::parser::clip_options::ClipOptions;
 
     fn make_registry_with_bass() -> Registry {

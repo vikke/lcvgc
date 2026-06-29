@@ -6,10 +6,10 @@ use nom::{
     IResult,
 };
 
-#[cfg(test)]
-use crate::ast::common::NoteName;
 use crate::ast::kit::{KitDef, KitInstrument, KitInstrumentNote};
 use crate::ast::unresolved::UnresolvedKitInstrumentVarRefs;
+#[cfg(test)]
+use crate::domain::pitch::NoteName;
 use crate::midi::channel::MidiChannel;
 use crate::parser::common::{
     identifier, note_name, parse_u8, parse_u8_or_identifier, ws, ws1, Either,

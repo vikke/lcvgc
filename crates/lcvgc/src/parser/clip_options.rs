@@ -222,8 +222,8 @@ pub fn parse_clip_options(input: &str) -> IResult<&str, ClipOptions> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ast::common::NoteName;
     use crate::ast::scale::{ScaleDef, ScaleType};
+    use crate::domain::pitch::NoteName;
 
     #[test]
     fn test_bars_only() {

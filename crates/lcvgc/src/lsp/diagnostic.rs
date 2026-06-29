@@ -817,7 +817,7 @@ mod tests {
 
     // --- arpeggio_missing_duration_diagnostics テスト ---
 
-    use crate::ast::common::NoteName;
+    use crate::domain::pitch::NoteName;
     use crate::parser::clip_arpeggio::{Arpeggio, ArpeggioDirection};
     use crate::parser::clip_articulation::Articulation;
 

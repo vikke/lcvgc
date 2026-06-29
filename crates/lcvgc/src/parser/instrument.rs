@@ -336,7 +336,7 @@ pub fn parse_instrument(input: &str) -> IResult<&str, InstrumentDef> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ast::common::NoteName;
+    use crate::domain::pitch::NoteName;
 
     #[test]
     fn test_full_instrument() {

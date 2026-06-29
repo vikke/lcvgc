@@ -8,6 +8,7 @@ use nom::{
 };
 
 use crate::ast::common::*;
+use crate::domain::pitch::{NoteName, Octave};
 
 /// 予約語の一覧
 /// List of reserved keywords

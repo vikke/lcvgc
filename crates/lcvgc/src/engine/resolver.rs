@@ -174,9 +174,9 @@ pub fn resolve_kit(kit: &mut KitDef, scope: &ScopeChain) -> Result<(), EngineErr
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ast::common::NoteName;
     use crate::ast::kit::{KitInstrument, KitInstrumentNote};
     use crate::ast::unresolved::{UnresolvedKitInstrumentVarRefs, UnresolvedVarRefs};
+    use crate::domain::pitch::NoteName;
 
     #[test]
     fn resolve_instrument_device() {

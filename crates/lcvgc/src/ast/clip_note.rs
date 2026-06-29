@@ -1,4 +1,4 @@
-use crate::ast::common::NoteName;
+use crate::domain::pitch::NoteName;
 use crate::parser::clip_arpeggio::Arpeggio;
 
 /// コードサフィックス（和音の種類）
