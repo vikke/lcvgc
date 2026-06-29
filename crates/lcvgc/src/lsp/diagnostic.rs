@@ -817,9 +817,9 @@ mod tests {
 
     // --- arpeggio_missing_duration_diagnostics テスト ---
 
+    use crate::ast::clip_arpeggio::{Arpeggio, ArpeggioDirection};
+    use crate::ast::clip_articulation::Articulation;
     use crate::domain::pitch::NoteName;
-    use crate::parser::clip_arpeggio::{Arpeggio, ArpeggioDirection};
-    use crate::parser::clip_articulation::Articulation;
 
     /// テスト用に1つの `PitchedElement::ChordBracket` を持つ clip block を作る。
     fn make_chord_clip_block(

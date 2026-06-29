@@ -1,6 +1,6 @@
+use crate::ast::clip_arpeggio::Arpeggio;
 use crate::domain::chord::ChordSuffix;
 use crate::domain::pitch::NoteName;
-use crate::parser::clip_arpeggio::Arpeggio;
 
 /// ノートイベント（単音、コード名、休符）
 /// Note event (single note, chord name, or rest)

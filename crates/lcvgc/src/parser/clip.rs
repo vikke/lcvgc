@@ -980,7 +980,7 @@ mod tests {
                         let arp = arpeggio.expect("arpeggio should be Some");
                         assert_eq!(
                             arp.direction,
-                            crate::parser::clip_arpeggio::ArpeggioDirection::Random
+                            crate::ast::clip_arpeggio::ArpeggioDirection::Random
                         );
                         assert_eq!(arp.resolution, Some(4));
                     }
@@ -1006,7 +1006,7 @@ mod tests {
                     let arp = arpeggio.expect("arpeggio should be Some");
                     assert_eq!(
                         arp.direction,
-                        crate::parser::clip_arpeggio::ArpeggioDirection::Up
+                        crate::ast::clip_arpeggio::ArpeggioDirection::Up
                     );
                     assert_eq!(arp.resolution, None);
                 }
@@ -1322,7 +1322,7 @@ mod tests {
     /// `arp(random)` into a stray A note plus a rest.
     #[test]
     fn repetition_content_preserves_arpeggio() {
-        use crate::parser::clip_arpeggio::ArpeggioDirection;
+        use crate::ast::clip_arpeggio::ArpeggioDirection;
         let elems = parse_repetition_content("cm7:4:4 arp(random)").unwrap();
         // ChordName ただ1要素（余計なノート/休符が混入しない）
         assert_eq!(
@@ -1353,7 +1353,7 @@ mod tests {
     /// expanded inside-out; recursively parsing its content still yields the arp.
     #[test]
     fn repetition_content_supports_nested_group_with_arp() {
-        use crate::parser::clip_arpeggio::ArpeggioDirection;
+        use crate::ast::clip_arpeggio::ArpeggioDirection;
         // 外側の中身 = `(cm7 arp(up))*2`
         let outer = parse_repetition_content("(cm7 arp(up))*2").unwrap();
         assert_eq!(outer.len(), 1);

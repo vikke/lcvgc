@@ -1,6 +1,8 @@
 use std::collections::HashSet;
 
 use crate::ast::clip::{ClipBody, ClipDef, PitchedClipBody, PitchedElement, PitchedLine};
+use crate::ast::clip_arpeggio::ArpeggioDirection;
+use crate::ast::clip_articulation::Articulation;
 use crate::ast::clip_cc::{CcAutomation, Interpolation};
 use crate::ast::clip_drum::HitSymbol;
 use crate::ast::clip_note::NoteEvent;
@@ -11,8 +13,6 @@ use crate::engine::registry::Registry;
 use crate::midi::chord::chord_notes;
 use crate::midi::message::MidiMessage;
 use crate::midi::note::note_number;
-use crate::parser::clip_arpeggio::ArpeggioDirection;
-use crate::parser::clip_articulation::Articulation;
 use crate::parser::clip_shorthand::CarryOverState;
 
 /// メロディノートに `vN` 指定が無いときに用いる既定の MIDI velocity (Note On)。
@@ -2402,9 +2402,7 @@ mod tests {
                 instrument: "bass".to_string(),
                 elements: vec![
                     single_note(NoteName::C, Some(4), Some(1), false),
-                    PitchedElement::BarJump(crate::parser::clip_bar_jump::BarJump {
-                        bar_number: 3,
-                    }),
+                    PitchedElement::BarJump(crate::ast::clip_bar_jump::BarJump { bar_number: 3 }),
                     single_note(NoteName::E, None, Some(4), false),
                 ],
                 is_layer_start: true,
@@ -2432,9 +2430,7 @@ mod tests {
                 instrument: "bass".to_string(),
                 elements: vec![
                     single_note(NoteName::C, Some(4), Some(4), false),
-                    PitchedElement::BarJump(crate::parser::clip_bar_jump::BarJump {
-                        bar_number: 5,
-                    }),
+                    PitchedElement::BarJump(crate::ast::clip_bar_jump::BarJump { bar_number: 5 }),
                     single_note(NoteName::E, None, Some(4), false),
                 ],
                 is_layer_start: true,
@@ -2460,9 +2456,7 @@ mod tests {
                 instrument: "bass".to_string(),
                 elements: vec![
                     single_note(NoteName::C, Some(4), Some(4), false),
-                    PitchedElement::BarJump(crate::parser::clip_bar_jump::BarJump {
-                        bar_number: 4,
-                    }),
+                    PitchedElement::BarJump(crate::ast::clip_bar_jump::BarJump { bar_number: 4 }),
                     single_note(NoteName::E, None, Some(4), false),
                 ],
                 is_layer_start: true,
@@ -2486,9 +2480,7 @@ mod tests {
                 instrument: "bass".to_string(),
                 elements: vec![
                     single_note(NoteName::C, Some(4), Some(4), false),
-                    PitchedElement::BarJump(crate::parser::clip_bar_jump::BarJump {
-                        bar_number: 100,
-                    }),
+                    PitchedElement::BarJump(crate::ast::clip_bar_jump::BarJump { bar_number: 100 }),
                     single_note(NoteName::E, None, Some(4), false),
                 ],
                 is_layer_start: true,
@@ -3156,7 +3148,7 @@ mod tests {
     /// `arp(up, 16)` should sequence chord tones in ascending pitch order at 16th-note intervals.
     #[test]
     fn chord_bracket_arpeggio_up_uses_resolution() {
-        use crate::parser::clip_arpeggio::{Arpeggio, ArpeggioDirection};
+        use crate::ast::clip_arpeggio::{Arpeggio, ArpeggioDirection};
         let registry = make_registry_with_bass();
         let clock = Clock::new(120.0);
         // [c:4 eb:4 g:4 bb:4]:1 arp(up, 16)
@@ -3211,7 +3203,7 @@ mod tests {
     /// `arp(down, 16)` should sequence chord tones in descending pitch order.
     #[test]
     fn chord_bracket_arpeggio_down() {
-        use crate::parser::clip_arpeggio::{Arpeggio, ArpeggioDirection};
+        use crate::ast::clip_arpeggio::{Arpeggio, ArpeggioDirection};
         let registry = make_registry_with_bass();
         let clock = Clock::new(120.0);
         let clip = make_pitched_clip(
@@ -3255,7 +3247,7 @@ mod tests {
     /// `arp(updown, 16)` ping-pongs without repeating the endpoints.
     #[test]
     fn chord_bracket_arpeggio_updown_pingpong() {
-        use crate::parser::clip_arpeggio::{Arpeggio, ArpeggioDirection};
+        use crate::ast::clip_arpeggio::{Arpeggio, ArpeggioDirection};
         let registry = make_registry_with_bass();
         let clock = Clock::new(120.0);
         // 3音 [c, e, g] の updown は c, e, g, e の 4 ステップ（c と g は端点なので二度鳴らさない）
@@ -3300,7 +3292,7 @@ mod tests {
     /// When resolution is omitted, the chord duration is used as the per-step length.
     #[test]
     fn chord_bracket_arpeggio_falls_back_to_duration() {
-        use crate::parser::clip_arpeggio::{Arpeggio, ArpeggioDirection};
+        use crate::ast::clip_arpeggio::{Arpeggio, ArpeggioDirection};
         let registry = make_registry_with_bass();
         let clock = Clock::new(120.0);
         // [c:4 e:4 g:4]:8 arp(up) → 各音=8分音符=240ticks
@@ -3345,7 +3337,7 @@ mod tests {
     /// source omits both — handled at the diagnostics layer.)
     #[test]
     fn chord_bracket_arpeggio_uses_carry_over_when_unspecified() {
-        use crate::parser::clip_arpeggio::{Arpeggio, ArpeggioDirection};
+        use crate::ast::clip_arpeggio::{Arpeggio, ArpeggioDirection};
         let registry = make_registry_with_bass();
         let clock = Clock::new(120.0);
         // 前のノートで duration=8 を確定させ、その後 ChordBracket は両方未指定 → 8 を引き継ぐ
@@ -3391,7 +3383,7 @@ mod tests {
     /// random_choice_group per step.
     #[test]
     fn chord_bracket_arpeggio_random_emits_choice_groups() {
-        use crate::parser::clip_arpeggio::{Arpeggio, ArpeggioDirection};
+        use crate::ast::clip_arpeggio::{Arpeggio, ArpeggioDirection};
         let registry = make_registry_with_bass();
         let clock = Clock::new(120.0);
         // 3音 [c, e, g]:1 arp(random, 8) → 各ステップ=8分音符=240ticks
@@ -3445,7 +3437,7 @@ mod tests {
     /// `cm:4:1 arp(up, 8)` should arpeggiate chord tones [C4, Eb4, G4] ascending.
     #[test]
     fn chord_name_arpeggio_up_uses_resolution() {
-        use crate::parser::clip_arpeggio::{Arpeggio, ArpeggioDirection};
+        use crate::ast::clip_arpeggio::{Arpeggio, ArpeggioDirection};
         let registry = make_registry_with_bass();
         let clock = Clock::new(120.0);
         let clip = make_pitched_clip(
@@ -3496,7 +3488,7 @@ mod tests {
     /// `cm arp(random, 4)` should produce RandomChoiceGroups for chord tones.
     #[test]
     fn chord_name_arpeggio_random_emits_choice_groups() {
-        use crate::parser::clip_arpeggio::{Arpeggio, ArpeggioDirection};
+        use crate::ast::clip_arpeggio::{Arpeggio, ArpeggioDirection};
         let registry = make_registry_with_bass();
         let clock = Clock::new(120.0);
         let clip = make_pitched_clip(
@@ -3538,7 +3530,7 @@ mod tests {
     /// `cm:4:8 arp(up)` falls back to the chord duration as per-step length.
     #[test]
     fn chord_name_arpeggio_falls_back_to_duration() {
-        use crate::parser::clip_arpeggio::{Arpeggio, ArpeggioDirection};
+        use crate::ast::clip_arpeggio::{Arpeggio, ArpeggioDirection};
         let registry = make_registry_with_bass();
         let clock = Clock::new(120.0);
         let clip = make_pitched_clip(
