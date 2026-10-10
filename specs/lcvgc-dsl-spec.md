@@ -359,26 +359,32 @@ The sign of `tempo +N` / `tempo -N` may be separated from the number by **any am
 
 Set globally. Can be eval'd independently. Can be overridden with `[scale ...]` in a clip. The scale specification does not affect playback behavior; it serves as hint information for LSP completion.
 
+The syntax is `scale <root>_<scale type>`: the root note and the scale type are joined with `_` into a single word (the space-separated form `scale c minor` is a syntax error). A sharp root can be written as either `c#` or `cs` (see Section 7.5).
+
 ```
 // Set globally
-scale c minor
+scale c_minor
 
 // Change immediately (just eval it)
-scale d dorian
+scale d_dorian
+
+// Sharp root (both lines mean the same)
+scale cs_minor
+scale c#_minor
 ```
 
 To override at the clip level:
 
 ```
-scale c minor
+scale c_minor
 
 clip bass_a [bars 1] {
-  // The global scale (c minor) applies
+  // The global scale (c_minor) applies
   bass c:3:8 d eb f::4 g::2
 }
 
-clip lead_a [bars 1] [scale d dorian] {
-  // Overridden at the clip level → d dorian applies
+clip lead_a [bars 1] [scale d_dorian] {
+  // Overridden at the clip level → d_dorian applies
   lead d:3:4 e f g
 }
 ```
@@ -548,7 +554,7 @@ Specifying a scale on a clip causes the LSP to offer diatonic chords and progres
 
 ```
 // Scale specification
-clip chords_a [bars 4] [scale c minor] {
+clip chords_a [bars 4] [scale c_minor] {
   keys cm7:4:2       // LSP suggests next chord candidates:
                      //   fm7 (IVm7), gm7 (Vm7), g7 (V7),
                      //   ebM7 (bIII), abM7 (bVI), bb7 (bVII), dm7b5 (IIm7b5)
@@ -558,7 +564,7 @@ clip chords_a [bars 4] [scale c minor] {
 }
 
 // Major scale
-clip chords_b [bars 4] [scale g major] {
+clip chords_b [bars 4] [scale g_major] {
   keys gM7:4:2       // I → candidates: am7(II), bm7(III), cM7(IV), d7(V), em7(VI)
   keys cM7:4:2
   keys d7:3:2
@@ -566,7 +572,7 @@ clip chords_b [bars 4] [scale g major] {
 }
 
 // Modes can also be specified
-clip chords_c [bars 4] [scale d dorian] {
+clip chords_c [bars 4] [scale d_dorian] {
   keys dm7:4:2
   keys g7:3:2
   keys em7:3:2
@@ -574,10 +580,11 @@ clip chords_c [bars 4] [scale d dorian] {
 }
 ```
 
-Progressive LSP completion behavior:
+LSP completion behavior:
 
-- After `[scale ` → root note candidates: `c`, `c#`, `db`, `d`, ... `b`
-- After `[scale c ` → scale type candidates: `major`, `minor`, `harmonic_minor`, `melodic_minor`, `dorian`, `phrygian`, `lydian`, `mixolydian`, `locrian`
+- After `scale ` / `[scale ` → every combination of the 17 root notes × 9 scale types: `c_major`, `c_minor`, ... `cs_major`, ... `b_locrian`
+  - Typing a root note narrows the candidates to that root (e.g. `cs` → `cs_major`, `cs_minor`, ...)
+  - Sharps are offered in the `cs` form (the `c#` form is not offered), so that narrowing works even when the editor's word characters do not include `#`
 - At a chord-writing position inside a clip with a scale specified → all diatonic chords for that scale
 - When there is a preceding chord → next chord candidates based on the progression table (with degree information)
 
@@ -660,6 +667,8 @@ clip lead_a [bars 1] {
 ```
 
 - Note names: `c c# db d d# eb e f f# gb g g# ab a a# bb b` (all lowercase)
+  - Sharps can also be written in the `s` form: `cs`=`c#`, `ds`=`d#`, `fs`=`f#`, `gs`=`g#`, `as`=`a#` (e.g. `cs:3:8`, `csm7`)
+  - When `sus` directly follows a natural note, as in `csus4`, it is read as "natural + sus" (C sus4). Write C# sus chords as `cssus4` / `c#sus4`
 - Chord names: `cm7`, `fM7`, `g7`, etc. (see Section 7.12 for the suffix list)
 - Octave: `0-9` — specified with `:` separator. Omission carries over the previous value
 - Duration: `1`=whole note, `2`=half note, `4`=quarter, `8`=eighth, `16`=sixteenth; dotted notes append `.` like `4.` or `8.`. Omission carries over the previous value
@@ -1862,6 +1871,8 @@ The engine continues playback as-is. Restarting Neovim and reconnecting allows c
 - Lines with the same instrument name are concatenated (multi-line notation). The number of bars per line is unrestricted
 - Comments use `//` to end of line, or `/* ... */` for block comments (nesting supported)
 - Note names are all lowercase: `c c# db d d# eb e f f# gb g g# ab a a# bb b`
+- Sharps can also be written in the `s` form (`cs`=`c#`, `ds`=`d#`, `fs`=`f#`, `gs`=`g#`, `as`=`a#`). `csus4` is C sus4; C# sus4 is `cssus4` / `c#sus4`
+- A scale is written as a single `<root>_<scale type>` word (`scale c_minor`, `[scale cs_dorian]`)
 - Octave and duration for pitched instruments carry over from the previous value (defaults at clip start are o4, :4). Maintained across lines
 - The clip options `[>>]` / `[<<]` transpose the whole clip in octave steps (accumulative, pitched clips only, out-of-range is a compile error)
 - Both single notes and chord names use a unified 3-section format with `:` separators (`c:3:8`, `cm7:4:2`). `::` omits octave and changes only duration (`c::8`, `cm7::1`)

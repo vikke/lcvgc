@@ -359,26 +359,32 @@ scene 内 `tempo` 行は **scene が 1 ループ完了するたびに** 評価�
 
 グローバルに設定する。独立してeval可能。clipの `[scale ...]` で上書きできる。スケール指定は再生動作には影響せず、LSP補完のためのヒント情報。
 
+書式は `scale <ルート音>_<スケールタイプ>`。ルート音とスケールタイプを `_` でつないだ 1 語で書く（空白区切りの `scale c minor` は構文エラー）。ルート音のシャープは `c#` と `cs` のどちらでも書ける（セクション7.5参照）。
+
 ```
 // グローバルに設定
-scale c minor
+scale c_minor
 
 // 即座に変更（evalするだけ）
-scale d dorian
+scale d_dorian
+
+// シャープのルート音（2行とも同じ意味）
+scale cs_minor
+scale c#_minor
 ```
 
 clipレベルで上書きする場合:
 
 ```
-scale c minor
+scale c_minor
 
 clip bass_a [bars 1] {
-  // グローバルのscale (c minor) が適用される
+  // グローバルのscale (c_minor) が適用される
   bass c:3:8 d eb f::4 g::2
 }
 
-clip lead_a [bars 1] [scale d dorian] {
-  // clipレベルで上書き → d dorian が適用される
+clip lead_a [bars 1] [scale d_dorian] {
+  // clipレベルで上書き → d_dorian が適用される
   lead d:3:4 e f g
 }
 ```
@@ -548,7 +554,7 @@ clipにスケールを指定すると、LSPがそのスケールのダイアト�
 
 ```
 // スケール指定
-clip chords_a [bars 4] [scale c minor] {
+clip chords_a [bars 4] [scale c_minor] {
   keys cm7:4:2       // LSPが次のコード候補を出す:
                      //   fm7 (IVm7), gm7 (Vm7), g7 (V7),
                      //   ebM7 (bIII), abM7 (bVI), bb7 (bVII), dm7b5 (IIm7b5)
@@ -558,7 +564,7 @@ clip chords_a [bars 4] [scale c minor] {
 }
 
 // メジャースケール
-clip chords_b [bars 4] [scale g major] {
+clip chords_b [bars 4] [scale g_major] {
   keys gM7:4:2       // I → 候補: am7(II), bm7(III), cM7(IV), d7(V), em7(VI)
   keys cM7:4:2
   keys d7:3:2
@@ -566,7 +572,7 @@ clip chords_b [bars 4] [scale g major] {
 }
 
 // モードも指定可能
-clip chords_c [bars 4] [scale d dorian] {
+clip chords_c [bars 4] [scale d_dorian] {
   keys dm7:4:2
   keys g7:3:2
   keys em7:3:2
@@ -574,10 +580,11 @@ clip chords_c [bars 4] [scale d dorian] {
 }
 ```
 
-LSP補完の段階的な動作:
+LSP補完の動作:
 
-- `[scale ` の後 → ルート音の候補: `c`, `c#`, `db`, `d`, ... `b`
-- `[scale c ` の後 → スケールタイプの候補: `major`, `minor`, `harmonic_minor`, `melodic_minor`, `dorian`, `phrygian`, `lydian`, `mixolydian`, `locrian`
+- `scale ` / `[scale ` の後 → ルート音 17 種 × スケールタイプ 9 種の全組み合わせ: `c_major`, `c_minor`, ... `cs_major`, ... `b_locrian`
+  - ルート音を打つと候補がそのルート音のものに絞り込まれる（例: `cs` → `cs_major`, `cs_minor`, ...）
+  - シャープは `cs` 形式で出す（`c#` 形式は候補に出さない）。エディタの単語区切りに `#` が含まれなくても絞り込みが効くようにするため
 - scale指定済みclip内でコードを書く位置 → そのスケールのダイアトニックコード全て
 - 直前のコードがある場合 → 進行テーブルに基づく次のコード候補（degree情報付き）
 
@@ -660,6 +667,8 @@ clip lead_a [bars 1] {
 ```
 
 - 音名: `c c# db d d# eb e f f# gb g g# ab a a# bb b` (全て小文字)
+  - シャープは `s` 形式でも書ける: `cs`=`c#`, `ds`=`d#`, `fs`=`f#`, `gs`=`g#`, `as`=`a#`（例: `cs:3:8`, `csm7`）
+  - `csus4` のように幹音の直後に `sus` が続く場合は「幹音 + sus」（C sus4）と読む。C# の sus コードは `cssus4` / `c#sus4` と書く
 - コード名: `cm7`, `fM7`, `g7` 等（サフィックス一覧はセクション7.12参照）
 - オクターブ: `0-9` — `:` 区切りで指定。省略で直前を引き継ぐ
 - 音長: `1`=全音符, `2`=半音符, `4`=四分, `8`=八分, `16`=十六分, 付点は`4.` `8.`のように`.`を付ける。省略で直前を引き継ぐ
@@ -1863,6 +1872,8 @@ MIDIポートが消えた場合（USB抜け等）、そのdeviceへの出力だ�
 - 同じ楽器名の行は連結される（複数行記述）。1行あたりの小節数は自由
 - コメントは `//` で行末まで、または `/* ... */` で複数行一括（ネスト対応）
 - 音名は全て小文字: `c c# db d d# eb e f f# gb g g# ab a a# bb b`
+- シャープは `s` 形式でも書ける（`cs`=`c#`, `ds`=`d#`, `fs`=`f#`, `gs`=`g#`, `as`=`a#`）。`csus4` は C sus4、C# sus4 は `cssus4` / `c#sus4`
+- scale は `<ルート音>_<スケールタイプ>` の 1 語で書く（`scale c_minor`, `[scale cs_dorian]`）
 - 音程楽器のオクターブと音長は直前の値を引き継ぐ（clip先頭のデフォルトは o4, :4）。行をまたいでも維持される
 - clipオプション `[>>]` / `[<<]` でclip全体を1オクターブ単位で上下シフトできる（合算可・ピッチド clip 専用・範囲外はコンパイルエラー）
 - 単音・コード名ともに `:` 区切りの3セクション形式で統一（`c:3:8`, `cm7:4:2`）。`::` でオクターブ省略+音長変更（`c::8`, `cm7::1`）
