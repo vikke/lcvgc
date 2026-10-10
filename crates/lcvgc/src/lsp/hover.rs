@@ -100,7 +100,11 @@ impl HoverProvider {
                 session.entries.len()
             )),
             Block::Tempo(t) => Some(format!("**tempo** `{:?}`", t)),
-            Block::Scale(s) => Some(format!("**scale** `{:?} {:?}`", s.root, s.scale_type)),
+            Block::Scale(s) => Some(format!(
+                "**scale** `{}_{}`",
+                s.root.keyword(),
+                s.scale_type.keyword()
+            )),
             Block::Var(v) => Some(format!("**var** `{}` = `{}`", v.name, v.value)),
             Block::Include(inc) => Some(format!("**include** `{}`", inc.path)),
             Block::Play(_) | Block::Stop(_) => None,
@@ -295,7 +299,16 @@ mod tests {
         })));
         let text = result.unwrap();
         assert!(text.contains("**scale**"));
-        assert!(text.contains("Major"));
+        assert!(text.contains("`c_major`"), "got: {text}");
+    }
+
+    #[test]
+    fn scale_hover_uses_dsl_token_with_s_form_sharp() {
+        let result = HoverProvider::hover_content(&sb(Block::Scale(ScaleDef {
+            root: NoteName::Cs,
+            scale_type: ScaleType::HarmonicMinor,
+        })));
+        assert!(result.unwrap().contains("`cs_harmonic_minor`"));
     }
 
     #[test]

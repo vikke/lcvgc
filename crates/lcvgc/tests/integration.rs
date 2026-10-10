@@ -209,7 +209,7 @@ clip down [<<] {
 #[test]
 fn e2e_scale_and_var_definition() {
     let source = r#"
-scale c major
+scale c_major
 var key = cm
 "#;
     let results = eval(source);

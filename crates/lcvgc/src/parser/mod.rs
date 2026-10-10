@@ -209,7 +209,7 @@ play intro
 // This is a comment
 tempo 120
 // Another comment
-scale c minor
+scale c_minor
 "#;
         let (rest, blocks) = parse_source(input).unwrap();
         assert_eq!(rest, "");

@@ -132,23 +132,45 @@ pub fn is_reserved(s: &str) -> bool {
 }
 
 /// 音名をパースする（すべて小文字）
-/// 順序が重要: 2文字の音名（c#, db等）を先に試し、その後1文字の音名を試す
+/// 順序が重要: 2文字の音名（c#, cs, db等）を先に試し、その後1文字の音名を試す。
+/// シャープは `c#` と `cs` のどちらでも書ける（`s` 形式は英字のみで nvim の補完が効くため）。
+/// nomの21要素タプル制限内に収めるため、2文字と1文字でalt()を分けている。
+///
 /// Parse a note name (all lowercase).
-/// Order matters: try two-char names first (c#, db, etc.), then single-char.
+/// Order matters: try two-char names first (c#, cs, db, etc.), then single-char.
+/// Sharps may be written as either `c#` or `cs` (the `s` form is letters-only,
+/// so nvim completion works on it).
+/// Split into nested alt() calls to stay within nom's 21-element tuple limit.
 pub fn note_name(input: &str) -> IResult<&str, NoteName> {
+    alt((two_char_note_name, natural_note_name))(input)
+}
+
+/// 2文字の音名（シャープ・フラット）をパースする
+/// Parse a two-character note name (sharps and flats).
+fn two_char_note_name(input: &str) -> IResult<&str, NoteName> {
     alt((
-        // Two-character note names (sharps and flats)
         value(NoteName::Cs, tag("c#")),
+        value(NoteName::Cs, tag("cs")),
         value(NoteName::Db, tag("db")),
         value(NoteName::Ds, tag("d#")),
+        value(NoteName::Ds, tag("ds")),
         value(NoteName::Eb, tag("eb")),
         value(NoteName::Fs, tag("f#")),
+        value(NoteName::Fs, tag("fs")),
         value(NoteName::Gb, tag("gb")),
         value(NoteName::Gs, tag("g#")),
+        value(NoteName::Gs, tag("gs")),
         value(NoteName::Ab, tag("ab")),
         value(NoteName::As, tag("a#")),
+        value(NoteName::As, tag("as")),
         value(NoteName::Bb, tag("bb")),
-        // Single-character note names
+    ))(input)
+}
+
+/// 1文字の音名（幹音）をパースする
+/// Parse a single-character note name (natural).
+pub fn natural_note_name(input: &str) -> IResult<&str, NoteName> {
+    alt((
         value(NoteName::C, tag("c")),
         value(NoteName::D, tag("d")),
         value(NoteName::E, tag("e")),
@@ -345,6 +367,31 @@ mod tests {
     fn test_note_name_sharp() {
         assert_eq!(note_name("c#"), Ok(("", NoteName::Cs)));
         assert_eq!(note_name("f#"), Ok(("", NoteName::Fs)));
+    }
+
+    #[test]
+    fn test_note_name_sharp_s_alias() {
+        // `s` 形式はシャープの別名 / The `s` form is an alias for sharps
+        assert_eq!(note_name("cs"), Ok(("", NoteName::Cs)));
+        assert_eq!(note_name("ds"), Ok(("", NoteName::Ds)));
+        assert_eq!(note_name("fs"), Ok(("", NoteName::Fs)));
+        assert_eq!(note_name("gs"), Ok(("", NoteName::Gs)));
+        assert_eq!(note_name("as"), Ok(("", NoteName::As)));
+    }
+
+    #[test]
+    fn test_note_name_s_alias_with_remaining() {
+        assert_eq!(note_name("cs:3"), Ok((":3", NoteName::Cs)));
+        assert_eq!(note_name("as_minor"), Ok(("_minor", NoteName::As)));
+    }
+
+    #[test]
+    fn test_note_name_s_alias_does_not_affect_naturals_or_flats() {
+        // es / bs は別名ではない（e# / b# は存在しない）
+        // es / bs are not aliases (there is no e# / b#)
+        assert_eq!(note_name("es"), Ok(("s", NoteName::E)));
+        assert_eq!(note_name("bs"), Ok(("s", NoteName::B)));
+        assert_eq!(note_name("b_major"), Ok(("_major", NoteName::B)));
     }
 
     #[test]
