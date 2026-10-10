@@ -4,25 +4,8 @@ use nom::character::complete::char;
 use nom::IResult;
 
 use crate::ast::clip_options::ClipOptions;
-use crate::ast::scale::{ScaleDef, ScaleType};
-use crate::parser::common::{note_name, parse_u32, parse_u8, ws, ws1};
-
-/// スケールタイプのキーワードをパースする。
-///
-/// Parse a scale type keyword.
-fn scale_type(input: &str) -> IResult<&str, ScaleType> {
-    alt((
-        |i| tag("harmonic_minor")(i).map(|(r, _)| (r, ScaleType::HarmonicMinor)),
-        |i| tag("melodic_minor")(i).map(|(r, _)| (r, ScaleType::MelodicMinor)),
-        |i| tag("major")(i).map(|(r, _)| (r, ScaleType::Major)),
-        |i| tag("minor")(i).map(|(r, _)| (r, ScaleType::Minor)),
-        |i| tag("dorian")(i).map(|(r, _)| (r, ScaleType::Dorian)),
-        |i| tag("phrygian")(i).map(|(r, _)| (r, ScaleType::Phrygian)),
-        |i| tag("lydian")(i).map(|(r, _)| (r, ScaleType::Lydian)),
-        |i| tag("mixolydian")(i).map(|(r, _)| (r, ScaleType::Mixolydian)),
-        |i| tag("locrian")(i).map(|(r, _)| (r, ScaleType::Locrian)),
-    ))(input)
-}
+use crate::parser::common::{parse_u32, parse_u8, ws, ws1};
+use crate::parser::scale::scale_token;
 
 /// `[bars N]` 形式の小節数指定をパースする。
 ///
@@ -66,26 +49,21 @@ fn parse_time_option(input: &str) -> IResult<&str, ClipOptions> {
     ))
 }
 
-/// `[scale ROOT TYPE]` 形式のスケール指定をパースする。
+/// `[scale ROOT_TYPE]` 形式のスケール指定をパースする（例: `[scale c_minor]`）。
 ///
-/// Parse `[scale ROOT TYPE]` option.
+/// Parse `[scale ROOT_TYPE]` option (e.g. `[scale c_minor]`).
 fn parse_scale_option(input: &str) -> IResult<&str, ClipOptions> {
     let (input, _) = char('[')(input)?;
     let (input, _) = ws(input)?;
     let (input, _) = tag("scale")(input)?;
     let (input, _) = ws1(input)?;
-    let (input, root) = note_name(input)?;
-    let (input, _) = ws1(input)?;
-    let (input, st) = scale_type(input)?;
+    let (input, scale) = scale_token(input)?;
     let (input, _) = ws(input)?;
     let (input, _) = char(']')(input)?;
     Ok((
         input,
         ClipOptions {
-            scale: Some(ScaleDef {
-                root,
-                scale_type: st,
-            }),
+            scale: Some(scale),
             ..Default::default()
         },
     ))
@@ -167,10 +145,10 @@ fn merge(base: ClipOptions, other: ClipOptions) -> ClipOptions {
     }
 }
 
-/// `[bars 1] [time 3/4] [scale c minor]` のようなクリップオプションを
+/// `[bars 1] [time 3/4] [scale c_minor]` のようなクリップオプションを
 /// 0個以上パースする。オプションは任意の順序で指定可能。
 ///
-/// Parse zero or more clip options like `[bars 1] [time 3/4] [scale c minor]`.
+/// Parse zero or more clip options like `[bars 1] [time 3/4] [scale c_minor]`.
 /// Options can appear in any order.
 pub fn parse_clip_options(input: &str) -> IResult<&str, ClipOptions> {
     let mut result = ClipOptions::default();
@@ -216,7 +194,7 @@ mod tests {
 
     #[test]
     fn test_scale_only() {
-        let (rest, opts) = parse_clip_options("[scale c minor]").unwrap();
+        let (rest, opts) = parse_clip_options("[scale c_minor]").unwrap();
         assert_eq!(rest, "");
         assert_eq!(
             opts.scale,
@@ -228,8 +206,28 @@ mod tests {
     }
 
     #[test]
+    fn test_scale_option_s_alias_root() {
+        let (_, opts) = parse_clip_options("[scale fs_mixolydian]").unwrap();
+        assert_eq!(
+            opts.scale,
+            Some(ScaleDef {
+                root: NoteName::Fs,
+                scale_type: ScaleType::Mixolydian,
+            })
+        );
+    }
+
+    #[test]
+    fn test_scale_option_old_space_separated_is_error() {
+        // 旧形式は scale オプションとして解釈されず、`]` まで消費されない
+        // The old form is not parsed as a scale option, so `]` is not consumed
+        let result = parse_clip_options("[scale c minor]");
+        assert!(!matches!(result, Ok(("", _))), "unexpected: {:?}", result);
+    }
+
+    #[test]
     fn test_bars_and_scale() {
-        let (rest, opts) = parse_clip_options("[bars 4] [scale c minor]").unwrap();
+        let (rest, opts) = parse_clip_options("[bars 4] [scale c_minor]").unwrap();
         assert_eq!(rest, "");
         assert_eq!(opts.bars, Some(4));
         assert_eq!(
@@ -243,7 +241,7 @@ mod tests {
 
     #[test]
     fn test_full_options() {
-        let (rest, opts) = parse_clip_options("[bars 2] [time 3/4] [scale d dorian]").unwrap();
+        let (rest, opts) = parse_clip_options("[bars 2] [time 3/4] [scale d_dorian]").unwrap();
         assert_eq!(rest, "");
         assert_eq!(opts.bars, Some(2));
         assert_eq!(opts.time_sig, Some((3, 4)));
@@ -265,7 +263,7 @@ mod tests {
 
     #[test]
     fn test_reversed_order() {
-        let (rest, opts) = parse_clip_options("[scale c minor] [bars 2]").unwrap();
+        let (rest, opts) = parse_clip_options("[scale c_minor] [bars 2]").unwrap();
         assert_eq!(rest, "");
         assert_eq!(opts.bars, Some(2));
         assert_eq!(
@@ -321,7 +319,7 @@ mod tests {
 
     #[test]
     fn test_octave_shift_with_other_options() {
-        let (rest, opts) = parse_clip_options("[bars 2] [>>] [scale c minor]").unwrap();
+        let (rest, opts) = parse_clip_options("[bars 2] [>>] [scale c_minor]").unwrap();
         assert_eq!(rest, "");
         assert_eq!(opts.bars, Some(2));
         assert_eq!(opts.octave_shift, 1);

@@ -88,7 +88,7 @@ session live {
   verse [loop]
 }
 
-scale c minor
+scale c_minor
 
 var style = dark
 "#;

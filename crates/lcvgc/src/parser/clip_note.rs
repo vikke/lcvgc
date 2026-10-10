@@ -4,7 +4,8 @@ use nom::IResult;
 
 use crate::ast::clip_note::NoteEvent;
 use crate::domain::chord::ChordSuffix;
-use crate::parser::common::{note_name, parse_u16, parse_u8};
+use crate::domain::pitch::NoteName;
+use crate::parser::common::{natural_note_name, note_name, parse_u16, parse_u8};
 
 /// 最長一致戦略でコードサフィックスをパースする。
 /// nomの21要素タプル制限内に収めるため、2つのネストされたalt()呼び出しに分割。
@@ -44,6 +45,27 @@ fn parse_chord_suffix(input: &str) -> IResult<&str, ChordSuffix> {
             |i| tag("m")(i).map(|(r, _)| (r, ChordSuffix::Min)),
         )),
     ))(input)
+}
+
+/// コード名・単音の根音をパースする。
+/// `cs` は C# の別名だが、`csus4` のように幹音の直後に `sus` が続く場合は
+/// 「幹音 + sus」（C sus4）と解釈する。C# sus4 は `cssus4` / `c#sus4` と書く。
+///
+/// Parse the root of a chord name or single note.
+/// `cs` is an alias for C#, but when `sus` follows a natural note (e.g. `csus4`)
+/// it is read as "natural + sus" (C sus4). Write C# sus4 as `cssus4` / `c#sus4`.
+///
+/// # Arguments
+/// * `input` - 根音から始まる入力 / Input starting at the root note
+///
+/// # Returns
+/// 残りの入力と根音 / The remaining input and the root note
+fn chord_root(input: &str) -> IResult<&str, NoteName> {
+    use nom::branch::alt;
+    use nom::combinator::peek;
+    use nom::sequence::terminated;
+
+    alt((terminated(natural_note_name, peek(tag("sus"))), note_name))(input)
 }
 
 /// オクターブとデュレーションをパースする: `:oct:dur`、`::dur`、`:oct`、または何もなし。
@@ -135,7 +157,7 @@ pub fn parse_note_event(input: &str) -> IResult<&str, NoteEvent> {
 
     // 音名をパース
     // Parse note name
-    let (input, name) = note_name(input)?;
+    let (input, name) = chord_root(input)?;
 
     // コードサフィックスを試みる（最長一致）
     // Try chord suffix (longest match)
@@ -426,6 +448,92 @@ mod tests {
                 NoteEvent::ChordName {
                     root: NoteName::C,
                     suffix: ChordSuffix::Min,
+                    octave: None,
+                    duration: None,
+                    dotted: false,
+                    arpeggio: None,
+                }
+            ))
+        );
+    }
+
+    // --- `s` 別名と sus の曖昧さ / `s` alias vs sus ambiguity ---
+
+    #[test]
+    fn test_single_s_alias() {
+        assert_eq!(
+            parse_note_event("cs:3"),
+            Ok((
+                "",
+                NoteEvent::Single {
+                    name: NoteName::Cs,
+                    octave: Some(3),
+                    duration: None,
+                    dotted: false,
+                }
+            ))
+        );
+    }
+
+    #[test]
+    fn test_natural_root_sus_wins_over_s_alias() {
+        // `csus4` は `cs` + `us4` ではなく C sus4
+        // `csus4` is C sus4, not `cs` + `us4`
+        for (input, root, suffix) in [
+            ("csus4", NoteName::C, ChordSuffix::Sus4),
+            ("dsus2", NoteName::D, ChordSuffix::Sus2),
+            ("fsus4", NoteName::F, ChordSuffix::Sus4),
+            ("gsus2", NoteName::G, ChordSuffix::Sus2),
+            ("asus4", NoteName::A, ChordSuffix::Sus4),
+        ] {
+            assert_eq!(
+                parse_note_event(input),
+                Ok((
+                    "",
+                    NoteEvent::ChordName {
+                        root,
+                        suffix,
+                        octave: None,
+                        duration: None,
+                        dotted: false,
+                        arpeggio: None,
+                    }
+                )),
+                "failed for: {}",
+                input
+            );
+        }
+    }
+
+    #[test]
+    fn test_s_alias_root_sus() {
+        // `cssus4` は C# sus4 / `cssus4` is C# sus4
+        assert_eq!(
+            parse_note_event("cssus4:3:4"),
+            Ok((
+                "",
+                NoteEvent::ChordName {
+                    root: NoteName::Cs,
+                    suffix: ChordSuffix::Sus4,
+                    octave: Some(3),
+                    duration: Some(4),
+                    dotted: false,
+                    arpeggio: None,
+                }
+            ))
+        );
+    }
+
+    #[test]
+    fn test_s_alias_root_other_suffix() {
+        // `csm7` は C#m7 / `csm7` is C#m7
+        assert_eq!(
+            parse_note_event("csm7"),
+            Ok((
+                "",
+                NoteEvent::ChordName {
+                    root: NoteName::Cs,
+                    suffix: ChordSuffix::Min7,
                     octave: None,
                     duration: None,
                     dotted: false,

@@ -72,10 +72,8 @@ pub enum CompletionContext {
     SessionAfterBracket,
     /// "tempo " の後（トップレベル）: 補完なし
     AfterTempo,
-    /// "scale " の後: ノート名（ルート音）
+    /// "scale " の後: `<root>_<type>` トークン（例: `c_major`）
     AfterScale,
-    /// "scale <note> " の後: スケールタイプ
-    AfterScaleNote,
     /// "play " の後: scene名 + session キーワード
     AfterPlay,
     /// "play session " の後: session名
@@ -89,10 +87,8 @@ pub enum CompletionContext {
     /// clip オプション "[" 内: bars/time/scale（使用済みオプションを除外）
     /// Clip option inside `[`: bars/time/scale (excluding already used options)
     ClipOption { used_options: Vec<String> },
-    /// clip オプション "[scale " 内: ノート名
+    /// clip オプション "[scale " 内: `<root>_<type>` トークン（例: `c_major`）
     ClipOptionAfterScale,
-    /// clip オプション "[scale <note> " 内: スケールタイプ
-    ClipOptionAfterScaleNote,
     /// `arp(` 直後: アルペジオ方向 (up / down / updown / random) を提案
     /// After `arp(`: suggest arpeggio directions.
     AfterArpOpen,
@@ -277,9 +273,9 @@ fn determine_toplevel_context(trimmed: &str) -> CompletionContext {
             }
         }
         "scale" => {
-            if parts.len() >= 3 {
-                CompletionContext::AfterScaleNote
-            } else if parts.len() >= 2 {
+            // `<root>_<type>` は 1 トークンなので段階は 1 つだけ
+            // `<root>_<type>` is a single token, so there is only one stage
+            if parts.len() >= 2 {
                 CompletionContext::AfterScale
             } else {
                 CompletionContext::TopLevel
@@ -408,10 +404,6 @@ fn extract_used_options(text: &str) -> Vec<String> {
 fn parse_clip_bracket_option(after_bracket: &str, used_options: Vec<String>) -> CompletionContext {
     let trimmed = after_bracket.trim_start();
     if trimmed.starts_with("scale ") {
-        let after_scale = trimmed.strip_prefix("scale ").unwrap().trim_start();
-        if after_scale.contains(' ') {
-            return CompletionContext::ClipOptionAfterScaleNote;
-        }
         return CompletionContext::ClipOptionAfterScale;
     }
     CompletionContext::ClipOption { used_options }
@@ -517,9 +509,9 @@ fn determine_clip_context(
     }
 }
 
-/// clip オープニング行から `[scale ROOT TYPE]` を抽出する
+/// clip オープニング行から `[scale ROOT_TYPE]` を抽出する
 ///
-/// `clip name [bars 1] [scale c minor] {` の `{` 位置 `brace_pos` を受け取り、
+/// `clip name [bars 1] [scale c_minor] {` の `{` 位置 `brace_pos` を受け取り、
 /// その手前の `[ ... ]` ブロックを順に走査して `scale` オプションを探す。
 /// 複数 `[scale ...]` が書かれた場合は **最後の指定** を優先する
 /// (DSL 的にも後勝ち)。パースに失敗 / 未指定なら `None`。
@@ -532,7 +524,7 @@ fn determine_clip_context(
 /// 解決した `(NoteName, ScaleType)` または `None`
 fn extract_clip_local_scale(source: &str, brace_pos: usize) -> Option<(NoteName, ScaleType)> {
     let header = source[..brace_pos].trim_end();
-    // ヘッダ末尾から `[ ... ]` を順に取り出し、`scale ROOT TYPE` を後勝ちで採用
+    // ヘッダ末尾から `[ ... ]` を順に取り出し、`scale ROOT_TYPE` を後勝ちで採用
     let mut found: Option<(NoteName, ScaleType)> = None;
     let mut rest = header;
     while let Some(open) = rest.find('[') {
@@ -693,9 +685,7 @@ pub fn build_completion_items(ctx: &CompletionContext, registry: &Registry) -> V
             CompletionProvider::session_entry_option_completions()
         }
 
-        CompletionContext::AfterScale => CompletionProvider::note_completions(),
-
-        CompletionContext::AfterScaleNote => CompletionProvider::scale_type_completions(),
+        CompletionContext::AfterScale => CompletionProvider::scale_completions(),
 
         CompletionContext::AfterPlay => {
             let mut items =
@@ -719,9 +709,7 @@ pub fn build_completion_items(ctx: &CompletionContext, registry: &Registry) -> V
                 .collect()
         }
 
-        CompletionContext::ClipOptionAfterScale => CompletionProvider::note_completions(),
-
-        CompletionContext::ClipOptionAfterScaleNote => CompletionProvider::scale_type_completions(),
+        CompletionContext::ClipOptionAfterScale => CompletionProvider::scale_completions(),
 
         CompletionContext::AfterArpOpen => CompletionProvider::arpeggio_direction_completions(),
 
@@ -927,12 +915,17 @@ mod tests {
     }
 
     #[test]
-    fn ctx_after_scale_note() {
-        let src = "scale c ";
-        assert_eq!(
-            determine_completion_context(src, src.len()),
-            CompletionContext::AfterScaleNote
-        );
+    fn ctx_after_scale_while_typing_token() {
+        // `<root>_<type>` は 1 トークンなので、入力途中も AfterScale のまま
+        // `<root>_<type>` is a single token, so typing it stays in AfterScale
+        for src in ["scale c", "scale cs_", "scale c_mi"] {
+            assert_eq!(
+                determine_completion_context(src, src.len()),
+                CompletionContext::AfterScale,
+                "failed for: {}",
+                src
+            );
+        }
     }
 
     #[test]
@@ -1063,10 +1056,10 @@ mod tests {
         );
     }
 
-    /// clip-local `[scale c major]` が PitchedClipLineStart に伝搬する
+    /// clip-local `[scale c_major]` が PitchedClipLineStart に伝搬する
     #[test]
     fn ctx_pitched_clip_line_start_with_clip_local_scale_c_major() {
-        let src = "clip x [scale c major] {\n  ";
+        let src = "clip x [scale c_major] {\n  ";
         assert_eq!(
             determine_completion_context(src, src.len()),
             CompletionContext::PitchedClipLineStart {
@@ -1075,10 +1068,10 @@ mod tests {
         );
     }
 
-    /// clip-local `[bars N] [scale d minor]` 順でも scale が拾える (後勝ち)
+    /// clip-local `[bars N] [scale d_minor]` 順でも scale が拾える (後勝ち)
     #[test]
     fn ctx_pitched_clip_line_start_with_bars_then_scale_d_minor() {
-        let src = "clip x [bars 8] [scale d minor] {\n  ";
+        let src = "clip x [bars 8] [scale d_minor] {\n  ";
         assert_eq!(
             determine_completion_context(src, src.len()),
             CompletionContext::PitchedClipLineStart {
@@ -1090,7 +1083,7 @@ mod tests {
     /// 同じ clip ヘッダに複数 `[scale ...]` がある場合は後勝ち
     #[test]
     fn ctx_pitched_clip_line_start_last_scale_wins() {
-        let src = "clip x [scale c major] [scale a minor] {\n  ";
+        let src = "clip x [scale c_major] [scale a_minor] {\n  ";
         assert_eq!(
             determine_completion_context(src, src.len()),
             CompletionContext::PitchedClipLineStart {
@@ -1104,7 +1097,7 @@ mod tests {
     /// instrument 名が混ざるのは行頭のみで、ここでは出さない。
     #[test]
     fn ctx_pitched_clip_after_instrument_when_instrument_then_space() {
-        let src = "clip x [scale d minor] {\n  chord ";
+        let src = "clip x [scale d_minor] {\n  chord ";
         assert_eq!(
             determine_completion_context(src, src.len()),
             CompletionContext::PitchedClipAfterInstrument {
@@ -1117,7 +1110,7 @@ mod tests {
     /// 同じ instrument 名上で複数音/複数コードが続く文法に対応する。
     #[test]
     fn ctx_pitched_clip_after_instrument_continues_for_subsequent_tokens() {
-        let src = "clip x [scale d minor] {\n  chord dm:4:1 ";
+        let src = "clip x [scale d_minor] {\n  chord dm:4:1 ";
         assert_eq!(
             determine_completion_context(src, src.len()),
             CompletionContext::PitchedClipAfterInstrument {
@@ -1130,7 +1123,7 @@ mod tests {
     /// この段階では instrument 名候補の絞り込みを期待する。
     #[test]
     fn ctx_pitched_clip_line_start_while_typing_instrument_name() {
-        let src = "clip x [scale d minor] {\n  cho";
+        let src = "clip x [scale d_minor] {\n  cho";
         assert_eq!(
             determine_completion_context(src, src.len()),
             CompletionContext::PitchedClipLineStart {
@@ -1228,12 +1221,12 @@ mod tests {
     }
 
     #[test]
-    fn ctx_toplevel_clip_option_scale_note() {
-        // トップレベルで "clip name [scale c " → ClipOptionAfterScaleNote
-        let src = "clip bass_a [scale c ";
+    fn ctx_toplevel_clip_option_scale_while_typing_token() {
+        // トップレベルで "clip name [scale c_" → ClipOptionAfterScale のまま
+        let src = "clip bass_a [scale c_";
         assert_eq!(
             determine_completion_context(src, src.len()),
-            CompletionContext::ClipOptionAfterScaleNote
+            CompletionContext::ClipOptionAfterScale
         );
     }
 
@@ -1261,8 +1254,8 @@ mod tests {
 
     #[test]
     fn ctx_toplevel_clip_option_after_scale() {
-        // [scale c major] の後に [ → scale が除外される
-        let src = "clip bass_a [scale c major] [";
+        // [scale c_major] の後に [ → scale が除外される
+        let src = "clip bass_a [scale c_major] [";
         assert_eq!(
             determine_completion_context(src, src.len()),
             CompletionContext::ClipOption {
@@ -1273,8 +1266,8 @@ mod tests {
 
     #[test]
     fn ctx_toplevel_clip_option_after_bars_and_scale() {
-        // [bars 4] [scale c major] の後に [ → bars と scale が除外される
-        let src = "clip bass_a [bars 4] [scale c major] [";
+        // [bars 4] [scale c_major] の後に [ → bars と scale が除外される
+        let src = "clip bass_a [bars 4] [scale c_major] [";
         assert_eq!(
             determine_completion_context(src, src.len()),
             CompletionContext::ClipOption {

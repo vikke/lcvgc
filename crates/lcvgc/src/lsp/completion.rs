@@ -107,18 +107,41 @@ fn semitone_to_label(semitone: u8, prefer_flat: bool) -> &'static str {
 // `scale_prefers_flat` は `diatonic::scale_prefers_flat` に統合済 (pub).
 // scale 構成音補完とダイアトニックコード補完で同じ選好を共有する。
 
-/// scale 構成音補完の `detail` 用にスケールタイプの表記を返す
-fn scale_type_label(scale_type: ScaleType) -> &'static str {
+/// `NoteName` を補完 `detail` 用の表示表記 (C, C#, Db, ...) に変換する
+fn note_display_label(note: NoteName) -> &'static str {
+    match note {
+        NoteName::C => "C",
+        NoteName::Cs => "C#",
+        NoteName::Db => "Db",
+        NoteName::D => "D",
+        NoteName::Ds => "D#",
+        NoteName::Eb => "Eb",
+        NoteName::E => "E",
+        NoteName::F => "F",
+        NoteName::Fs => "F#",
+        NoteName::Gb => "Gb",
+        NoteName::G => "G",
+        NoteName::Gs => "G#",
+        NoteName::Ab => "Ab",
+        NoteName::A => "A",
+        NoteName::As => "A#",
+        NoteName::Bb => "Bb",
+        NoteName::B => "B",
+    }
+}
+
+/// スケール種別の日本語表示名を返す（scale 補完の `detail` 用）
+fn scale_type_japanese_name(scale_type: ScaleType) -> &'static str {
     match scale_type {
-        ScaleType::Major => "major",
-        ScaleType::Minor => "minor",
-        ScaleType::HarmonicMinor => "harmonic_minor",
-        ScaleType::MelodicMinor => "melodic_minor",
-        ScaleType::Dorian => "dorian",
-        ScaleType::Phrygian => "phrygian",
-        ScaleType::Lydian => "lydian",
-        ScaleType::Mixolydian => "mixolydian",
-        ScaleType::Locrian => "locrian",
+        ScaleType::Major => "メジャー",
+        ScaleType::Minor => "ナチュラルマイナー",
+        ScaleType::HarmonicMinor => "ハーモニックマイナー",
+        ScaleType::MelodicMinor => "メロディックマイナー",
+        ScaleType::Dorian => "ドリアン",
+        ScaleType::Phrygian => "フリジアン",
+        ScaleType::Lydian => "リディアン",
+        ScaleType::Mixolydian => "ミクソリディアン",
+        ScaleType::Locrian => "ロクリアン",
     }
 }
 
@@ -442,30 +465,39 @@ impl CompletionProvider {
         ]
     }
 
-    /// スケールタイプの補完候補を返す
+    /// `scale ` / `[scale ` 直後の補完候補を返す。
+    /// 音名 17 種 × スケール種別 9 種の総当たりで `<root>_<type>` を生成する
+    /// （例: `c_major`, `cs_minor`）。シャープは `s` 形式で出す。
+    ///
+    /// Returns completion candidates right after `scale ` / `[scale `.
+    /// Generates every `<root>_<type>` from 17 note names × 9 scale types
+    /// (e.g. `c_major`, `cs_minor`). Sharps use the `s` form.
     ///
     /// # Returns
-    /// 利用可能なスケールタイプ一覧（major, minor, dorian 等）
-    pub fn scale_type_completions() -> Vec<CompletionItem> {
-        [
-            ("major", "メジャー"),
-            ("minor", "ナチュラルマイナー"),
-            ("harmonic_minor", "ハーモニックマイナー"),
-            ("melodic_minor", "メロディックマイナー"),
-            ("dorian", "ドリアン"),
-            ("phrygian", "フリジアン"),
-            ("lydian", "リディアン"),
-            ("mixolydian", "ミクソリディアン"),
-            ("locrian", "ロクリアン"),
-        ]
-        .iter()
-        .map(|(name, detail)| CompletionItem {
-            label: name.to_string(),
-            detail: Some(detail.to_string()),
-            kind: CompletionKind::Keyword,
-            sort_text: None,
-        })
-        .collect()
+    /// 153 件の補完候補。`detail` は日本語の種別名（例: `C ハーモニックマイナー`）、
+    /// `sort_text` は音名順 → 種別順。
+    /// 153 candidates. `detail` is the Japanese type name (e.g. `C ハーモニックマイナー`);
+    /// `sort_text` orders by note name, then by type.
+    pub fn scale_completions() -> Vec<CompletionItem> {
+        NoteName::ALL
+            .iter()
+            .enumerate()
+            .flat_map(|(ri, root)| {
+                ScaleType::ALL
+                    .iter()
+                    .enumerate()
+                    .map(move |(ti, st)| CompletionItem {
+                        label: format!("{}_{}", root.keyword(), st.keyword()),
+                        detail: Some(format!(
+                            "{} {}",
+                            note_display_label(*root),
+                            scale_type_japanese_name(*st)
+                        )),
+                        kind: CompletionKind::Keyword,
+                        sort_text: Some(format!("{ri:02}_{ti:02}")),
+                    })
+            })
+            .collect()
     }
 
     /// play コマンドの後のターゲット補完候補を返す
@@ -530,7 +562,7 @@ impl CompletionProvider {
     /// スケール構成音7音の補完候補を返す（先頭優先 sortText 付き）
     /// Returns 7 in-scale note completions with top-priority sortText.
     ///
-    /// `[scale c major]` のように clip ローカル / トップレベルのスケールが
+    /// `[scale c_major]` のように clip ローカル / トップレベルのスケールが
     /// 解決されたときに、ノート補完で構成音を最上位に並べるためのヘルパ。
     /// sortText は `"0_<index>"` 形式で、半音階17音 (`"9_..."`) より上に来る。
     ///
@@ -551,7 +583,7 @@ impl CompletionProvider {
         let detail = format!(
             "in-scale note ({} {})",
             scale_root_label(root),
-            scale_type_label(scale_type)
+            scale_type.keyword()
         );
         let prefer_flat = diatonic::scale_prefers_flat(scale_type);
         intervals
@@ -842,6 +874,64 @@ mod tests {
             detail.to_lowercase().contains("scale"),
             "expected 'scale' in detail, got {detail}"
         );
+    }
+
+    /// scale 補完: 音名 17 × 種別 9 = 153 件の総当たり
+    #[test]
+    fn scale_completions_is_full_cartesian_product() {
+        let items = CompletionProvider::scale_completions();
+        assert_eq!(items.len(), 17 * 9);
+        assert!(items.iter().all(|i| i.kind == CompletionKind::Keyword));
+    }
+
+    /// scale 補完: `<root>_<type>` の単一トークンで、シャープは `s` 形式
+    #[test]
+    fn scale_completions_labels_are_single_s_form_tokens() {
+        let items = CompletionProvider::scale_completions();
+        let labels: Vec<&str> = items.iter().map(|i| i.label.as_str()).collect();
+        assert!(labels.contains(&"c_major"));
+        assert!(labels.contains(&"cs_minor"));
+        assert!(labels.contains(&"eb_dorian"));
+        assert!(labels.contains(&"b_harmonic_minor"));
+        assert!(labels.iter().all(|l| !l.contains('#') && !l.contains(' ')));
+    }
+
+    /// scale 補完: 補完ラベルはすべてパーサで読める
+    #[test]
+    fn scale_completions_labels_are_parseable() {
+        for item in CompletionProvider::scale_completions() {
+            let (rest, _) = crate::parser::scale::scale_token(&item.label).unwrap();
+            assert_eq!(rest, "", "not fully parsed: {}", item.label);
+        }
+    }
+
+    /// scale 補完: detail に日本語の種別名が入る
+    #[test]
+    fn scale_completions_detail_is_japanese_name() {
+        let items = CompletionProvider::scale_completions();
+        let detail_of = |label: &str| {
+            items
+                .iter()
+                .find(|i| i.label == label)
+                .and_then(|i| i.detail.clone())
+                .unwrap()
+        };
+        assert_eq!(detail_of("c_harmonic_minor"), "C ハーモニックマイナー");
+        assert_eq!(detail_of("cs_minor"), "C# ナチュラルマイナー");
+        assert_eq!(detail_of("bb_lydian"), "Bb リディアン");
+    }
+
+    /// scale 補完: sort_text は音名順 → 種別順で安定
+    #[test]
+    fn scale_completions_sort_text_orders_root_then_type() {
+        let items = CompletionProvider::scale_completions();
+        let mut sorted = items.clone();
+        sorted.sort_by(|a, b| a.sort_text.cmp(&b.sort_text));
+        assert_eq!(sorted, items);
+        assert_eq!(items[0].label, "c_major");
+        assert_eq!(items[1].label, "c_minor");
+        assert_eq!(items[9].label, "cs_major");
+        assert_eq!(items[152].label, "b_locrian");
     }
 
     #[test]

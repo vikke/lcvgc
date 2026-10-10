@@ -4,10 +4,10 @@
 use crate::ast::scale::ScaleDef;
 
 /// クリップに付与できるオプション群を保持する構造体。
-/// `[bars N]`、`[time N/N]`、`[scale ROOT TYPE]` の各指定を格納する。
+/// `[bars N]`、`[time N/N]`、`[scale ROOT_TYPE]` の各指定を格納する。
 ///
 /// A struct that holds clip-level options.
-/// Stores `[bars N]`, `[time N/N]`, and `[scale ROOT TYPE]` specifications.
+/// Stores `[bars N]`, `[time N/N]`, and `[scale ROOT_TYPE]` specifications.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct ClipOptions {
     /// 小節数の指定（例: `[bars 4]`）。
@@ -18,9 +18,9 @@ pub struct ClipOptions {
     ///
     /// Time signature as (numerator, denominator) (e.g. `[time 3/4]`).
     pub time_sig: Option<(u8, u8)>,
-    /// スケールの指定（例: `[scale c minor]`）。
+    /// スケールの指定（例: `[scale c_minor]`）。
     ///
-    /// Scale specification (e.g. `[scale c minor]`).
+    /// Scale specification (e.g. `[scale c_minor]`).
     pub scale: Option<ScaleDef>,
     /// オクターブシフト量（例: `[>>]` で +1、`[<<]` で -1、`[>> >>]` で +2）。
     /// clip 全体のピッチを 12 半音単位で上下させる。`>>` と `<<` は合算される。

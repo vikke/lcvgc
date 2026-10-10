@@ -3802,7 +3802,7 @@ session main {
   verse
 }
 
-scale c major
+scale c_major
 
 var key = cm
 
