@@ -66,3 +66,22 @@ generator … 上記の層から独立。bin/lcvgc-gen が利用（外部フォ�
 make deps
 # cargo modules dependencies --lib -p lcvgc --no-externs --no-fns --no-sysroot | dot -Tsvg > deps.svg
 ```
+
+## 構文・プロトコルを変更するとき（更新漏れチェック）
+
+構文やデーモンのプロトコルを変えたら、仕様書（日本語版と英語版）も同じ PR で更新する。
+更新漏れは `make doc-check`（`scripts/check-docs.sh`）が main との差分から検出する。
+
+| 変更したもの | 一緒に更新するもの |
+|---|---|
+| `parser/` または `ast/` | `specs/lcvgc-dsl-spec.ja.md` と `specs/lcvgc-dsl-spec.md` |
+| `server/protocol.rs` | `specs/lsp-in-out.ja.md` と `specs/lsp-in-out.md` |
+| `specs/*.ja.md` | 対応する英語版 `specs/*.md`（逆も同じ） |
+
+- commit 前の総合チェックは `make check`（fmt・lint・test・スクリプトのテスト・doc-check）。
+- Claude Code で作業する場合は、`.claude/settings.json` の hook が `git commit` の前に
+  `make doc-check` を実行し、失敗すると commit を止める。
+- 仕様書の変更が不要な修正（内部のリファクタリングなど）は、`SKIP_DOC_CHECK=1` を付けるか、
+  commit message に `[skip-doc-check]` を入れて素通りさせる。
+- 機械的に判定できないもの（説明文が挙動と合っているか、tree-sitter-cvg・lcvgc.nvim への
+  影響）は、レビューで確認する。

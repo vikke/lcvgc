@@ -69,3 +69,22 @@ generator … Independent from the layers above. Used by bin/lcvgc-gen (external
 make deps
 # cargo modules dependencies --lib -p lcvgc --no-externs --no-fns --no-sysroot | dot -Tsvg > deps.svg
 ```
+
+## When Changing Syntax or the Protocol (Missing-Update Check)
+
+When you change the syntax or the daemon protocol, update the specs (Japanese and English) in the same PR.
+`make doc-check` (`scripts/check-docs.sh`) detects missing updates from the diff against main.
+
+| What you changed | What to update with it |
+|---|---|
+| `parser/` or `ast/` | `specs/lcvgc-dsl-spec.ja.md` and `specs/lcvgc-dsl-spec.md` |
+| `server/protocol.rs` | `specs/lsp-in-out.ja.md` and `specs/lsp-in-out.md` |
+| `specs/*.ja.md` | the matching English `specs/*.md` (and vice versa) |
+
+- The all-in-one pre-commit check is `make check` (fmt, lint, test, script tests, doc-check).
+- When working with Claude Code, a hook in `.claude/settings.json` runs `make doc-check`
+  before `git commit` and blocks the commit if it fails.
+- For changes that need no spec update (such as internal refactoring), set `SKIP_DOC_CHECK=1`
+  or put `[skip-doc-check]` in the commit message to skip the check.
+- What cannot be checked mechanically (whether descriptions match the behavior, and the impact on
+  tree-sitter-cvg and lcvgc.nvim) is checked in review.

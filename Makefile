@@ -8,8 +8,8 @@ VERSION      := $(shell grep '^version' crates/lcvgc/Cargo.toml | head -1 | sed 
 RELEASE_DIR  := target/release
 REPO         := https://github.com/vikke/lcvgc
 
-.PHONY: help all build test test-integration test-all bench lint fmt fmt-check \
-        clean install binstall lsp run run-watch
+.PHONY: help all build test test-integration test-all test-scripts bench lint fmt fmt-check \
+        doc-check check clean install binstall lsp run run-watch
 
 ## ── ヘルプ ──────────────────────────────────────────
 # help を先頭ターゲットにすることで GNU/BSD make 双方で既定ゴールになる。
@@ -39,6 +39,10 @@ test-integration: ## 統合テスト実行 (integration test)
 
 test-all: lint test ## lint + テスト
 
+test-scripts: ## scripts/ と .claude/hooks/ のシェルスクリプトのテスト
+	bash scripts/tests/test-check-docs.sh
+	bash scripts/tests/test-claude-hooks.sh
+
 ## ── ベンチマーク ────────────────────────────────────
 
 bench: ## ベンチマーク実行 (parser_bench)
@@ -55,6 +59,15 @@ fmt: ## コードフォーマット
 
 fmt-check: ## フォーマットチェック (CI 用)
 	$(CARGO) fmt --all -- --check
+
+## ── 更新漏れチェック ────────────────────────────────
+# main との差分を見て、構文・プロトコル変更時の仕様書 (ja/en) の更新漏れを検出する。
+# 仕様書の変更が不要な場合は SKIP_DOC_CHECK=1 make doc-check で素通りできる。
+
+doc-check: ## 仕様書 (ja/en) の更新漏れチェック (main との差分)
+	bash scripts/check-docs.sh
+
+check: fmt-check lint test test-scripts doc-check ## commit 前の総合チェック
 
 ## ── LSP ─────────────────────────────────────────────
 
