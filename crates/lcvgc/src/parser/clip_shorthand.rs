@@ -7,9 +7,9 @@ use crate::ast::doc::{ExampleRender, SyntaxDoc};
 /// Default: octave=4, duration=4 (quarter note).
 #[derive(Debug, Clone, PartialEq)]
 pub struct CarryOverState {
-    /// 現在のオクターブ値 (0-10)
+    /// 現在のオクターブ値 (0-9)
     ///
-    /// Current octave value (0-10)
+    /// Current octave value (0-9)
     pub octave: u8,
     /// 現在の音価（分母表記: 4=4分音符, 8=8分音符 等）
     ///

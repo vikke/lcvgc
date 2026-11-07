@@ -156,6 +156,8 @@ device volca_keys {
 
 `port` と `transport` は順序自由で、それぞれ最大 1 回だけ指定できる。
 
+`port` の値は行末または `}` までをそのまま取るため、`port` 行の末尾に `//` コメントを書くとコメントまでポート名に含まれる。コメントは別の行に書くこと。
+
 ```
 device mb {
   port Mutant Brain
@@ -382,7 +384,7 @@ scale c_minor
 
 clip bass_a [bars 1] {
   // グローバルのscale (c_minor) が適用される
-  bass c:3:8 d eb f::4 g::2
+  bass c:3:8 eb f::4 g::2
 }
 
 clip lead_a [bars 1] [scale d_dorian] {
@@ -454,10 +456,12 @@ var ch = 1
 
 instrument bass {
   var ch = 3                    // ブロック内で別の値
+  device mutant_brain
   channel ch                    // → 3
 }
 
 instrument lead {
+  device mutant_brain
   channel ch                    // → 1（グローバル）
 }
 ```
@@ -482,13 +486,16 @@ includeしたファイルのグローバル変数は呼び出し元にマージ�
 // config.cvg
 var dev = mutant_brain
 var default_gate = 80
+```
 
+```
 // song.cvg
 include ./config.cvg          // dev, default_gate が使える
 var default_gate = 90           // 上書き
 
 instrument bass {
   device dev                    // → mutant_brain
+  channel 1
   gate_normal default_gate      // → 90（上書き後の値）
 }
 ```
@@ -539,14 +546,16 @@ clip waltz_bass [bars 2] [time 3/4] {
 clip drums_a [bars 1] {
   use tr808
   resolution 16
-  bd x|x|x|x          // 16ステップ = 4拍
+  // 16ステップ = 4拍
+  bd x|x|x|x
 }
 
 // 3/4のドラム
 clip drums_waltz [bars 1] [time 3/4] {
   use tr808
   resolution 16
-  bd x|x|x             // 12ステップ = 3拍
+  // 12ステップ = 3拍
+  bd x|x|x
 }
 ```
 
@@ -657,10 +666,9 @@ clip bass_a [bars 1] {
 
   // 省略表記: オクターブと音長は直前の値を引き継ぐ
   // clip先頭のデフォルトは o4 :4
-  bass c:3:8 c eb f::4 g::2
+  bass c:3:8 c f::4 g::2
   //   c:3:8 → o3, :8がセットされる
   //   c     → o3, :8を引き継ぐ
-  //   eb    → o3, :8を引き継ぐ
   //   f::4  → o3を引き継ぎ、音長だけ:4に変更（::でオクターブ省略）
   //   g::2  → o3を引き継ぎ、音長だけ:2に変更
 }
@@ -677,7 +685,7 @@ clip lead_a [bars 1] {
 - 音名: `c c# db d d# eb e f f# gb g g# ab a a# bb b` (全て小文字)
   - シャープは `s` 形式でも書ける: `cs`=`c#`, `ds`=`d#`, `fs`=`f#`, `gs`=`g#`, `as`=`a#`（例: `cs:3:8`, `csm7`）
   - `csus4` のように幹音の直後に `sus` が続く場合は「幹音 + sus」（C sus4）と読む。C# の sus コードは `cssus4` / `c#sus4` と書く
-- コード名: `cm7`, `fM7`, `g7` 等（サフィックス一覧はセクション7.12参照）
+- コード名: `cm7`, `fM7`, `g7` 等（サフィックス一覧はセクション7.13参照）
 - オクターブ: `0-9` — `:` 区切りで指定。省略で直前を引き継ぐ
 - 音長: `1`=全音符, `2`=半音符, `4`=四分, `8`=八分, `16`=十六分, 付点は`4.` `8.`のように`.`を付ける。省略で直前を引き継ぐ
 - 休符: `r[:音長]` (音長は省略で直前を引き継ぐ)
@@ -703,15 +711,14 @@ clip lead_a [bars 1] {
 
 ```
 clip bass_a [bars 2] {
-  bass c:3:8 c eb f::4 g::2
+  bass c:3:8 c f::4 g::2
   //   c:3:8 → o3, :8
   //   c     → o3, :8（両方引き継ぎ）
-  //   eb    → o3, :8
   //   f::4  → o3引き継ぎ, :4に変更（::でオクターブ省略）
   //   g::2  → o3引き継ぎ, :2に変更
 
   // 2行目も前行末の状態(o3, :2)を引き継ぐ
-  bass ab::8 g f eb::4 c::2
+  bass ab::8 g eb::4 c::2
 }
 ```
 
@@ -757,7 +764,7 @@ keys [bb:3 d:4 f a]:1        // オクターブまたぎは明示
 ```
 clip bass_a [bars 4] {
   // フレーズ全体を4回繰り返す
-  bass (c:3:8 c eb f::4 g::2)*4
+  bass (c:3:8 c f::4 g::2)*4
 
   // 一部だけ繰り返し
   bass c:3:8 (c eb)*3 f::4 g::2
@@ -802,7 +809,7 @@ lead ( c d e f )    // ≡  lead c d e f
 
 ```
 clip bass_a [bars 1] {
-  bass c:3:8 c eb f::4 g::2
+  bass c:3:8 c f::4 g::2
   // → 各ノートの音長 × 80%（bassのgate_normal）がGate On期間
 }
 ```
@@ -813,7 +820,7 @@ clip bass_a [bars 1] {
 
 ```
 clip bass_stac [bars 1] {
-  bass c:3:8' c' eb' f::4' g::2
+  bass c:3:8' c' f::4' g::2
   // → 各ノートの音長 × 40%（bassのgate_staccato）がGate On期間
 }
 ```
@@ -824,7 +831,7 @@ clip bass_stac [bars 1] {
 
 ```
 clip bass_mix [bars 1] {
-  bass c:3:8 d eg95 f::4 g::2
+  bass c:3:8 eg95 f::4 g::2
   // → eのみ95%、他はgate_normal(80%)
 }
 ```
@@ -905,21 +912,21 @@ clip内で同じ楽器名の行が続くと、前の行の続きとして**時�
 ```
 // 4小節を1小節ずつ4行で
 clip bass_a [bars 4] {
-  bass c:3:8 c eb f::4 g::2
-  bass ab:3:8 g f eb::4 c::2
+  bass c:3:8 c f::4 g::2
+  bass ab:3:8 g eb::4 c::2
   bass c:3:4 eb f g
   bass ab:3:2 g::2
 }
 
 // 4小節を2小節ずつ2行で
 clip bass_b [bars 4] {
-  bass c:3:8 c eb f::4 g::2 ab:3:8 g f eb::4 c::2
+  bass c:3:8 c f::4 g::2 ab:3:8 g eb::4 c::2
   bass c:3:4 eb f g ab:3:2 g::2
 }
 
 // 1行で全部書いてもいい
 clip bass_c [bars 4] {
-  bass c:3:8 c eb f::4 g::2 ab:3:8 g f eb::4 c::2 c:3:4 eb f g ab:3:2 g::2
+  bass c:3:8 c f::4 g::2 ab:3:8 g eb::4 c::2 c:3:4 eb f g ab:3:2 g::2
 }
 ```
 
@@ -1028,7 +1035,7 @@ bass c:3:8 | d:3:4
 bass c:3:8 c c c c c | d:3:4
 ```
 
-`|` は 1 拍 (`time` で指定した拍長) 単位でのみ整列する。複数行記述 (7.8) と組み合わせれば、行末にちょうど拍境界が来るよう揃えるのにも使える。
+`|` は 1 拍 (`time` で指定した拍長) 単位でのみ整列する。複数行記述 (7.9) と組み合わせれば、行末にちょうど拍境界が来るよう揃えるのにも使える。
 
 ### 7.12 和音（角括弧記法）
 
@@ -1147,6 +1154,8 @@ clip arp_f [bars 1] {
 
 - `random` 方向はループ毎に新しい順序が抽選される。
 - `updown` は両端を二度鳴らさない ping-pong（例: `[c e g]` → `c, e, g, e`）。
+- アルペジオは構成音を **1 巡だけ** 鳴らして次の要素へ進む。和音側の `:D` の長さだけ鳴り続けるわけではない（`arp_a` は 16 分 × 4 音 = 1 拍で終わり、残りは休符）。小節を埋めたいときは繰り返しと組み合わせる: `keys ([c:4 eb:4 g:4 bb:4] arp(up, 16))*4`
+- `arp` の第2引数で指定した音価は、後続の音価を省略したノートに引き継がれる（7.6 の省略記法の引き継ぎと同じ）。
 
 ### 7.15 ドラム（ステップシーケンサー記法）
 
@@ -1173,6 +1182,8 @@ clip drums_a [bars 1] {
 | `.` | 休符 | - |
 
 パターン文字列中のスペースは無視される。視認性向上のため自由にスペースを挿入できる。
+
+ドラム行（ヒット行・確率行）の末尾には `//` コメントを書けない（解析エラーになる）。コメントは別の行に書くこと。
 
 ```
 // すべて同じ意味
@@ -1288,12 +1299,12 @@ instrumentに定義したCCエイリアスを使って、clip内でMIDI Control 
 
 #### ステップ方式
 
-ドラムの `resolution` を共有する。値は0-127（10進数）。
+1 ステップは 16 分音符固定（1 小節 = 16 ステップ、4/4 の場合）。値は0-127（10進数）。
+音程楽器の clip には `resolution` 行を書けない（`resolution` はドラム clip 専用）。
 
 ```
 clip bass_a [bars 1] {
-  resolution 16
-  bass c:3:8 c eb f::4 g::2
+  bass c:3:8 c f::4 g::2
 
   // 16ステップで値を指定
   bass.cutoff    0 10 20 30 40 50 60 70 80 90 100 110 120 127 127 127
@@ -1301,7 +1312,6 @@ clip bass_a [bars 1] {
 }
 ```
 
-resolutionを指定せず音程楽器だけのclipでは、ステップ方式は使えない（時間指定方式を使う）。
 
 ステップ方式ではドラムと同じセル列メタトークンが使える:
 
@@ -1317,8 +1327,7 @@ resolutionを指定せず音程楽器だけのclipでは、ステップ方式は
 
 ```
 clip bass_sync [bars 1] {
-  resolution 16
-  bass    c:3:8 c eb f::4 g::2
+  bass    c:3:8 c f::4 g::2
 
   // 音の発音と同期して cutoff を変えたい (= ノートと同じ位置にだけ値を置く)
   bass.cutoff 30 . . 60 . . . . 90 . . . . . . .
@@ -1331,8 +1340,7 @@ clip bass_sync [bars 1] {
 
 ```
 clip bass_pattern [bars 4] {
-  resolution 16
-  bass (c:3:8 c eb f::4 g::2)*4
+  bass (c:3:8 c f::4 g::2)*4
 
   // 1 小節ぶんのパターンを 4 回繰り返す
   bass.cutoff (30 . . 60 . . . . 90 . . . . . . .)*4
@@ -1348,7 +1356,7 @@ clip bass_pattern [bars 4] {
 
 ```
 clip bass_b [bars 4] {
-  bass c:3:8 c eb f::4 g::2
+  bass c:3:8 c f::4 g::2
 
   // ポイント指定（即座に値が変わる）
   bass.cutoff 0@1.1 64@2.1 127@3.1 64@4.1
@@ -1383,8 +1391,7 @@ clip bass_c [bars 4] {
 
 ```
 clip bass_mix [bars 2] {
-  resolution 16
-  bass c:3:8 c eb f::4 g::2
+  bass c:3:8 c f::4 g::2
 
   // cutoffはステップ方式
   bass.cutoff 0 10 20 30 40 50 60 70 80 90 100 110 120 127 127 127
@@ -1416,6 +1423,8 @@ scene verse {
 ### 8.1 確率
 
 clip名の後に数字（1-9）を付けると発音確率を指定できる。ループごとに判定する。
+
+確率の数字は改行をまたいでも読まれる。clip名の次の行が数字（1-9）だけで始まると、前の clip の確率として扱われるので注意する。
 
 ```
 scene verse {
@@ -1892,7 +1901,7 @@ MIDIポートが消えた場合（USB抜け等）、そのdeviceへの出力だ�
 - instrumentごとにGate比率（gate_normal / gate_staccato）を設定可能。スタッカート `'` やGate直接指定 `gN` で音符単位の制御もできる
 - Gate Off期間が5ms未満の場合は最小5msを確保（gate_normal: 100のレガート時は除く）
 - 音程楽器ノートの velocity 既定値は 100。ノートに `vN`（N = 0–127）を付けると Note On の velocity を上書きする。アーティキュレーション / velocity 系修飾子 (`'` / `gN` / `vN`) は順序不同で、各高々 1 回、`'` と `gN` は両立不可。付点 `.` は音価フィールド直後に置く既存仕様を維持する
-- CCオートメーションはステップ方式（resolution共有）と時間指定+補間方式（`@小節.拍`、`-` で線形、`-exp` で指数カーブ）
+- CCオートメーションはステップ方式（1 ステップ = 16 分音符）と時間指定+補間方式（`@小節.拍`、`-` で線形、`-exp` で指数カーブ）
 - `var 名前 = 値` で変数定義、`$` なしで参照。変数優先、見つからなければリテラル
 - スコープはグローバル（トップレベル）とブロック（`{}` 内）の2段。内側優先
 - includeはファイル先頭にのみ記述可能。非includeブロックの後にincludeがあるとエラー
