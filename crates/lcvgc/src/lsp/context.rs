@@ -634,6 +634,12 @@ pub fn build_completion_items(ctx: &CompletionContext, registry: &Registry) -> V
             // Scale resolution: clip-local `[scale ...]` > registry top-level
             // `scale` > unresolved. When resolved, return in-scale notes (7) +
             // diatonic chords (7); otherwise fall back to chromatic 17 notes.
+            // In both cases every root × every chord suffix follows (sort_text `3_`),
+            // skipping labels already offered as diatonic chords.
+            //
+            // scale 解決時は構成音 7 + ダイアトニック 7、未解決時は単音 17。
+            // どちらの場合も、その後に「根音 × 全種類」のコード名を続ける
+            // （ダイアトニックと同じラベルは重複させない）。
             let resolved_scale: Option<(NoteName, ScaleType)> =
                 scale.or_else(|| registry.scale().map(|s| (s.root, s.scale_type)));
 
@@ -644,6 +650,7 @@ pub fn build_completion_items(ctx: &CompletionContext, registry: &Registry) -> V
             } else {
                 items.extend(CompletionProvider::note_completions());
             }
+            append_unique_labels(&mut items, CompletionProvider::chord_completions());
             items
         }
 
@@ -757,6 +764,21 @@ pub fn offset_to_line_col(source: &str, offset: usize) -> (u32, u32) {
         }
     }
     (line, col)
+}
+
+/// `extra` のうち、`items` にまだ無いラベルの候補だけを `items` の末尾に追加する。
+/// ダイアトニックコードと全種類コードで同じラベルが二重に出ないようにするために使う。
+///
+/// Appends the items of `extra` whose labels are not yet in `items`.
+/// Used so that a diatonic chord and the same all-suffix chord are not listed twice.
+///
+/// # Arguments
+/// * `items` - 追加先の補完候補 / Destination completion items
+/// * `extra` - 追加したい補完候補 / Completion items to append
+fn append_unique_labels(items: &mut Vec<CompletionItem>, extra: Vec<CompletionItem>) {
+    let existing: std::collections::HashSet<String> =
+        items.iter().map(|i| i.label.clone()).collect();
+    items.extend(extra.into_iter().filter(|i| !existing.contains(&i.label)));
 }
 
 #[cfg(test)]
@@ -1508,8 +1530,9 @@ mod tests {
         assert!(items.iter().any(|i| i.kind == CompletionKind::ChordName));
     }
 
-    /// instrument 名直後 (clip-local scale) の候補はスケール構成音 7 音と
-    /// ダイアトニックコード 7 つだけで構成され、半音階フォールバックは含まれない。
+    /// instrument 名直後 (clip-local scale) の候補は、スケール構成音 7 音 (`0_`)・
+    /// ダイアトニックコード 7 つ (`1_`)・根音 × 全種類のコード名 (`3_`) で構成され、
+    /// 半音階フォールバックは含まれない。
     #[test]
     fn build_pitched_clip_after_instrument_with_clip_local_scale_includes_scale_notes_and_diatonic()
     {
@@ -1527,22 +1550,41 @@ mod tests {
             .collect();
         assert_eq!(scale_notes, vec!["c", "d", "e", "f", "g", "a", "b"]);
 
-        // ダイアトニックコード (ChordName) が7つ
+        // ダイアトニックコード (sortText "1_*") が7つ
         let chords: Vec<&str> = items
             .iter()
-            .filter(|i| i.kind == CompletionKind::ChordName)
+            .filter(|i| i.sort_text.as_deref().is_some_and(|s| s.starts_with("1_")))
             .map(|i| i.label.as_str())
             .collect();
         assert_eq!(
-            chords.len(),
-            7,
+            chords,
+            vec!["cM", "dm", "em", "fM", "gM", "am", "bdim"],
             "diatonic chords expected 7, got {chords:?}"
         );
 
-        // 半音階フォールバック (sortText "9_*") は出さない
+        // 根音 × 全種類のコード名 (sortText "3_*") も出る。
+        // ダイアトニックと同じラベルは重複させない (408 - 7 = 401)。
+        let all_chords: Vec<&str> = items
+            .iter()
+            .filter(|i| i.sort_text.as_deref().is_some_and(|s| s.starts_with("3_")))
+            .map(|i| i.label.as_str())
+            .collect();
+        assert_eq!(all_chords.len(), 17 * 24 - 7);
+        assert!(all_chords.contains(&"csus4"));
+        assert!(
+            !all_chords.contains(&"dm"),
+            "diatonic label must not be duplicated"
+        );
+
+        // ラベルの重複が無い
+        let unique: std::collections::HashSet<&str> =
+            items.iter().map(|i| i.label.as_str()).collect();
+        assert_eq!(unique.len(), items.len(), "labels must be unique");
+
+        // 半音階フォールバック (sortText "2_*") は出さない
         let chromatic_count = items
             .iter()
-            .filter(|i| i.sort_text.as_deref().is_some_and(|s| s.starts_with("9_")))
+            .filter(|i| i.sort_text.as_deref().is_some_and(|s| s.starts_with("2_")))
             .count();
         assert_eq!(
             chromatic_count, 0,
@@ -1583,30 +1625,32 @@ mod tests {
             .collect();
         assert_eq!(scale_notes, vec!["a", "b", "c", "d", "e", "f", "g"]);
 
-        // 半音階フォールバック (sortText "9_*") は出さない
+        // 半音階フォールバック (sortText "2_*") は出さない
         let chromatic_count = items
             .iter()
-            .filter(|i| i.sort_text.as_deref().is_some_and(|s| s.starts_with("9_")))
+            .filter(|i| i.sort_text.as_deref().is_some_and(|s| s.starts_with("2_")))
             .count();
         assert_eq!(chromatic_count, 0);
     }
 
-    /// scale が両方無い場合は半音階17音のみで sortText も付かない。
+    /// scale が両方無い場合は半音階 17 音 (`2_`) と根音 × 全種類のコード名 (`3_`) を出す。
+    /// 構成音 (`0_`)・ダイアトニック (`1_`) は出ない。
+    /// Without any scale: chromatic 17 notes (`2_`) + all chord names (`3_`);
+    /// no scale notes (`0_`) or diatonic chords (`1_`).
     #[test]
-    fn build_pitched_clip_after_instrument_without_any_scale_uses_chromatic_only() {
+    fn build_pitched_clip_after_instrument_without_any_scale_uses_chromatic_and_all_chords() {
         let ctx = CompletionContext::PitchedClipAfterInstrument { scale: None };
         let registry = Registry::new();
         let items = build_completion_items(&ctx, &registry);
 
-        // ChordName / "0_*" sortText は無い
-        assert!(items.iter().all(|i| i.kind != CompletionKind::ChordName));
+        // "0_*" / "1_*" sortText は無い
         assert!(items.iter().all(|i| i
             .sort_text
             .as_deref()
-            .map(|s| !s.starts_with("0_"))
+            .map(|s| !s.starts_with("0_") && !s.starts_with("1_"))
             .unwrap_or(true)));
 
-        // NoteName が17件揃う (sort_text なし)
+        // NoteName が17件揃う (sort_text "2_*")
         let chromatic: Vec<&str> = items
             .iter()
             .filter(|i| i.kind == CompletionKind::NoteName)
@@ -1614,8 +1658,21 @@ mod tests {
             .collect();
         assert_eq!(chromatic.len(), 17);
         for item in items.iter().filter(|i| i.kind == CompletionKind::NoteName) {
-            assert!(item.sort_text.is_none());
+            assert!(item
+                .sort_text
+                .as_deref()
+                .is_some_and(|s| s.starts_with("2_")));
         }
+
+        // ChordName が 17 × 24 件 (sort_text "3_*")
+        let chords: Vec<&CompletionItem> = items
+            .iter()
+            .filter(|i| i.kind == CompletionKind::ChordName)
+            .collect();
+        assert_eq!(chords.len(), 17 * 24);
+        assert!(chords
+            .iter()
+            .all(|i| i.sort_text.as_deref().is_some_and(|s| s.starts_with("3_"))));
     }
 
     /// clip-local scale は registry の top-level scale を上書きする。

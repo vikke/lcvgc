@@ -247,6 +247,7 @@ DSL ソースを `play` / `stop` ブロックを除外して評価する。フ�
 | `lsp.items[].label`| string  | 補完候補のラベル文字列                 |
 | `lsp.items[].detail`| string | 補完候補の説明文                       |
 | `lsp.items[].kind` | string  | 補完種別（`CompletionKind` 参照）      |
+| `lsp.items[].sort_text` | string \| 省略 | 候補の並び順を決める文字列（LSP `sortText`）。無い場合は省略される。clip 内の音名・コード候補では `0_`（スケール構成音）→ `1_`（ダイアトニックコード）→ `2_`（単音）→ `3_`（根音 × 全種類のコード名）の順 |
 
 ---
 
