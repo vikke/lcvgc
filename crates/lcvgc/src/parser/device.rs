@@ -6,6 +6,7 @@ use nom::{
 };
 
 use crate::ast::device::DeviceDef;
+use crate::ast::doc::{ExampleRender, SyntaxDoc};
 use crate::parser::common::*;
 
 /// `port <VALUE>` 行の値（行末または `}` まで）を取り出す。
@@ -128,12 +129,55 @@ pub fn parse_device(input: &str) -> IResult<&str, DeviceDef> {
 
 /// この構文の説明と例文（文法チュートリアルの素材。`lsp::tutorial` が集める）
 /// Syntax docs for this parser (tutorial material collected by `lsp::tutorial`).
-pub const DOCS: &[crate::ast::doc::SyntaxDoc] = &[];
+pub const DOCS: &[SyntaxDoc] = &[
+    SyntaxDoc {
+        id: "device",
+        title_ja: "デバイス定義 (device)",
+        title_en: "Device definition (device)",
+        desc_ja: &[
+            "MIDI 出力ポートに名前を付ける。記法: device 名前 { port ポート名 }",
+            "ポート名は引用符なしで、行末または } までがポート名になる。",
+            "port の行末にはコメントを書かないこと（ポート名に含まれてしまう）。",
+        ],
+        desc_en: &[
+            "Names a MIDI output port. Syntax: device NAME { port PORT_NAME }",
+            "The port name is unquoted and runs to the end of the line or `}`.",
+            "Do not put a comment after `port` (it becomes part of the name).",
+        ],
+        example: "device my_synth {\n\tport IAC Driver\n}",
+        render: ExampleRender::Live,
+        list: None,
+    },
+    SyntaxDoc {
+        id: "device.transport",
+        title_ja: "Start/Stop の送出 (transport)",
+        title_en: "Sending Start/Stop (transport)",
+        desc_ja: &[
+            "transport true|false で、play/stop 時に MIDI Start/Stop を送るか決める。",
+            "省略時は true。port と transport の順序は自由（各 1 回まで）。",
+        ],
+        desc_en: &[
+            "transport true|false: whether play/stop sends MIDI Start/Stop.",
+            "Defaults to true. port and transport may come in any order (once each).",
+        ],
+        example: "device monitor_synth {\n\tport USB MIDI\n\ttransport false\n}",
+        render: ExampleRender::Commented,
+        list: None,
+    },
+];
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use pretty_assertions::assert_eq;
+
+    /// 構文ドキュメントの例文がパーサで最後まで解析できる
+    /// Every syntax-doc example parses fully.
+    #[test]
+    fn docs_examples_parse() {
+        assert!(!DOCS.is_empty());
+        crate::parser::assert_docs_parse(DOCS);
+    }
 
     #[test]
     fn test_parse_device_basic() {
