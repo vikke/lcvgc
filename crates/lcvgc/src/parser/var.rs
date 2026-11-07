@@ -4,6 +4,7 @@ use nom::{
     IResult,
 };
 
+use crate::ast::doc::{ExampleRender, SyntaxDoc};
 use crate::ast::var::VarDef;
 use crate::parser::common::{non_reserved_identifier, ws};
 
@@ -30,7 +31,42 @@ pub fn parse_var(input: &str) -> IResult<&str, VarDef> {
 
 /// この構文の説明と例文（文法チュートリアルの素材。`lsp::tutorial` が集める）
 /// Syntax docs for this parser (tutorial material collected by `lsp::tutorial`).
-pub const DOCS: &[crate::ast::doc::SyntaxDoc] = &[];
+pub const DOCS: &[SyntaxDoc] = &[
+    SyntaxDoc {
+        id: "var",
+        title_ja: "変数",
+        title_en: "Variables",
+        desc_ja: &[
+            "記法: var 名前 = 値（値は空白を含まない 1 語）",
+            "予約語（device, clip, tempo など）は名前に使えない",
+        ],
+        desc_en: &[
+            "Syntax: var NAME = VALUE (VALUE is a single word without spaces)",
+            "Reserved words (device, clip, tempo, ...) cannot be names",
+        ],
+        example: "var bass_ch = 1\nvar default_gate = 80",
+        render: ExampleRender::Live,
+        list: None,
+    },
+    SyntaxDoc {
+        id: "var.reference",
+        title_ja: "変数の参照",
+        title_en: "Referring to variables",
+        desc_ja: &[
+            "参照は $ を付けず名前をそのまま書く。変数が無ければ文字どおりの値",
+            "{ } の中でも var を書ける。内側の定義が外側より優先される",
+            "例（device と instrument は後の節で説明する）:",
+        ],
+        desc_en: &[
+            "Write the name as is, without $. Unknown names are taken literally",
+            "var also works inside { }; the inner definition wins",
+            "Example (device and instrument are explained in later sections):",
+        ],
+        example: "instrument var_demo {\n\tvar bass_ch = 3\n\tdevice my_synth\n\tchannel bass_ch\n\tgate_normal default_gate\n}",
+        render: ExampleRender::Commented,
+        list: None,
+    },
+];
 
 #[cfg(test)]
 mod tests {
@@ -73,5 +109,13 @@ mod tests {
     fn var_mute_unmute_reserved() {
         assert!(parse_var("var mute = something").is_err());
         assert!(parse_var("var unmute = something").is_err());
+    }
+
+    /// 構文ドキュメントの例文がパーサで最後まで解析できる
+    /// Every syntax-doc example parses fully.
+    #[test]
+    fn docs_examples_parse() {
+        assert!(!DOCS.is_empty());
+        crate::parser::assert_docs_parse(DOCS);
     }
 }

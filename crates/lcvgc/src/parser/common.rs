@@ -8,6 +8,7 @@ use nom::{
 };
 
 use crate::ast::common::*;
+use crate::ast::doc::{ExampleRender, SyntaxDoc};
 use crate::domain::pitch::{NoteName, Octave};
 
 /// 予約語の一覧
@@ -314,7 +315,24 @@ pub fn unquoted_value(input: &str) -> IResult<&str, &str> {
 
 /// この構文の説明と例文（文法チュートリアルの素材。`lsp::tutorial` が集める）
 /// Syntax docs for this parser (tutorial material collected by `lsp::tutorial`).
-pub const DOCS: &[crate::ast::doc::SyntaxDoc] = &[];
+pub const DOCS: &[SyntaxDoc] = &[SyntaxDoc {
+    id: "common.comment",
+    title_ja: "コメント",
+    title_en: "Comments",
+    desc_ja: &[
+        "// から行末までが行コメント（文の後ろにも書ける）",
+        "/* と */ で囲むとブロックコメント。複数行にまたがってよい",
+        "ブロックコメントは入れ子にできる",
+    ],
+    desc_en: &[
+        "// starts a line comment that runs to the end of the line",
+        "/* ... */ is a block comment and may span multiple lines",
+        "Block comments can be nested",
+    ],
+    example: "// line comment\ntempo 120 // after a statement\n\n/* block comment */\n\n/*\n\tmulti-line block comment\n\t/* nested */\n*/",
+    render: ExampleRender::Live,
+    list: None,
+}];
 
 #[cfg(test)]
 mod tests {
@@ -543,5 +561,13 @@ mod tests {
         let (rest, result) = parse_u8_or_identifier("bass_ch rest").unwrap();
         assert_eq!(result, Either::Right("bass_ch"));
         assert_eq!(rest, " rest");
+    }
+
+    /// 構文ドキュメントの例文がパーサで最後まで解析できる
+    /// Every syntax-doc example parses fully.
+    #[test]
+    fn docs_examples_parse() {
+        assert!(!DOCS.is_empty());
+        crate::parser::assert_docs_parse(DOCS);
     }
 }
