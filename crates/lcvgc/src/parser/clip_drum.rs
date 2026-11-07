@@ -1,4 +1,5 @@
 use crate::ast::clip_drum::HitSymbol;
+use crate::ast::doc::{ExampleRender, SyntaxDoc};
 use crate::parser::cell_normalize::CellToken;
 
 /// ドラムパターン文字列 (前段で `(...)*N` 等は展開済) を `CellToken<HitSymbol>` 列に
@@ -291,12 +292,71 @@ pub fn expand_repetition(input: &str) -> String {
 
 /// この構文の説明と例文（文法チュートリアルの素材。`lsp::tutorial` が集める）
 /// Syntax docs for this parser (tutorial material collected by `lsp::tutorial`).
-pub const DOCS: &[crate::ast::doc::SyntaxDoc] = &[];
+pub const DOCS: &[SyntaxDoc] = &[
+    SyntaxDoc {
+        id: "clip_drum.hits",
+        title_ja: "ドラムのヒット記号",
+        title_en: "Drum hit symbols",
+        desc_ja: &[
+            "use で kit を指定し、楽器名の後に 1 文字 = 1 ステップで並べる。",
+            "x 通常 / X アクセント / o ゴースト / . 休み。空白は無視される。",
+            "| は次の拍の頭まで休みで埋める（resolution 16 なら 4 ステップ単位）。",
+        ],
+        desc_en: &[
+            "Pick a kit with use, then write one character per step after each name.",
+            "x normal / X accent / o ghost / . rest. Spaces are ignored.",
+            "| pads with rests up to the next beat (every 4 steps at resolution 16).",
+        ],
+        example: "clip drum_demo [bars 1] {\n\tuse tr808\n\tresolution 16\n\tkick  x|x|x|x\n\tsnare ....X.......X..o\n\thihat x.o.x.o.x.o.x.o.\n}",
+        render: ExampleRender::Live,
+        list: None,
+    },
+    SyntaxDoc {
+        id: "clip_drum.probability",
+        title_ja: "ドラムの確率行",
+        title_en: "Drum probability row",
+        desc_ja: &[
+            "ヒット行の直下に、ステップごとの発音確率を書ける（省略可）。",
+            "1〜9 = 10〜90% / . = 100% / 0 = 0%。判定はループごとに行う。",
+        ],
+        desc_en: &[
+            "Right below a hit row you may write per-step trigger chances (optional).",
+            "1-9 = 10-90% / . = 100% / 0 = 0%. Rolled again on every loop.",
+        ],
+        example: "clip drum_prob_demo [bars 1] {\n\tuse tr808\n\tresolution 16\n\tkick  x...x...x...x...\n\thihat x.o.x.o.x.o.x.o.\n\t      ..5...7...3...5.\n}",
+        render: ExampleRender::Live,
+        list: None,
+    },
+    SyntaxDoc {
+        id: "clip_drum.repetition",
+        title_ja: "ドラム行の繰り返し",
+        title_en: "Repetition in drum rows",
+        desc_ja: &[
+            "(パターン)*N でステップの並びを N 回繰り返す。確率行でも使える。",
+            "*N を省いた ( ) は単なるまとまりとして扱われる。",
+        ],
+        desc_en: &[
+            "(pattern)*N repeats a run of steps N times. Works in probability rows too.",
+            "( ) without *N is just a grouping.",
+        ],
+        example: "clip drums_b [bars 1] {\n\tuse tr808\n\tresolution 16\n\tkick  (x...)*4\n\tsnare (....x...)*2\n\thihat (x.o.)*3 xxXx\n}",
+        render: ExampleRender::Live,
+        list: None,
+    },
+];
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::ast::clip_drum::HitSymbol::*;
+
+    /// 構文ドキュメントの例文がパーサで最後まで解析できる
+    /// Every syntax-doc example parses fully.
+    #[test]
+    fn docs_examples_parse() {
+        assert!(!DOCS.is_empty());
+        crate::parser::assert_docs_parse(DOCS);
+    }
 
     // --- find_innermost_paren tests ---
 

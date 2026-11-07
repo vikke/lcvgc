@@ -7,6 +7,7 @@ use nom::{
 };
 
 use crate::ast::clip_cc::*;
+use crate::ast::doc::{ExampleRender, SyntaxDoc};
 use crate::parser::cell_normalize::CellToken;
 use crate::parser::common::{identifier, parse_u32, parse_u8, ws, ws1};
 
@@ -256,11 +257,56 @@ pub fn parse_cc_time(input: &str) -> IResult<&str, CcAutomation> {
 
 /// この構文の説明と例文（文法チュートリアルの素材。`lsp::tutorial` が集める）
 /// Syntax docs for this parser (tutorial material collected by `lsp::tutorial`).
-pub const DOCS: &[crate::ast::doc::SyntaxDoc] = &[];
+pub const DOCS: &[SyntaxDoc] = &[
+    SyntaxDoc {
+        id: "clip_cc.step",
+        title_ja: "CC オートメーション（ステップ方式）",
+        title_en: "CC automation (step mode)",
+        desc_ja: &[
+            "記法: 楽器名.CC名 値 値 ...（値は 0〜127、1 つが 1 ステップ）",
+            "CC 名は instrument の cc 定義の名前。1 ステップは 16 分音符。",
+            ". はその step で送らない。| / >N / (...)*N もドラムと同じく使える。",
+        ],
+        desc_en: &[
+            "Syntax: instrument.cc value value ... (0-127, one value per step)",
+            "The cc name comes from the instrument's cc mapping. One step = a 16th.",
+            ". sends nothing on that step. | / >N / (...)*N work as in drum rows.",
+        ],
+        example: "clip cc_step_demo [bars 1] {\n\tbass c:3:4 eb g c:4\n\tbass.cutoff 30 . . . 60 . . . 90 . . . 127 . . .\n}",
+        render: ExampleRender::Live,
+        list: None,
+    },
+    SyntaxDoc {
+        id: "clip_cc.time",
+        title_ja: "CC オートメーション（時間指定方式）",
+        title_en: "CC automation (time mode)",
+        desc_ja: &[
+            "記法: 楽器名.CC名 値@小節.拍 ...（その時点で値を送る）",
+            "値@小節.拍-値@小節.拍 で 2 点の間を線形補間する。",
+            "- の代わりに -exp を使うと指数カーブで補間する。",
+        ],
+        desc_en: &[
+            "Syntax: instrument.cc value@bar.beat ... (sends the value at that time)",
+            "value@bar.beat-value@bar.beat interpolates linearly between the two.",
+            "Use -exp instead of - for an exponential curve.",
+        ],
+        example: "clip cc_time_demo [bars 4] {\n\tbass c:3:1 eb g c:4\n\tbass.cutoff 0@1.1-127@3.1 64@4.1\n}\n\nclip cc_exp_demo [bars 4] {\n\tbass c:3:1 eb g c:4\n\tbass.cutoff 0@1.1-exp127@4.4\n}",
+        render: ExampleRender::Live,
+        list: None,
+    },
+];
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 構文ドキュメントの例文がパーサで最後まで解析できる
+    /// Every syntax-doc example parses fully.
+    #[test]
+    fn docs_examples_parse() {
+        assert!(!DOCS.is_empty());
+        crate::parser::assert_docs_parse(DOCS);
+    }
 
     /// CC ターゲット `instrument.param` がパースできる
     /// `instrument.param` CC target parses correctly.

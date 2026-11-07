@@ -6,6 +6,7 @@ use nom::{
     IResult,
 };
 
+use crate::ast::doc::{ExampleRender, SyntaxDoc};
 use crate::ast::scene::*;
 #[cfg(test)]
 use crate::ast::tempo::Tempo;
@@ -136,11 +137,86 @@ pub fn parse_scene(input: &str) -> IResult<&str, SceneDef> {
 
 /// この構文の説明と例文（文法チュートリアルの素材。`lsp::tutorial` が集める）
 /// Syntax docs for this parser (tutorial material collected by `lsp::tutorial`).
-pub const DOCS: &[crate::ast::doc::SyntaxDoc] = &[];
+pub const DOCS: &[SyntaxDoc] = &[
+    SyntaxDoc {
+        id: "scene",
+        title_ja: "シーン",
+        title_en: "Scene",
+        desc_ja: &[
+            "同時に鳴らす clip の組み合わせ。1 行に 1 つ clip 名を書く。",
+            "記法: scene 名前 { clip名 ... }",
+        ],
+        desc_en: &[
+            "A set of clips played together. Write one clip name per line.",
+            "Syntax: scene name { clip ... }",
+        ],
+        example: "scene verse {\n\tdrums_a\n\tbass_a\n}",
+        render: ExampleRender::Live,
+        list: None,
+    },
+    SyntaxDoc {
+        id: "scene.random",
+        title_ja: "シーンの確率とシャッフル",
+        title_en: "Scene probability and shuffle",
+        desc_ja: &[
+            "clip 名の後の数字 1〜9 は発音確率（10〜90%）。ループごとに判定する。",
+            "a | b と並べるとループごとにどれか 1 つが選ばれる。",
+            "clip名*N で選ばれやすさ（重み）を付けられる。",
+        ],
+        desc_en: &[
+            "A digit 1-9 after a clip name is its chance to play (10-90%), per loop.",
+            "a | b picks one of the candidates on every loop.",
+            "clip*N gives a candidate a weight.",
+        ],
+        example: "scene verse_random {\n\tdrums_a*3 | drums_b\n\tbass_a 7\n}",
+        render: ExampleRender::Live,
+        list: None,
+    },
+    SyntaxDoc {
+        id: "scene.tempo",
+        title_ja: "シーン内のテンポ変化",
+        title_en: "Tempo change in a scene",
+        desc_ja: &[
+            "tempo +N / -N はループが終わるごとにテンポを足し引きする（累積）。",
+            "tempo N は毎ループ N に戻す。",
+        ],
+        desc_en: &[
+            "tempo +N / -N adds or subtracts at the end of every loop (cumulative).",
+            "tempo N resets to N on every loop.",
+        ],
+        example: "scene buildup {\n\tdrums_a\n\tbass_a\n\ttempo +5\n}",
+        render: ExampleRender::Live,
+        list: None,
+    },
+    SyntaxDoc {
+        id: "scene.mute",
+        title_ja: "シーンの初期ミュート",
+        title_en: "Initially muted clips in a scene",
+        desc_ja: &[
+            "clip 名の前に mute を付けると、ミュートされた状態で開始する。",
+            "後から unmute すれば拍を揃えたまま鳴り始める。",
+        ],
+        desc_en: &[
+            "Prefix a clip name with mute to start it muted.",
+            "Unmute it later and it joins in time with the others.",
+        ],
+        example: "scene intro {\n\tdrums_a\n\tmute bass_a\n}",
+        render: ExampleRender::Live,
+        list: None,
+    },
+];
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 構文ドキュメントの例文がパーサで最後まで解析できる
+    /// Every syntax-doc example parses fully.
+    #[test]
+    fn docs_examples_parse() {
+        assert!(!DOCS.is_empty());
+        crate::parser::assert_docs_parse(DOCS);
+    }
 
     #[test]
     fn test_simple_clip() {
