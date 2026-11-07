@@ -3,6 +3,7 @@ use nom::combinator::opt;
 use nom::IResult;
 
 use crate::ast::clip_note::NoteEvent;
+use crate::ast::doc::{ExampleRender, KeywordList, SyntaxDoc};
 use crate::domain::chord::ChordSuffix;
 use crate::domain::pitch::NoteName;
 use crate::parser::common::{natural_note_name, note_name, parse_u16, parse_u8};
@@ -193,7 +194,60 @@ pub fn parse_note_event(input: &str) -> IResult<&str, NoteEvent> {
 
 /// この構文の説明と例文（文法チュートリアルの素材。`lsp::tutorial` が集める）
 /// Syntax docs for this parser (tutorial material collected by `lsp::tutorial`).
-pub const DOCS: &[crate::ast::doc::SyntaxDoc] = &[];
+pub const DOCS: &[SyntaxDoc] = &[
+    SyntaxDoc {
+        id: "clip_note.single",
+        title_ja: "単音 音名:オクターブ:音価",
+        title_en: "Single note NOTE:OCTAVE:LENGTH",
+        desc_ja: &[
+            "記法: 楽器名 音名:オクターブ:音価 ...（音名は小文字）",
+            "音価: 1=全音符 2=2分 4=4分 8=8分 16=16分。",
+            "シャープは cs（c# も可）、フラットは eb のように書く。",
+        ],
+        desc_en: &[
+            "Syntax: INSTRUMENT NOTE:OCTAVE:LENGTH ... (lowercase note names)",
+            "Length: 1=whole 2=half 4=quarter 8=eighth 16=sixteenth.",
+            "Write sharps as cs (c# also works) and flats as eb.",
+        ],
+        example: "clip note_demo [bars 1] {\n\tbass c:3:4 eb:3:4 fs:3:4 g:3:4\n}",
+        render: ExampleRender::Live,
+        list: Some(KeywordList::NoteNames),
+    },
+    SyntaxDoc {
+        id: "clip_note.rest_dotted",
+        title_ja: "休符と付点",
+        title_en: "Rests and dotted notes",
+        desc_ja: &[
+            "休符: r:音価（例: r:8）。音価を省くと直前の音価を引き継ぐ。",
+            "付点: 音価の後ろに . を付ける（例: c:3:4. は付点 4 分）。",
+        ],
+        desc_en: &[
+            "Rest: r:LENGTH (e.g. r:8). Without a length it carries the previous one.",
+            "Dotted: append . to the length (c:3:4. is a dotted quarter).",
+        ],
+        example: "clip rest_demo [bars 1] {\n\tbass c:3:4. r:8 g:3:4 r:4\n}",
+        render: ExampleRender::Live,
+        list: None,
+    },
+    SyntaxDoc {
+        id: "clip_note.chord_name",
+        title_ja: "コード名 根音+種類:オクターブ:音価",
+        title_en: "Chord name ROOT+TYPE:OCTAVE:LENGTH",
+        desc_ja: &[
+            "記法: 楽器名 根音種類:オクターブ:音価（例: cm7:4:2, gM7:3:2）",
+            "根音の直後に種類を続ける。M7 と Maj7 のように別名もある。",
+            "csus4 は C sus4、cssus4 は C# sus4 と読む。",
+        ],
+        desc_en: &[
+            "Syntax: INSTRUMENT ROOTTYPE:OCTAVE:LENGTH (e.g. cm7:4:2, gM7:3:2)",
+            "The type follows the root directly. Aliases exist (M7 = Maj7).",
+            "csus4 is C sus4; cssus4 is C# sus4.",
+        ],
+        example: "clip chord_demo [bars 1] {\n\tlead cm7:4:2 gM7:3:2\n}",
+        render: ExampleRender::Live,
+        list: Some(KeywordList::ChordSuffixes),
+    },
+];
 
 #[cfg(test)]
 mod tests {
@@ -545,5 +599,13 @@ mod tests {
                 }
             ))
         );
+    }
+
+    /// 構文ドキュメントの例文がパーサで最後まで解析できる
+    /// Every syntax-doc example parses fully.
+    #[test]
+    fn docs_examples_parse() {
+        assert!(!DOCS.is_empty());
+        crate::parser::assert_docs_parse(DOCS);
     }
 }
