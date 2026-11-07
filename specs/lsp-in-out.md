@@ -248,6 +248,7 @@ Returns a list of completion candidates at the cursor position.
 | `lsp.items[].label` | string  | Label string of the completion candidate          |
 | `lsp.items[].detail`| string  | Description of the completion candidate           |
 | `lsp.items[].kind`  | string  | Completion kind (see `CompletionKind`)            |
+| `lsp.items[].sort_text` | string \| omitted | String that sets the candidate order (LSP `sortText`). Omitted when absent. For note and chord candidates inside a clip the order is `0_` (scale notes) → `1_` (diatonic chords) → `2_` (single notes) → `3_` (every root × every chord suffix) |
 
 ---
 

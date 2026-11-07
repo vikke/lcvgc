@@ -389,7 +389,7 @@ clip lead_a [bars 1] [scale d_dorian] {
 }
 ```
 
-If `[scale ...]` is not specified on a clip, the global scale applies. If the global scale is also unset, the LSP provides only generic note name and chord name completions.
+If `[scale ...]` is not specified on a clip, the global scale applies. If the global scale is also unset, the LSP provides only generic note name and chord name (every root × every suffix) completions.
 
 ---
 
@@ -585,7 +585,13 @@ LSP completion behavior:
 - After `scale ` / `[scale ` → every combination of the 17 root notes × 9 scale types: `c_major`, `c_minor`, ... `cs_major`, ... `b_locrian`
   - Typing a root note narrows the candidates to that root (e.g. `cs` → `cs_major`, `cs_minor`, ...)
   - Sharps are offered in the `cs` form (the `c#` form is not offered), so that narrowing works even when the editor's word characters do not include `#`
-- At a chord-writing position inside a clip with a scale specified → all diatonic chords for that scale
+- After the instrument name inside a clip (where notes and chords are written) → candidates in this order
+  1. When a scale is resolved: the 7 notes of that scale
+  2. When a scale is resolved: the 7 diatonic chords of that scale (major chords carry `M`, as in `cM`, because without it the token is a single note)
+  3. When no scale is resolved: the 17 single notes (`c`, `cs`, `db`, ...)
+  4. Always: 17 roots × every chord suffix spelling (24 spellings including aliases) = 408 candidates (e.g. `csus4`, `cdim`, `cadd9`, `csm7`, `cMaj7`). Chords already offered as diatonic chords are not repeated
+  - Sharps are offered in the `cs` form. Typing `cs` leaves the C# chords (`csm7`, `csM7`, ...) plus `csus2` / `csus4` (C sus); typing `css` leaves only `cssus2` / `cssus4`
+  - `csus4` is read as C sus4, and `cssus4` as C# sus4
 - When there is a preceding chord → next chord candidates based on the progression table (with degree information)
 
 Supported scale types:
@@ -599,7 +605,7 @@ Supported scale types:
 | dorian | cm7, dm7, ebM7, f7, gm7, am7b5, bbM7 |
 | mixolydian | c7, dm7, em7b5, fM7, gm7, am7, bbM7 |
 
-The `[scale ...]` on a clip is optional. If omitted, the global `scale` setting (see Section 4.1) applies. If the global scale is also unset, the LSP provides only generic note name and chord name completions.
+The `[scale ...]` on a clip is optional. If omitted, the global `scale` setting (see Section 4.1) applies. If the global scale is also unset, the LSP provides only generic note name and chord name (every root × every suffix) completions.
 
 ### 7.4 Octave Shift (`[>>]` / `[<<]`)
 
