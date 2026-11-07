@@ -8,6 +8,7 @@ use std::path::Path;
 use super::diatonic;
 use crate::ast::instrument::InstrumentDef;
 use crate::ast::scale::ScaleType;
+use crate::domain::chord::ChordSuffix;
 use crate::domain::pitch::NoteName;
 
 /// 補完候補アイテム
@@ -33,9 +34,9 @@ pub struct CompletionItem {
 pub enum CompletionKind {
     /// キーワード（device, instrument, tempo 等）
     Keyword,
-    /// ノート名（c, c#, d 等）
+    /// ノート名（c, cs, d 等）
     NoteName,
-    /// コード名（ダイアトニックコード）
+    /// コード名（ダイアトニックコード、根音 × 全種類のコード）
     ChordName,
     /// CCエイリアス名
     CcAlias,
@@ -47,62 +48,6 @@ pub enum CompletionKind {
 ///
 /// 各コンテキストに応じた補完候補リストを生成する静的メソッド群。
 pub struct CompletionProvider;
-
-/// `NoteName` を DSL で使う小文字表記 (c, c#, eb, ...) に変換する
-///
-/// note 補完候補の `label` は DSL 入力に直接使われるため、
-/// シャープ/フラット表記もそのまま小文字で返す。
-fn note_name_lowercase(note: NoteName) -> &'static str {
-    match note {
-        NoteName::C => "c",
-        NoteName::Cs => "c#",
-        NoteName::Db => "db",
-        NoteName::D => "d",
-        NoteName::Ds => "d#",
-        NoteName::Eb => "eb",
-        NoteName::E => "e",
-        NoteName::F => "f",
-        NoteName::Fs => "f#",
-        NoteName::Gb => "gb",
-        NoteName::G => "g",
-        NoteName::Gs => "g#",
-        NoteName::Ab => "ab",
-        NoteName::A => "a",
-        NoteName::As => "a#",
-        NoteName::Bb => "bb",
-        NoteName::B => "b",
-    }
-}
-
-/// scale 構成音補完の `detail` 用にルート音表記を返す
-fn scale_root_label(note: NoteName) -> &'static str {
-    note_name_lowercase(note)
-}
-
-/// 半音数 (0..12) を補完ラベルに変換する。`prefer_flat=true` で
-/// シャープではなくフラット表記 (eb, ab, bb 等) を採用する。
-fn semitone_to_label(semitone: u8, prefer_flat: bool) -> &'static str {
-    match (semitone % 12, prefer_flat) {
-        (0, _) => "c",
-        (1, false) => "c#",
-        (1, true) => "db",
-        (2, _) => "d",
-        (3, false) => "d#",
-        (3, true) => "eb",
-        (4, _) => "e",
-        (5, _) => "f",
-        (6, false) => "f#",
-        (6, true) => "gb",
-        (7, _) => "g",
-        (8, false) => "g#",
-        (8, true) => "ab",
-        (9, _) => "a",
-        (10, false) => "a#",
-        (10, true) => "bb",
-        (11, _) => "b",
-        _ => unreachable!(),
-    }
-}
 
 // `scale_prefers_flat` は `diatonic::scale_prefers_flat` に統合済 (pub).
 // scale 構成音補完とダイアトニックコード補完で同じ選好を共有する。
@@ -145,6 +90,39 @@ fn scale_type_japanese_name(scale_type: ScaleType) -> &'static str {
     }
 }
 
+/// コードサフィックスの日本語表示名を返す（コード名補完の `detail` 用）
+/// Returns the Japanese display name of a chord suffix (for chord completion `detail`).
+///
+/// # Arguments
+/// * `suffix` - コードサフィックス / Chord suffix
+///
+/// # Returns
+/// 日本語の種別名（例: `マイナーセブンス`） / Japanese quality name (e.g. `マイナーセブンス`)
+fn chord_suffix_japanese_name(suffix: ChordSuffix) -> &'static str {
+    match suffix {
+        ChordSuffix::Maj => "メジャー",
+        ChordSuffix::Maj7 => "メジャーセブンス",
+        ChordSuffix::Min => "マイナー",
+        ChordSuffix::Min7 => "マイナーセブンス",
+        ChordSuffix::Dom7 => "ドミナントセブンス",
+        ChordSuffix::Dim => "ディミニッシュ",
+        ChordSuffix::Dim7 => "ディミニッシュセブンス",
+        ChordSuffix::Aug => "オーギュメント",
+        ChordSuffix::AugMaj7 => "オーギュメントメジャーセブンス",
+        ChordSuffix::Min7b5 => "マイナーセブンフラットファイブ",
+        ChordSuffix::MinMaj7 => "マイナーメジャーセブンス",
+        ChordSuffix::Sus4 => "サスフォー",
+        ChordSuffix::Sus2 => "サスツー",
+        ChordSuffix::Sixth => "シックスス",
+        ChordSuffix::Min6 => "マイナーシックスス",
+        ChordSuffix::Ninth => "ナインス",
+        ChordSuffix::Min9 => "マイナーナインス",
+        ChordSuffix::Add9 => "アドナインス",
+        ChordSuffix::Thirteenth => "サーティーンス",
+        ChordSuffix::Min13 => "マイナーサーティーンス",
+    }
+}
+
 impl CompletionProvider {
     /// トップレベルのブロックキーワード補完候補を返す
     ///
@@ -181,21 +159,70 @@ impl CompletionProvider {
 
     /// ノート名の補完候補を返す
     ///
+    /// シャープは `cs` のような `s` 形式で出す（nvim の標準 `iskeyword` が `#` を含まないため）。
+    /// sort_text は `2_<index>` で、scale 構成音 (`0_`)・ダイアトニック (`1_`) の下、
+    /// 根音 × 全種類のコード名 (`3_`) の上に並ぶ。
+    ///
+    /// Returns note-name completions. Sharps use the `s` form (e.g. `cs`).
+    /// sort_text is `2_<index>`: below scale notes (`0_`) / diatonic (`1_`),
+    /// above all chord names (`3_`).
+    ///
     /// # Returns
     /// 半音階のノート名一覧（シャープ・フラット含む17種）
     pub fn note_completions() -> Vec<CompletionItem> {
-        [
-            "c", "c#", "db", "d", "d#", "eb", "e", "f", "f#", "gb", "g", "g#", "ab", "a", "a#",
-            "bb", "b",
-        ]
-        .iter()
-        .map(|n| CompletionItem {
-            label: n.to_string(),
-            detail: None,
-            kind: CompletionKind::NoteName,
-            sort_text: None,
-        })
-        .collect()
+        NoteName::ALL
+            .iter()
+            .enumerate()
+            .map(|(i, n)| CompletionItem {
+                label: n.keyword().to_string(),
+                detail: None,
+                kind: CompletionKind::NoteName,
+                sort_text: Some(format!("2_{i:02}")),
+            })
+            .collect()
+    }
+
+    /// 「根音 × 全種類」のコード名補完候補を返す
+    ///
+    /// 17 音名 × `ChordSuffix` の全表記（20 種 + 別名 4 = 24 表記）から
+    /// `<root><suffix>`（例: `csm7`, `cssus4`, `cMaj7`）を総当たりで生成する。
+    /// シャープは `s` 形式。`csus4` は C sus4、`cssus4` は C# sus4 とパースされる。
+    ///
+    /// Returns chord-name completions for every root × every suffix spelling
+    /// (17 roots × 24 spellings). Sharps use the `s` form; `csus4` parses as
+    /// C sus4 and `cssus4` as C# sus4.
+    ///
+    /// # Returns
+    /// 408 件の補完候補。`detail` は「根音 + 日本語種別名」（例: `C# マイナーセブンス`）、
+    /// `sort_text` は `3_<根音>_<種別>_<表記>` で根音順 → 種別順 → 表記順。
+    /// 408 candidates. `detail` is "root + Japanese quality name";
+    /// `sort_text` is `3_<root>_<suffix>_<spelling>`.
+    pub fn chord_completions() -> Vec<CompletionItem> {
+        NoteName::ALL
+            .iter()
+            .enumerate()
+            .flat_map(|(ri, root)| {
+                ChordSuffix::ALL
+                    .iter()
+                    .enumerate()
+                    .flat_map(move |(si, suffix)| {
+                        suffix
+                            .spellings()
+                            .iter()
+                            .enumerate()
+                            .map(move |(pi, spelling)| CompletionItem {
+                                label: format!("{}{}", root.keyword(), spelling),
+                                detail: Some(format!(
+                                    "{} {}",
+                                    note_display_label(*root),
+                                    chord_suffix_japanese_name(*suffix)
+                                )),
+                                kind: CompletionKind::ChordName,
+                                sort_text: Some(format!("3_{ri:02}_{si:02}_{pi}")),
+                            })
+                    })
+            })
+            .collect()
     }
 
     /// 標準MIDIコントロールチェンジの補完候補を返す
@@ -273,15 +300,17 @@ impl CompletionProvider {
     /// * `scale_type` - スケールタイプ（Major, Minor 等）
     ///
     /// # Returns
-    /// ダイアトニックコードの補完候補リスト（7個）
+    /// ダイアトニックコードの補完候補リスト（7個）。sort_text は `1_<index>`
+    /// （scale 構成音 `0_` の次に並ぶ）。
     pub fn diatonic_completions(root: NoteName, scale_type: ScaleType) -> Vec<CompletionItem> {
         diatonic::diatonic_chords(root, scale_type)
             .into_iter()
-            .map(|chord| CompletionItem {
+            .enumerate()
+            .map(|(i, chord)| CompletionItem {
                 label: chord.label,
                 detail: Some(chord.detail),
                 kind: CompletionKind::ChordName,
-                sort_text: None,
+                sort_text: Some(format!("1_{i}")),
             })
             .collect()
     }
@@ -564,12 +593,12 @@ impl CompletionProvider {
     ///
     /// `[scale c_major]` のように clip ローカル / トップレベルのスケールが
     /// 解決されたときに、ノート補完で構成音を最上位に並べるためのヘルパ。
-    /// sortText は `"0_<index>"` 形式で、半音階17音 (`"9_..."`) より上に来る。
+    /// sortText は `"0_<index>"` 形式で、半音階17音 (`"2_..."`) より上に来る。
     ///
     /// Helper that lifts in-scale notes to the top of pitched-clip completions
     /// when a scale (clip-local or top-level) is resolved. Each item carries a
     /// `sort_text` like `"0_<index>"` so they precede the chromatic 17-note
-    /// fallback (which uses `"9_..."`).
+    /// fallback (which uses `"2_..."`). Sharps use the `s` form (e.g. `fs`).
     ///
     /// # Arguments
     /// * `root` - スケールのルート音 / Scale root note
@@ -582,7 +611,7 @@ impl CompletionProvider {
         let root_semi = diatonic::note_to_semitone(root);
         let detail = format!(
             "in-scale note ({} {})",
-            scale_root_label(root),
+            root.keyword(),
             scale_type.keyword()
         );
         let prefer_flat = diatonic::scale_prefers_flat(scale_type);
@@ -592,7 +621,9 @@ impl CompletionProvider {
             .map(|(i, semi)| {
                 let semitone = (root_semi + *semi) % 12;
                 CompletionItem {
-                    label: semitone_to_label(semitone, prefer_flat).to_string(),
+                    label: diatonic::semitone_to_dsl_note(semitone, prefer_flat)
+                        .keyword()
+                        .to_string(),
                     detail: Some(detail.clone()),
                     kind: CompletionKind::NoteName,
                     sort_text: Some(format!("0_{i}")),
@@ -650,8 +681,11 @@ impl CompletionProvider {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ast::clip_note::NoteEvent;
     use crate::ast::instrument::CcMapping;
     use crate::domain::channel::MidiChannel;
+    use crate::domain::chord::ChordSuffix;
+    use crate::parser::clip_note::parse_note_event;
 
     #[test]
     fn test_keyword_completions_count() {
@@ -726,7 +760,32 @@ mod tests {
     #[test]
     fn test_note_completions_contains_sharp() {
         let items = CompletionProvider::note_completions();
-        assert!(items.iter().any(|i| i.label == "c#"));
+        assert!(items.iter().any(|i| i.label == "cs"));
+    }
+
+    /// 単音補完のラベルは `s` 形式（`NoteName::ALL` の keyword と同順）で、`#` を含まない。
+    /// Single-note labels use the `s` form in `NoteName::ALL` order and never contain `#`.
+    #[test]
+    fn note_completions_labels_use_s_form() {
+        let labels: Vec<String> = CompletionProvider::note_completions()
+            .into_iter()
+            .map(|i| i.label)
+            .collect();
+        let expected: Vec<String> = NoteName::ALL
+            .iter()
+            .map(|n| n.keyword().to_string())
+            .collect();
+        assert_eq!(labels, expected);
+    }
+
+    /// 単音補完の sort_text は `2_` 始まり（構成音・ダイアトニックより下、全コードより上）。
+    /// Single-note sort_text starts with `2_` (below scale notes/diatonic, above all chords).
+    #[test]
+    fn note_completions_sort_text_prefixed_2() {
+        for item in CompletionProvider::note_completions() {
+            let st = item.sort_text.as_deref().expect("sort_text must be set");
+            assert!(st.starts_with("2_"), "unexpected sort_text {st}");
+        }
     }
 
     #[test]
@@ -792,24 +851,60 @@ mod tests {
         assert_eq!(items.len(), 7);
     }
 
-    /// ダイアトニックコード補完の label は DSL に直挿し可能な小文字表記。
-    /// d minor は flat 選好で `bb` を含み、大文字や `A#` は決して含まない。
-    /// Diatonic completion labels are lowercase DSL-insertable strings.
-    /// d minor prefers flats (`bb`) and never emits uppercase or `A#`.
+    /// ダイアトニックコード補完の label は DSL に直挿し可能な表記。
+    /// 根音は小文字（d minor は flat 選好で `bb`）で、`A#` は決して含まない。
+    /// メジャーコードはサフィックス `M` 付き（大文字はサフィックス部分のみ）。
+    /// Diatonic completion labels are DSL-insertable strings: the root is lowercase
+    /// (d minor prefers flats, `bb`), never `A#`; major chords carry the `M` suffix.
     #[test]
     fn diatonic_completions_d_minor_labels_are_dsl_insertable() {
         let items = CompletionProvider::diatonic_completions(NoteName::D, ScaleType::Minor);
         let labels: Vec<&str> = items.iter().map(|i| i.label.as_str()).collect();
-        assert_eq!(labels, vec!["dm", "edim", "f", "gm", "am", "bb", "c"]);
+        assert_eq!(labels, vec!["dm", "edim", "fM", "gm", "am", "bbM", "cM"]);
         for label in &labels {
+            let root: String = label
+                .chars()
+                .take_while(|c| c.is_ascii_lowercase())
+                .collect();
             assert!(
-                label.chars().all(|c| !c.is_ascii_uppercase()),
-                "label `{label}` must be lowercase"
+                !root.is_empty(),
+                "label `{label}` must start with a lowercase root"
             );
+            assert!(!label.contains('#'), "label `{label}` must not contain `#`");
             assert_ne!(
                 *label, "A#",
                 "A# must never appear as a chord completion label"
             );
+        }
+    }
+
+    /// ダイアトニックコード補完の sort_text は `1_<index>`（構成音の次）。
+    /// Diatonic sort_text is `1_<index>` (right after the scale notes).
+    #[test]
+    fn diatonic_completions_sort_text_prefixed_1() {
+        let items = CompletionProvider::diatonic_completions(NoteName::C, ScaleType::Major);
+        let sts: Vec<&str> = items
+            .iter()
+            .map(|i| i.sort_text.as_deref().expect("sort_text must be set"))
+            .collect();
+        assert_eq!(sts, vec!["1_0", "1_1", "1_2", "1_3", "1_4", "1_5", "1_6"]);
+    }
+
+    /// 全ルート × 全スケールのダイアトニックコードのラベルが、単音ではなくコード名としてパースできる。
+    /// Every diatonic label (all roots × all scales) parses as a chord name, not a single note.
+    #[test]
+    fn diatonic_completions_labels_parse_as_chords() {
+        for root in NoteName::ALL {
+            for st in ScaleType::ALL {
+                for item in CompletionProvider::diatonic_completions(root, st) {
+                    let parsed = parse_note_event(&item.label);
+                    assert!(
+                        matches!(parsed, Ok(("", NoteEvent::ChordName { .. }))),
+                        "`{}` must parse as a chord name, got {parsed:?}",
+                        item.label
+                    );
+                }
+            }
         }
     }
 
@@ -836,6 +931,113 @@ mod tests {
         let items = CompletionProvider::scale_note_completions(NoteName::C, ScaleType::Minor);
         let labels: Vec<&str> = items.iter().map(|i| i.label.as_str()).collect();
         assert_eq!(labels, vec!["c", "d", "eb", "f", "g", "ab", "bb"]);
+    }
+
+    /// scale 構成音補完: シャープは `s` 形式で出す（e major → fs, gs, cs, ds）
+    /// In-scale note labels use the `s`-form sharps (e major → fs, gs, cs, ds).
+    #[test]
+    fn scale_note_completions_e_major_uses_s_form() {
+        let items = CompletionProvider::scale_note_completions(NoteName::E, ScaleType::Major);
+        let labels: Vec<&str> = items.iter().map(|i| i.label.as_str()).collect();
+        assert_eq!(labels, vec!["e", "fs", "gs", "a", "b", "cs", "ds"]);
+    }
+
+    /// コード名補完: 17 音 × 24 表記（20 種 + 別名 4）= 408 件
+    /// Chord-name completions: 17 roots × 24 spellings (20 suffixes + 4 aliases) = 408.
+    #[test]
+    fn chord_completions_is_full_cartesian_product() {
+        assert_eq!(CompletionProvider::chord_completions().len(), 17 * 24);
+    }
+
+    /// コード名補完: すべて ChordName 種別で、`#` 形式の根音（`c#` 等）は出さない。
+    /// Chord-name completions are all ChordName and never use `#`-form roots.
+    #[test]
+    fn chord_completions_kind_and_s_form_roots() {
+        for item in CompletionProvider::chord_completions() {
+            assert_eq!(item.kind, CompletionKind::ChordName);
+            assert!(
+                !item.label[..2].contains('#'),
+                "root must use the `s` form: {}",
+                item.label
+            );
+        }
+    }
+
+    /// コード名補完: 全ラベルがパーサで元の (根音, サフィックス) に戻る。
+    /// `csus4` は C sus4、`cssus4` は C# sus4 になることもここで保証される。
+    /// Every label round-trips through the parser to its (root, suffix).
+    /// This also guarantees `csus4` = C sus4 and `cssus4` = C# sus4.
+    #[test]
+    fn chord_completions_round_trip_through_parser() {
+        let items = CompletionProvider::chord_completions();
+        let mut i = 0;
+        for root in NoteName::ALL {
+            for suffix in ChordSuffix::ALL {
+                for _ in suffix.spellings() {
+                    let label = &items[i].label;
+                    match parse_note_event(label) {
+                        Ok((
+                            "",
+                            NoteEvent::ChordName {
+                                root: r, suffix: s, ..
+                            },
+                        )) => {
+                            assert_eq!((r, s), (root, suffix), "label `{label}`");
+                        }
+                        other => panic!("`{label}` did not parse as a chord: {other:?}"),
+                    }
+                    i += 1;
+                }
+            }
+        }
+    }
+
+    /// コード名補完: Issue #111 の例が候補に含まれる。
+    /// Chord-name completions include the examples from Issue #111.
+    #[test]
+    fn chord_completions_contains_issue_examples() {
+        let items = CompletionProvider::chord_completions();
+        let labels: std::collections::HashSet<&str> =
+            items.iter().map(|i| i.label.as_str()).collect();
+        for l in [
+            "csus4", "cdim", "cadd9", "csm7", "csM7", "csus2", "cssus2", "cssus4", "cMaj7",
+            "cmMaj7", "cM7#5", "cMaj7#5",
+        ] {
+            assert!(labels.contains(l), "missing `{l}`");
+        }
+    }
+
+    /// コード名補完: detail は「表示用根音 + 日本語種別名」。
+    /// Chord-name detail is "display root + Japanese quality name".
+    #[test]
+    fn chord_completions_detail_is_japanese_name() {
+        let items = CompletionProvider::chord_completions();
+        let find = |l: &str| {
+            items
+                .iter()
+                .find(|i| i.label == l)
+                .and_then(|i| i.detail.clone())
+        };
+        assert_eq!(find("csm7").as_deref(), Some("C# マイナーセブンス"));
+        assert_eq!(find("csus4").as_deref(), Some("C サスフォー"));
+        assert_eq!(find("cMaj").as_deref(), Some("C メジャー"));
+    }
+
+    /// コード名補完: sort_text は `3_` 始まりで、根音順 → 種別順 → 表記順に並ぶ。
+    /// Chord-name sort_text starts with `3_` and orders by root, suffix, then spelling.
+    #[test]
+    fn chord_completions_sort_text_orders_root_suffix_spelling() {
+        let items = CompletionProvider::chord_completions();
+        let sts: Vec<&str> = items
+            .iter()
+            .map(|i| i.sort_text.as_deref().expect("sort_text must be set"))
+            .collect();
+        assert!(sts.iter().all(|s| s.starts_with("3_")));
+        let mut sorted = sts.clone();
+        sorted.sort();
+        assert_eq!(sts, sorted, "items must already be in sort_text order");
+        assert_eq!(items[0].label, "cM");
+        assert_eq!(items[1].label, "cMaj");
     }
 
     /// scale 構成音補完: sortText が "0_<index>" 形式で先頭ソート用

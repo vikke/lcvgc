@@ -20,8 +20,8 @@ pub struct DiatonicChord {
     /// コードのルート音
     /// Root note of the chord
     pub root: NoteName,
-    /// コードのクオリティ（"", "m", "dim", "aug"）
-    /// Chord quality ("", "m", "dim", "aug")
+    /// コードのクオリティ（"M", "m", "dim", "aug"）。DSL のサフィックス表記そのもの。
+    /// Chord quality ("M", "m", "dim", "aug"); the DSL suffix spelling itself.
     pub quality: &'static str,
     /// 表示用ラベル（例: "Dm"）
     /// Display label (e.g., "Dm")
@@ -86,32 +86,29 @@ pub fn semitone_to_note(semitone: u8) -> NoteName {
     }
 }
 
-/// 半音数 (0..12) を DSL に直挿し可能な小文字音名に変換する。
-/// `prefer_flat=true` でフラット系 (eb, ab, bb, gb, db)、
-/// false でシャープ系 (c#, d#, f#, g#, a#) を返す。
+/// 半音数 (0..12) を、DSL 表記に使う `NoteName` に変換する。
+/// `prefer_flat=true` でフラット系 (Eb, Ab, Bb, Gb, Db)、
+/// false でシャープ系 (Cs, Ds, Fs, Gs, As) を返す。
+/// ラベル化は `NoteName::keyword()` で行う（シャープは `cs` のような `s` 形式）。
 ///
-/// Converts a semitone (0..12) to a lowercase DSL-insertable note name.
-/// `prefer_flat = true` selects flat spelling, otherwise sharp spelling.
-fn semitone_to_dsl_label(semitone: u8, prefer_flat: bool) -> &'static str {
+/// Converts a semitone (0..12) to the `NoteName` used for DSL spelling.
+/// `prefer_flat = true` selects flats, otherwise sharps. Render the label with
+/// `NoteName::keyword()` (sharps use the `s` form such as `cs`).
+///
+/// # Arguments
+/// * `semitone` - 半音数（12 以上は 12 で割った余りを使う） / Semitone (taken modulo 12)
+/// * `prefer_flat` - フラット表記を優先するか / Whether to prefer flat spelling
+///
+/// # Returns
+/// 対応する音名 / The corresponding note name
+pub fn semitone_to_dsl_note(semitone: u8, prefer_flat: bool) -> NoteName {
     match (semitone % 12, prefer_flat) {
-        (0, _) => "c",
-        (1, false) => "c#",
-        (1, true) => "db",
-        (2, _) => "d",
-        (3, false) => "d#",
-        (3, true) => "eb",
-        (4, _) => "e",
-        (5, _) => "f",
-        (6, false) => "f#",
-        (6, true) => "gb",
-        (7, _) => "g",
-        (8, false) => "g#",
-        (8, true) => "ab",
-        (9, _) => "a",
-        (10, false) => "a#",
-        (10, true) => "bb",
-        (11, _) => "b",
-        _ => unreachable!(),
+        (1, true) => NoteName::Db,
+        (3, true) => NoteName::Eb,
+        (6, true) => NoteName::Gb,
+        (8, true) => NoteName::Ab,
+        (10, true) => NoteName::Bb,
+        (semi, _) => semitone_to_note(semi),
     }
 }
 
@@ -139,7 +136,7 @@ pub fn scale_prefers_flat(scale_type: ScaleType) -> bool {
 /// Converts a chord quality symbol to its English name
 fn quality_name(quality: &str) -> &str {
     match quality {
-        "" => "major",
+        "M" => "major",
         "m" => "minor",
         "dim" => "diminished",
         "aug" => "augmented",
@@ -173,16 +170,18 @@ pub fn diatonic_chords(root: NoteName, scale_type: ScaleType) -> Vec<DiatonicCho
             let interval_3_5 = (fifth + 12 - third) % 12;
 
             let quality: &'static str = match (interval_1_3, interval_3_5) {
-                (4, 3) => "",
+                // メジャーは `M` を付ける（付けないと単音としてパースされる）
+                // Major carries `M` (otherwise it would parse as a single note)
+                (4, 3) => "M",
                 (3, 4) => "m",
                 (3, 3) => "dim",
                 (4, 4) => "aug",
-                _ => "",
+                _ => "M",
             };
 
             let chord_root_semi = (root_semi + first) % 12;
             let chord_root = semitone_to_note(chord_root_semi);
-            let display = semitone_to_dsl_label(chord_root_semi, prefer_flat);
+            let display = semitone_to_dsl_note(chord_root_semi, prefer_flat).keyword();
 
             DiatonicChord {
                 degree: (i + 1) as u8,
@@ -253,61 +252,63 @@ mod tests {
     /// c major のダイアトニックコード label は DSL に直挿し可能な
     /// 小文字表記 (`c, dm, em, f, g, am, bdim`) を返す。
     /// major 系は sharp 選好だが、c major はそもそも臨時記号を含まない。
+    /// メジャーコードは単音と区別するため `M` を付ける。
     /// c major diatonic chord labels are lowercase and directly usable in DSL
-    /// (`c, dm, em, f, g, am, bdim`).
+    /// (`cM, dm, em, fM, gM, am, bdim`). Major chords carry `M` so they are not
+    /// parsed as single notes.
     #[test]
     fn test_c_major_diatonic_labels_lowercase() {
         let labels: Vec<String> = diatonic_chords(NoteName::C, ScaleType::Major)
             .into_iter()
             .map(|c| c.label)
             .collect();
-        assert_eq!(labels, vec!["c", "dm", "em", "f", "g", "am", "bdim"]);
+        assert_eq!(labels, vec!["cM", "dm", "em", "fM", "gM", "am", "bdim"]);
     }
 
     /// c major 1度のメタ情報も維持する (quality / degree)。
     #[test]
     fn test_c_major_first_chord_meta() {
         let chords = diatonic_chords(NoteName::C, ScaleType::Major);
-        assert_eq!(chords[0].label, "c");
-        assert_eq!(chords[0].quality, "");
+        assert_eq!(chords[0].label, "cM");
+        assert_eq!(chords[0].quality, "M");
         assert_eq!(chords[0].degree, 1);
     }
 
     /// d minor は minor 系のため flat 選好。
-    /// 期待: `dm, edim, f, gm, am, bb, c`。
+    /// 期待: `dm, edim, fM, gm, am, bbM, cM`。
     /// パーサが受理する小文字 + flat 表記であることが本修正の主眼。
     /// d minor is in the minor family, so flats are preferred:
-    /// `dm, edim, f, gm, am, bb, c`.
+    /// `dm, edim, fM, gm, am, bbM, cM`.
     #[test]
     fn test_d_minor_diatonic_labels_lowercase_with_flat() {
         let labels: Vec<String> = diatonic_chords(NoteName::D, ScaleType::Minor)
             .into_iter()
             .map(|c| c.label)
             .collect();
-        assert_eq!(labels, vec!["dm", "edim", "f", "gm", "am", "bb", "c"]);
+        assert_eq!(labels, vec!["dm", "edim", "fM", "gm", "am", "bbM", "cM"]);
     }
 
     /// a minor は flat/sharp が出ない自然マイナーだが、minor 系として
-    /// flat 選好の経路を通っても結果は同じ (`am, bdim, c, dm, em, f, g`)。
+    /// flat 選好の経路を通っても結果は同じ (`am, bdim, cM, dm, em, fM, gM`)。
     #[test]
     fn test_a_minor_diatonic_labels_lowercase() {
         let labels: Vec<String> = diatonic_chords(NoteName::A, ScaleType::Minor)
             .into_iter()
             .map(|c| c.label)
             .collect();
-        assert_eq!(labels, vec!["am", "bdim", "c", "dm", "em", "f", "g"]);
+        assert_eq!(labels, vec!["am", "bdim", "cM", "dm", "em", "fM", "gM"]);
     }
 
-    /// e major (sharp 選好) の 4 度は `a`、5 度は `b` で sharp は出ないが、
-    /// 1 度は `e`、2 度は `f#m` (= sharp 表記) になる。
-    /// Confirms major-family scales use sharp spelling for accidentals.
+    /// e major (sharp 選好) の 4 度は `aM`、5 度は `bM` で sharp は出ないが、
+    /// 2 度は `fsm` (= `s` 形式のシャープ表記) になる。
+    /// Confirms major-family scales use the `s`-form sharp spelling for accidentals.
     #[test]
     fn test_e_major_diatonic_uses_sharp() {
         let labels: Vec<String> = diatonic_chords(NoteName::E, ScaleType::Major)
             .into_iter()
             .map(|c| c.label)
             .collect();
-        assert_eq!(labels, vec!["e", "f#m", "g#m", "a", "b", "c#m", "d#dim"]);
+        assert_eq!(labels, vec!["eM", "fsm", "gsm", "aM", "bM", "csm", "dsdim"]);
     }
 
     #[test]
