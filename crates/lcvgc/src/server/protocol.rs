@@ -114,6 +114,20 @@ pub enum Request {
     /// returns success even if not currently subscribed.
     #[serde(rename = "unsubscribe_midi_in")]
     UnsubscribeMidiIn,
+    /// 文法チュートリアル取得リクエスト。
+    ///
+    /// 各パーサの構文ドキュメントから組み立てたチュートリアル本文（`.cvg` テキスト）を返す。
+    /// 例文はパーサで検証済みで、本文はそのまま有効な DSL になる。
+    ///
+    /// Requests the grammar tutorial rendered from each parser's syntax docs
+    /// (a `.cvg` text). Examples are parser-checked, so the text is valid DSL.
+    #[serde(rename = "tutorial")]
+    Tutorial {
+        /// 言語コード。`ja` で始まれば日本語、それ以外・省略時は英語
+        /// Language code: Japanese if it starts with `ja`, otherwise (or omitted) English
+        #[serde(default)]
+        lang: Option<String>,
+    },
 }
 
 /// サーバーからクライアントへ非同期にプッシュするイベント電文。
@@ -276,6 +290,12 @@ pub enum LspResult {
     DocumentSymbols {
         /// シンボル一覧 / List of symbols
         items: Vec<LspSymbolItem>,
+    },
+    /// 文法チュートリアル結果 / Grammar tutorial result
+    #[serde(rename = "tutorial")]
+    Tutorial {
+        /// チュートリアル本文（`.cvg` テキスト）/ Tutorial text (a `.cvg` text)
+        text: String,
     },
 }
 
@@ -721,5 +741,33 @@ mod tests {
         assert_eq!(port_list.len(), 1);
         assert_eq!(port_list[0].name, "Test:0");
         assert_eq!(port_list[0].direction, "out");
+    }
+
+    #[test]
+    fn deserialize_tutorial_request_with_lang() {
+        let json = r#"{"type":"tutorial","lang":"ja"}"#;
+        let req: Request = serde_json::from_str(json).unwrap();
+        match req {
+            Request::Tutorial { lang } => assert_eq!(lang.as_deref(), Some("ja")),
+            _ => panic!("Expected Tutorial"),
+        }
+    }
+
+    #[test]
+    fn deserialize_tutorial_request_without_lang() {
+        let json = r#"{"type":"tutorial"}"#;
+        let req: Request = serde_json::from_str(json).unwrap();
+        assert!(matches!(req, Request::Tutorial { lang: None }));
+    }
+
+    #[test]
+    fn serialize_tutorial_response() {
+        let resp = Response::lsp(LspResult::Tutorial {
+            text: "tempo 120\n".into(),
+        });
+        let json = serde_json::to_string(&resp).unwrap();
+        assert!(json.contains("\"success\":true"));
+        assert!(json.contains("\"type\":\"tutorial\""));
+        assert!(json.contains("\"text\":\"tempo 120\\n\""));
     }
 }

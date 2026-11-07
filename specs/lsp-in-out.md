@@ -584,6 +584,44 @@ DSL pitch token and reported one at a time.
 
 ---
 
+### 4.13 tutorial (Get the Grammar Tutorial)
+
+Returns the grammar tutorial text. The text lists the syntax docs (descriptions and examples) owned by each parser
+in learning order: descriptions are emitted as `//` comments and examples as code. Every example is verified by tests
+to parse with the parser, so the text is a valid `.cvg` file as-is (examples of `include` and playback control are
+emitted commented out). Clients use it, for example, as the content inserted into an empty `.cvg` file.
+
+#### Request
+
+```json
+{"type": "tutorial", "lang": "ja"}
+```
+
+| Field   | Type            | Description                                                                 |
+|---------|-----------------|-----------------------------------------------------------------------------|
+| `type`  | string          | Fixed value `"tutorial"`                                                    |
+| `lang`  | string \| null  | Language code: Japanese if it starts with `ja`, otherwise or when omitted English (optional) |
+
+#### Response
+
+```json
+{
+  "success": true,
+  "lsp": {
+    "type": "tutorial",
+    "text": "// ============================================================\n// lcvgc DSL tutorial\n..."
+  }
+}
+```
+
+| Field       | Type    | Description                                        |
+|-------------|---------|----------------------------------------------------|
+| `success`   | boolean | Success flag                                       |
+| `lsp.type`  | string  | Fixed value `"tutorial"`                           |
+| `lsp.text`  | string  | Tutorial text (a `.cvg` text, ending with a newline) |
+
+---
+
 ## 5. CompletionKind Values
 
 String values representing the kind of a completion candidate.
