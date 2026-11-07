@@ -156,6 +156,8 @@ A `device` block accepts the following options:
 
 `port` and `transport` may appear in any order, each at most once.
 
+The `port` value is taken verbatim up to the end of the line or `}`, so a trailing `//` comment on a `port` line becomes part of the port name. Put comments on a separate line.
+
 ```
 device mb {
   port Mutant Brain
@@ -382,7 +384,7 @@ scale c_minor
 
 clip bass_a [bars 1] {
   // The global scale (c_minor) applies
-  bass c:3:8 d eb f::4 g::2
+  bass c:3:8 eb f::4 g::2
 }
 
 clip lead_a [bars 1] [scale d_dorian] {
@@ -454,10 +456,12 @@ var ch = 1
 
 instrument bass {
   var ch = 3                    // Different value inside the block
+  device mutant_brain
   channel ch                    // → 3
 }
 
 instrument lead {
+  device mutant_brain
   channel ch                    // → 1 (global)
 }
 ```
@@ -482,13 +486,16 @@ Global variables from included files are merged into the caller. When names conf
 // config.cvg
 var dev = mutant_brain
 var default_gate = 80
+```
 
+```
 // song.cvg
 include ./config.cvg          // dev, default_gate become available
 var default_gate = 90           // Override
 
 instrument bass {
   device dev                    // → mutant_brain
+  channel 1
   gate_normal default_gate      // → 90 (overridden value)
 }
 ```
@@ -539,14 +546,16 @@ clip waltz_bass [bars 2] [time 3/4] {
 clip drums_a [bars 1] {
   use tr808
   resolution 16
-  bd x|x|x|x          // 16 steps = 4 beats
+  // 16 steps = 4 beats
+  bd x|x|x|x
 }
 
 // 3/4 drums
 clip drums_waltz [bars 1] [time 3/4] {
   use tr808
   resolution 16
-  bd x|x|x             // 12 steps = 3 beats
+  // 12 steps = 3 beats
+  bd x|x|x
 }
 ```
 
@@ -657,10 +666,9 @@ clip bass_a [bars 1] {
 
   // Shorthand: octave and duration carry over from the previous value
   // Defaults at the start of a clip are o4, :4
-  bass c:3:8 c eb f::4 g::2
+  bass c:3:8 c f::4 g::2
   //   c:3:8 → o3, :8 are set
   //   c     → carries over o3, :8
-  //   eb    → carries over o3, :8
   //   f::4  → carries over o3, changes only duration to :4 (:: omits octave)
   //   g::2  → carries over o3, changes only duration to :2
 }
@@ -677,7 +685,7 @@ clip lead_a [bars 1] {
 - Note names: `c c# db d d# eb e f f# gb g g# ab a a# bb b` (all lowercase)
   - Sharps can also be written in the `s` form: `cs`=`c#`, `ds`=`d#`, `fs`=`f#`, `gs`=`g#`, `as`=`a#` (e.g. `cs:3:8`, `csm7`)
   - When `sus` directly follows a natural note, as in `csus4`, it is read as "natural + sus" (C sus4). Write C# sus chords as `cssus4` / `c#sus4`
-- Chord names: `cm7`, `fM7`, `g7`, etc. (see Section 7.12 for the suffix list)
+- Chord names: `cm7`, `fM7`, `g7`, etc. (see Section 7.13 for the suffix list)
 - Octave: `0-9` — specified with `:` separator. Omission carries over the previous value
 - Duration: `1`=whole note, `2`=half note, `4`=quarter, `8`=eighth, `16`=sixteenth; dotted notes append `.` like `4.` or `8.`. Omission carries over the previous value
 - Rest: `r[:duration]` (duration carries over if omitted)
@@ -703,15 +711,14 @@ Octave and duration carry over from the previous value. Defaults at the start of
 
 ```
 clip bass_a [bars 2] {
-  bass c:3:8 c eb f::4 g::2
+  bass c:3:8 c f::4 g::2
   //   c:3:8 → o3, :8
   //   c     → o3, :8 (both carried over)
-  //   eb    → o3, :8
   //   f::4  → carries over o3, changes to :4 (:: omits octave)
   //   g::2  → carries over o3, changes to :2
 
   // The second line also carries over the state from the end of the previous line (o3, :2)
-  bass ab::8 g f eb::4 c::2
+  bass ab::8 g eb::4 c::2
 }
 ```
 
@@ -757,7 +764,7 @@ keys [bb:3 d:4 f a]:1        // Octave crossings must be explicit
 ```
 clip bass_a [bars 4] {
   // Repeat the entire phrase 4 times
-  bass (c:3:8 c eb f::4 g::2)*4
+  bass (c:3:8 c f::4 g::2)*4
 
   // Repeat only a part
   bass c:3:8 (c eb)*3 f::4 g::2
@@ -802,7 +809,7 @@ Unmodified notes have the instrument's `gate_normal` applied.
 
 ```
 clip bass_a [bars 1] {
-  bass c:3:8 c eb f::4 g::2
+  bass c:3:8 c f::4 g::2
   // → Each note's duration × 80% (bass's gate_normal) is the Gate On period
 }
 ```
@@ -813,7 +820,7 @@ Appending `'` to the end of a note applies `gate_staccato`.
 
 ```
 clip bass_stac [bars 1] {
-  bass c:3:8' c' eb' f::4' g::2
+  bass c:3:8' c' f::4' g::2
   // → Each note's duration × 40% (bass's gate_staccato) is the Gate On period
 }
 ```
@@ -824,7 +831,7 @@ To change the gate ratio for a specific note, specify the percentage directly wi
 
 ```
 clip bass_mix [bars 1] {
-  bass c:3:8 d eg95 f::4 g::2
+  bass c:3:8 eg95 f::4 g::2
   // → Only e is 95%, others use gate_normal (80%)
 }
 ```
@@ -905,21 +912,21 @@ When consecutive lines with the same instrument name appear within a clip, they 
 ```
 // 4 bars as 4 lines, one bar each
 clip bass_a [bars 4] {
-  bass c:3:8 c eb f::4 g::2
-  bass ab:3:8 g f eb::4 c::2
+  bass c:3:8 c f::4 g::2
+  bass ab:3:8 g eb::4 c::2
   bass c:3:4 eb f g
   bass ab:3:2 g::2
 }
 
 // 4 bars as 2 lines, two bars each
 clip bass_b [bars 4] {
-  bass c:3:8 c eb f::4 g::2 ab:3:8 g f eb::4 c::2
+  bass c:3:8 c f::4 g::2 ab:3:8 g eb::4 c::2
   bass c:3:4 eb f g ab:3:2 g::2
 }
 
 // Writing everything on a single line is also fine
 clip bass_c [bars 4] {
-  bass c:3:8 c eb f::4 g::2 ab:3:8 g f eb::4 c::2 c:3:4 eb f g ab:3:2 g::2
+  bass c:3:8 c f::4 g::2 ab:3:8 g eb::4 c::2 c:3:4 eb f g ab:3:2 g::2
 }
 ```
 
@@ -1028,7 +1035,7 @@ bass c:3:8 | d:3:4
 bass c:3:8 c c c c c | d:3:4
 ```
 
-`|` only aligns in 1-beat units (the beat length specified by `time`). Combined with multi-line notation (Section 7.8), it is also useful for snapping the end of a line exactly to a beat boundary.
+`|` only aligns in 1-beat units (the beat length specified by `time`). Combined with multi-line notation (Section 7.9), it is also useful for snapping the end of a line exactly to a beat boundary.
 
 ### 7.12 Chords (Bracket Notation)
 
@@ -1147,6 +1154,8 @@ clip arp_f [bars 1] {
 
 - `random` reshuffles the order on every loop iteration.
 - `updown` is a ping-pong that does not repeat the endpoints (e.g. `[c e g]` → `c, e, g, e`).
+- An arpeggio plays the chord tones **once** and then moves on to the next element. It does not keep sounding for the chord's `:D` (`arp_a` ends after 4 sixteenths = 1 beat, and the rest of the bar is silent). To fill a bar, combine it with repetition: `keys ([c:4 eb:4 g:4 bb:4] arp(up, 16))*4`
+- The length given as `arp`'s 2nd argument carries over to following notes whose duration is omitted (the same carry-over as the shorthand in 7.6).
 
 ### 7.15 Drums (Step Sequencer Notation)
 
@@ -1173,6 +1182,8 @@ clip drums_a [bars 1] {
 | `.` | Rest | - |
 
 Spaces within pattern strings are ignored. You can freely insert spaces for readability.
+
+A drum row (hit row or probability row) cannot have a trailing `//` comment (it causes a parse error). Put comments on a separate line.
 
 ```
 // All equivalent
@@ -1288,12 +1299,12 @@ Uses CC aliases defined on an instrument to send MIDI Control Change messages wi
 
 #### Step Mode
 
-Shares the drum `resolution`. Values are 0-127 (decimal).
+One step is always a 16th note (16 steps per bar in 4/4). Values are 0-127 (decimal).
+A pitched-instrument clip cannot contain a `resolution` line (`resolution` is for drum clips only).
 
 ```
 clip bass_a [bars 1] {
-  resolution 16
-  bass c:3:8 c eb f::4 g::2
+  bass c:3:8 c f::4 g::2
 
   // Specify values in 16 steps
   bass.cutoff    0 10 20 30 40 50 60 70 80 90 100 110 120 127 127 127
@@ -1301,7 +1312,6 @@ clip bass_a [bars 1] {
 }
 ```
 
-Step mode cannot be used in clips with only pitched instruments and no resolution specified (use time-based mode instead).
 
 Step mode accepts the same cell-column meta tokens as drum rows:
 
@@ -1317,8 +1327,7 @@ Using `.` makes it natural to express "move CC only at the note positions."
 
 ```
 clip bass_sync [bars 1] {
-  resolution 16
-  bass    c:3:8 c eb f::4 g::2
+  bass    c:3:8 c f::4 g::2
 
   // Modulate cutoff in sync with note onsets (= place values only where notes are)
   bass.cutoff 30 . . 60 . . . . 90 . . . . . . .
@@ -1331,8 +1340,7 @@ Repetition and bar jumps can be combined as well:
 
 ```
 clip bass_pattern [bars 4] {
-  resolution 16
-  bass (c:3:8 c eb f::4 g::2)*4
+  bass (c:3:8 c f::4 g::2)*4
 
   // Repeat a single-bar pattern four times
   bass.cutoff (30 . . 60 . . . . 90 . . . . . . .)*4
@@ -1348,7 +1356,7 @@ Send CC values at arbitrary timings with `value@bar.beat`.
 
 ```
 clip bass_b [bars 4] {
-  bass c:3:8 c eb f::4 g::2
+  bass c:3:8 c f::4 g::2
 
   // Point specification (value changes immediately)
   bass.cutoff 0@1.1 64@2.1 127@3.1 64@4.1
@@ -1383,8 +1391,7 @@ Within the same clip, step mode and time-based mode can be used on different CC 
 
 ```
 clip bass_mix [bars 2] {
-  resolution 16
-  bass c:3:8 c eb f::4 g::2
+  bass c:3:8 c f::4 g::2
 
   // cutoff uses step mode
   bass.cutoff 0 10 20 30 40 50 60 70 80 90 100 110 120 127 127 127
@@ -1416,6 +1423,8 @@ scene verse {
 ### 8.1 Probability
 
 Appending a digit (1-9) after a clip name specifies the triggering probability. Evaluated on each loop.
+
+The probability digit is read even across a newline: if the line after a clip name starts with a digit (1-9) alone, it is taken as the probability of that clip.
 
 ```
 scene verse {
@@ -1891,7 +1900,7 @@ The engine continues playback as-is. Restarting Neovim and reconnecting allows c
 - Gate ratios (gate_normal / gate_staccato) can be set per instrument. Per-note control is available via staccato `'` and direct gate specification `gN`
 - If the Gate Off period is less than 5ms, a minimum of 5ms is enforced (except for gate_normal: 100 legato)
 - Velocity on a pitched note defaults to 100; `vN` (N = 0–127) on a note overrides the per-note Note On velocity. The articulation/velocity suffix modifiers `'` / `gN` / `vN` are order-independent and each may appear at most once; `'` and `gN` are mutually exclusive. Dotted `.` is bound to the duration field and stays adjacent to it
-- CC automation uses step mode (shared resolution) and time-based + interpolation mode (`@bar.beat`, `-` for linear, `-exp` for exponential curve)
+- CC automation uses step mode (1 step = a 16th note) and time-based + interpolation mode (`@bar.beat`, `-` for linear, `-exp` for exponential curve)
 - `var name = value` defines variables; referenced without `$`. Variable lookup takes priority; if not found, treated as a literal
 - Scope is two-level: global (top-level) and block (inside `{}`). Inner scope takes priority
 - Includes are only allowed at the top of the file. An include after a non-include block results in an error
