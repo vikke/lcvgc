@@ -1,4 +1,5 @@
 use crate::ast::clip_arpeggio::{Arpeggio, ArpeggioDirection};
+use crate::ast::doc::{ExampleRender, SyntaxDoc};
 
 /// 先頭の空白文字を除去する。
 /// Trim leading whitespace.
@@ -73,7 +74,44 @@ fn parse_direction(input: &str) -> Option<(&str, ArpeggioDirection)> {
 
 /// この構文の説明と例文（文法チュートリアルの素材。`lsp::tutorial` が集める）
 /// Syntax docs for this parser (tutorial material collected by `lsp::tutorial`).
-pub const DOCS: &[crate::ast::doc::SyntaxDoc] = &[];
+pub const DOCS: &[SyntaxDoc] = &[
+    SyntaxDoc {
+        id: "clip_arpeggio",
+        title_ja: "アルペジオ arp(方向, 音価)",
+        title_en: "Arpeggio arp(direction, step)",
+        desc_ja: &[
+            "和音の後に arp(方向, 音価) を付けると構成音を順に鳴らす。",
+            "方向: up / down / updown / random。音価は 1 音の長さ（16 など）。",
+            "構成音を 1 巡したら次の要素へ進む（updown は両端を重ねない）。",
+            "和音は角括弧 [c e g] でもコード名 cm7 でもよい。",
+        ],
+        desc_en: &[
+            "Put arp(direction, step) after a chord to play its notes in turn.",
+            "Direction: up / down / updown / random. Step is one note's length.",
+            "One pass over the notes, then on to the next element (updown: c e g e).",
+            "The chord can be a bracket chord [c e g] or a chord name like cm7.",
+        ],
+        example: "clip arp_demo [bars 1] {\n\tlead [c:4 eb:4 g:4 bb:4]:4 arp(up, 16) cm7:4:1 arp(updown, 8)\n}",
+        render: ExampleRender::Live,
+        list: None,
+    },
+    SyntaxDoc {
+        id: "clip_arpeggio.default_step",
+        title_ja: "アルペジオの音価の省略",
+        title_en: "Omitting the arpeggio step",
+        desc_ja: &[
+            "arp(方向) のように音価を省くと、和音側の音価が 1 音の長さになる。",
+            "両方に書いた場合は arp 側が優先される（am7:4:4 arp(down, 8) は 8 分）。",
+        ],
+        desc_en: &[
+            "With arp(direction) the chord's own duration is used per note.",
+            "If both are given, the arp step wins (am7:4:4 arp(down, 8) uses 8ths).",
+        ],
+        example: "clip arp_step_demo [bars 1] {\n\tlead [c:4 eb:4 g:4 bb:4]:8 arp(up) am7:4:4 arp(down, 8)\n}",
+        render: ExampleRender::Live,
+        list: None,
+    },
+];
 
 #[cfg(test)]
 mod tests {
@@ -151,5 +189,13 @@ mod tests {
     #[test]
     fn test_arp_comma_only_whitespace_fails() {
         assert!(parse_arpeggio("arp(up,  )").is_none());
+    }
+
+    /// 構文ドキュメントの例文がパーサで最後まで解析できる
+    /// Every syntax-doc example parses fully.
+    #[test]
+    fn docs_examples_parse() {
+        assert!(!DOCS.is_empty());
+        crate::parser::assert_docs_parse(DOCS);
     }
 }
