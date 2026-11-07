@@ -1,6 +1,7 @@
 use nom::{bytes::complete::tag, character::complete::char, combinator::opt, IResult};
 
 use crate::ast::clip::*;
+use crate::ast::doc::{ExampleRender, SyntaxDoc};
 use crate::parser::cell_normalize::{expand_bar_jump_cells, expand_pipe_cells, CellToken};
 use crate::parser::clip_arpeggio::parse_arpeggio;
 use crate::parser::clip_bar_jump::parse_bar_jump;
@@ -828,6 +829,101 @@ pub fn parse_repetition_content(content: &str) -> Result<Vec<PitchedElement>, St
     Ok(elements)
 }
 
+/// この構文の説明と例文（文法チュートリアルの素材。`lsp::tutorial` が集める）
+/// Syntax docs for this parser (tutorial material collected by `lsp::tutorial`).
+pub const DOCS: &[SyntaxDoc] = &[
+    SyntaxDoc {
+        id: "clip",
+        title_ja: "clip（音程楽器のフレーズ）",
+        title_en: "clip (pitched phrase)",
+        desc_ja: &[
+            "clip は再生パターンの単位。記法: clip 名前 [オプション] { ... }",
+            "音程楽器の行は「楽器名 音符 音符 ...」と並べる",
+            "音符は 音名:オクターブ:音価（詳しくは後の節）",
+            "同名の clip を再 eval すると 4 小節グリッドの頭で差し替わる",
+        ],
+        desc_en: &[
+            "A clip is a unit of playback. Syntax: clip name [options] { ... }",
+            "A pitched line is \"instrument note note ...\"",
+            "A note is name:octave:length (details in later sections)",
+            "Re-evaluating a clip swaps it in at the next 4-bar grid boundary",
+        ],
+        example: "clip bass_a [bars 1] {\n\tbass c:3:8 c eb f g::2\n}",
+        render: ExampleRender::Live,
+        list: None,
+    },
+    SyntaxDoc {
+        id: "clip.multiline",
+        title_ja: "複数行と並列レイヤー",
+        title_en: "Multiple lines and parallel layers",
+        desc_ja: &[
+            "同じ楽器名の行が続くと、前の行の続きとして時間順につながる",
+            "別の楽器名の行は、clip の頭から同時に鳴る並列レイヤーになる",
+            "--- だけの行を挟むと、同じ楽器名でも別レイヤーになる",
+        ],
+        desc_en: &[
+            "Consecutive lines with the same instrument continue in time order",
+            "A line with another instrument is a parallel layer from the clip start",
+            "A line of just --- starts a new layer even for the same instrument",
+        ],
+        example: "clip multiline_demo [bars 2] {\n\tbass c:3:4 eb f g\n\tbass ab:3:2 g::2\n\tlead c:5:1\n\t---\n\tlead g:5:1\n}",
+        render: ExampleRender::Live,
+        list: None,
+    },
+    SyntaxDoc {
+        id: "clip.chord_bracket",
+        title_ja: "和音（角括弧）",
+        title_en: "Chords (brackets)",
+        desc_ja: &[
+            "角括弧で囲んだ音を同時に鳴らす。記法: [音名:オクターブ ...]:音価",
+            "括弧の中は音名とオクターブだけ。音価は括弧の後ろに書く",
+            "オクターブは省略すると直前の値を引き継ぐ",
+        ],
+        desc_en: &[
+            "Notes in brackets sound together. Syntax: [name:octave ...]:length",
+            "Inside: note names and octaves only; the length goes after ]",
+            "An omitted octave carries over from the previous note",
+        ],
+        example: "clip chord_bracket_demo [bars 2] {\n\tlead [c:4 eb g bb]:2 [f:3 a c eb]:2\n\tlead [bb:3 d:4 f a]:1\n}",
+        render: ExampleRender::Live,
+        list: None,
+    },
+    SyntaxDoc {
+        id: "clip.beat_snap",
+        title_ja: "| 拍境界スナップ",
+        title_en: "| beat snap",
+        desc_ja: &[
+            "| は次の音を拍の頭にそろえる",
+            "1 拍に足りなければ休符で埋め、超えていれば拍の頭まで削る",
+        ],
+        desc_en: &[
+            "| aligns the next note to a beat boundary",
+            "Short of a beat it pads with rests; past it, it trims back",
+        ],
+        example: "clip beat_snap_demo [bars 1] {\n\tbass c:3:8 | d:3:4 | c:3:8 c c c c c | g:3:4\n}",
+        render: ExampleRender::Live,
+        list: None,
+    },
+    SyntaxDoc {
+        id: "clip.drum",
+        title_ja: "ドラム clip",
+        title_en: "Drum clip",
+        desc_ja: &[
+            "先頭で use キット名、resolution 1 文字の音価 を書く",
+            "続けて「キットの楽器名 パターン」の行を並べる",
+            "行末の \\ で次の行に続けて書ける",
+        ],
+        desc_en: &[
+            "Start with use <kit> and resolution <length per character>",
+            "Then write rows of \"kit instrument pattern\"",
+            "A trailing \\ continues the row on the next line",
+        ],
+        example: "clip drums_a [bars 2] {\n\tuse tr808\n\tresolution 16\n\tkick  x...x...x...x... \\\n\t      x...x...x...x.x.\n\tsnare ....x.......x... \\\n\t      ....x.......x...\n\thihat x.x.x.x.x.x.x.x. \\\n\t      x.x.x.x.x.x.x.x.\n}",
+        render: ExampleRender::Live,
+        list: None,
+    },
+];
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1446,5 +1542,13 @@ mod tests {
             }
             _ => panic!("expected drum"),
         }
+    }
+
+    /// 構文ドキュメントの例文がパーサで最後まで解析できる
+    /// Every syntax-doc example parses fully.
+    #[test]
+    fn docs_examples_parse() {
+        assert!(!DOCS.is_empty());
+        crate::parser::assert_docs_parse(DOCS);
     }
 }

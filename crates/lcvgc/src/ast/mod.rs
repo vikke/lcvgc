@@ -11,6 +11,7 @@ pub mod clip_options;
 pub mod clip_repetition;
 pub mod common;
 pub mod device;
+pub mod doc;
 pub mod include;
 pub mod instrument;
 pub mod kit;

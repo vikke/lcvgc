@@ -4,6 +4,7 @@ use nom::sequence::preceded;
 use nom::{Err, IResult};
 
 use crate::ast::clip_articulation::{Articulation, NoteSuffix};
+use crate::ast::doc::{ExampleRender, SyntaxDoc};
 use crate::parser::common::parse_u8;
 
 /// 個別サフィックスの内部表現（順不同パーサ用）。
@@ -109,6 +110,49 @@ pub fn parse_articulation(input: &str) -> IResult<&str, Articulation> {
     let (rest, suffix) = parse_note_suffix(input)?;
     Ok((rest, suffix.articulation))
 }
+
+/// この構文の説明と例文（文法チュートリアルの素材。`lsp::tutorial` が集める）
+/// Syntax docs for this parser (tutorial material collected by `lsp::tutorial`).
+pub const DOCS: &[SyntaxDoc] = &[
+    SyntaxDoc {
+        id: "clip_articulation.gate",
+        title_ja: "スタッカート ' とゲート長 gN",
+        title_en: "Staccato ' and gate length gN",
+        desc_ja: &[
+            "音符の末尾に ' でスタッカート（instrument の gate_staccato）。",
+            "gN でその音だけゲート長を N% に直接指定する（例: g95）。",
+            "無指定の音は instrument の gate_normal が使われる。",
+            "' と gN は同時に付けられない。音符との間に空白は入れない。",
+        ],
+        desc_en: &[
+            "Append ' to a note for staccato (the instrument's gate_staccato).",
+            "gN sets the gate length of that note to N% directly (e.g. g95).",
+            "Notes without a suffix use the instrument's gate_normal.",
+            "' and gN cannot be combined. No space between note and suffix.",
+        ],
+        example: "clip gate_demo [bars 1] {\n\tbass c:3:8 c:3:8' eb:3:8' f:3:8g95 g:3:4. r:8\n}",
+        render: ExampleRender::Live,
+        list: None,
+    },
+    SyntaxDoc {
+        id: "clip_articulation.velocity",
+        title_ja: "ベロシティ vN",
+        title_en: "Velocity vN",
+        desc_ja: &[
+            "音符の末尾に vN で、その音のベロシティを N（0〜127）にする。",
+            "無指定の音はベロシティ 100。",
+            "' や gN と組み合わせられ、順序は自由（g95v100 = v100g95）。",
+        ],
+        desc_en: &[
+            "Append vN to a note to set its velocity to N (0-127).",
+            "Notes without vN are played at velocity 100.",
+            "Combines with ' or gN in any order (g95v100 = v100g95).",
+        ],
+        example: "clip velocity_demo [bars 1] {\n\tbass c:3:4v127 d:3:4 e:3:4'v40 f:3:4g95v110\n}",
+        render: ExampleRender::Live,
+        list: None,
+    },
+];
 
 #[cfg(test)]
 mod tests {
@@ -274,5 +318,13 @@ mod tests {
         assert_eq!(suf.articulation, Articulation::Normal);
         assert_eq!(suf.velocity, None);
         assert_eq!(rest, " next");
+    }
+
+    /// 構文ドキュメントの例文がパーサで最後まで解析できる
+    /// Every syntax-doc example parses fully.
+    #[test]
+    fn docs_examples_parse() {
+        assert!(!DOCS.is_empty());
+        crate::parser::assert_docs_parse(DOCS);
     }
 }

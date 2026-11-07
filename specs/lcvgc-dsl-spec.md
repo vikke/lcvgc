@@ -93,6 +93,8 @@ It supports sequences for everything from modular synths (CV/Gate) to MIDI synth
 
 The file extension is `.cvg`.
 
+The daemon also generates a grammar tutorial covering the main syntax of this spec (the `tutorial` request, [lsp-in-out.md](lsp-in-out.md) section 4.13). The tutorial is built from the syntax docs (descriptions and examples) owned by each parser, and every example is verified by tests to parse.
+
 ---
 
 ## Startup Options

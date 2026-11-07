@@ -4,6 +4,7 @@ use nom::sequence::preceded;
 use nom::IResult;
 
 use crate::ast::clip_repetition::Repetition;
+use crate::ast::doc::{ExampleRender, SyntaxDoc};
 use crate::parser::common::parse_u32;
 
 /// `(内容)*N` をパースする。ネストした括弧は対応を数えてスキップ。
@@ -81,6 +82,45 @@ pub fn parse_repetition(input: &str) -> IResult<&str, Repetition> {
         },
     ))
 }
+
+/// この構文の説明と例文（文法チュートリアルの素材。`lsp::tutorial` が集める）
+/// Syntax docs for this parser (tutorial material collected by `lsp::tutorial`).
+pub const DOCS: &[SyntaxDoc] = &[
+    SyntaxDoc {
+        id: "clip_repetition",
+        title_ja: "繰り返し (...)*N",
+        title_en: "Repetition (...)*N",
+        desc_ja: &[
+            "記法: (フレーズ)*N で、括弧内を N 回繰り返す。",
+            "行の一部だけを繰り返すこともでき、ネストも可能。",
+            "オクターブ・音価の省略は前の回の末尾から引き継がれる。",
+        ],
+        desc_en: &[
+            "Syntax: (phrase)*N repeats the phrase inside the parens N times.",
+            "You can repeat just part of a line, and repetitions can be nested.",
+            "Omitted octave/duration carry over from the end of the previous pass.",
+        ],
+        example: "clip repeat_demo [bars 2] {\n\tbass (c:3:8 c eb g)*2 c:3:8 (eb g)*3 c:4:8\n}",
+        render: ExampleRender::Live,
+        list: None,
+    },
+    SyntaxDoc {
+        id: "clip_repetition.grouping",
+        title_ja: "空白とグルーピング括弧",
+        title_en: "Whitespace and grouping parens",
+        desc_ja: &[
+            "( ) * N の間には空白や改行を入れてよい。",
+            "*N を省略した ( ... ) は 1 回だけのグルーピングになる。",
+        ],
+        desc_en: &[
+            "Spaces and newlines are allowed around ( ) * N.",
+            "( ... ) without *N is just a grouping, played once.",
+        ],
+        example: "clip group_demo [bars 2] {\n\tbass (\n\t\tc:3:8 d e f\n\t\tg a b c:4\n\t) * 2\n}",
+        render: ExampleRender::Live,
+        list: None,
+    },
+];
 
 #[cfg(test)]
 mod tests {
@@ -165,5 +205,13 @@ mod tests {
         assert_eq!(rep.content, "c d");
         assert_eq!(rep.count, 1);
         assert_eq!(rest, " e f");
+    }
+
+    /// 構文ドキュメントの例文がパーサで最後まで解析できる
+    /// Every syntax-doc example parses fully.
+    #[test]
+    fn docs_examples_parse() {
+        assert!(!DOCS.is_empty());
+        crate::parser::assert_docs_parse(DOCS);
     }
 }

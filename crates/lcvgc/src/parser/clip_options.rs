@@ -4,6 +4,7 @@ use nom::character::complete::char;
 use nom::IResult;
 
 use crate::ast::clip_options::ClipOptions;
+use crate::ast::doc::{ExampleRender, SyntaxDoc};
 use crate::parser::common::{parse_u32, parse_u8, ws, ws1};
 use crate::parser::scale::scale_token;
 
@@ -168,6 +169,81 @@ pub fn parse_clip_options(input: &str) -> IResult<&str, ClipOptions> {
 
     Ok((remaining, result))
 }
+
+/// この構文の説明と例文（文法チュートリアルの素材。`lsp::tutorial` が集める）
+/// Syntax docs for this parser (tutorial material collected by `lsp::tutorial`).
+pub const DOCS: &[SyntaxDoc] = &[
+    SyntaxDoc {
+        id: "clip_options.bars",
+        title_ja: "clip の長さ [bars N]",
+        title_en: "Clip length [bars N]",
+        desc_ja: &[
+            "記法: clip 名前 [bars N] { ... }",
+            "N 小節の長さでループする。足りない分は休符で埋める。",
+            "あふれた分は切り捨て（警告のみ）。省略すると音符の合計長でループ。",
+        ],
+        desc_en: &[
+            "Syntax: clip NAME [bars N] { ... }",
+            "Loops over N bars. A shortfall is padded with rests.",
+            "Overflow is cut off (warning only). Omit it to loop over the total length.",
+        ],
+        example: "clip bars_demo [bars 1] {\n\tbass c:3:8 c:3:8 eb:3:8 f:3:8 g:3:2\n}",
+        render: ExampleRender::Live,
+        list: None,
+    },
+    SyntaxDoc {
+        id: "clip_options.time",
+        title_ja: "拍子 [time N/M]",
+        title_en: "Time signature [time N/M]",
+        desc_ja: &[
+            "記法: [time 拍子の分子/分母]（例: [time 3/4]）",
+            "clip ごとに拍子を指定する。省略すると 4/4。",
+        ],
+        desc_en: &[
+            "Syntax: [time NUMERATOR/DENOMINATOR] (e.g. [time 3/4])",
+            "Sets the time signature per clip. Defaults to 4/4.",
+        ],
+        example: "clip time_demo [bars 2] [time 3/4] {\n\tbass c:3:4 e:3:4 g:3:4\n\tbass f:3:4 a:3:4 c:4:4\n}",
+        render: ExampleRender::Live,
+        list: None,
+    },
+    SyntaxDoc {
+        id: "clip_options.scale",
+        title_ja: "clip のスケール [scale 根音_種類]",
+        title_en: "Clip scale [scale ROOT_TYPE]",
+        desc_ja: &[
+            "記法: [scale 根音_種類]（例: [scale c_minor]）",
+            "LSP 補完がこのスケールの構成音やダイアトニックコードを出す。",
+            "再生には影響しない。省略するとグローバルの scale が使われる。",
+        ],
+        desc_en: &[
+            "Syntax: [scale ROOT_TYPE] (e.g. [scale c_minor])",
+            "LSP completion offers this scale's notes and diatonic chords.",
+            "It does not affect playback. If omitted, the global scale is used.",
+        ],
+        example: "clip scale_demo [bars 1] [scale c_minor] {\n\tbass c:3:4 eb:3:4 g:3:4 bb:3:4\n}",
+        render: ExampleRender::Live,
+        list: None,
+    },
+    SyntaxDoc {
+        id: "clip_options.octave_shift",
+        title_ja: "オクターブシフト [>>] / [<<]",
+        title_en: "Octave shift [>>] / [<<]",
+        desc_ja: &[
+            "[>>] で clip 全体を 1 オクターブ上げ、[<<] で 1 オクターブ下げる。",
+            "[>> >>] のように並べると合算される（この例は +2）。",
+            "他のオプションと任意の順序で併記できる。ドラム clip には効かない。",
+        ],
+        desc_en: &[
+            "[>>] shifts the whole clip up an octave, [<<] shifts it down.",
+            "Repeated tokens add up ([>> >>] is +2 octaves).",
+            "Combine with other options in any order. No effect on drum clips.",
+        ],
+        example: "clip shift_demo [bars 1] [<<] {\n\tbass c:3:4 e:3:4 g:3:2\n}",
+        render: ExampleRender::Live,
+        list: None,
+    },
+];
 
 #[cfg(test)]
 mod tests {
@@ -351,5 +427,13 @@ mod tests {
         let (rest, opts) = parse_clip_options("[>>] {").unwrap();
         assert_eq!(rest, "{");
         assert_eq!(opts.octave_shift, 1);
+    }
+
+    /// 構文ドキュメントの例文がパーサで最後まで解析できる
+    /// Every syntax-doc example parses fully.
+    #[test]
+    fn docs_examples_parse() {
+        assert!(!DOCS.is_empty());
+        crate::parser::assert_docs_parse(DOCS);
     }
 }

@@ -1,5 +1,6 @@
 use nom::{bytes::complete::tag, IResult};
 
+use crate::ast::doc::{ExampleRender, SyntaxDoc};
 use crate::ast::instrument::{CcMapping, InstrumentDef, InstrumentNote};
 use crate::ast::unresolved::UnresolvedVarRefs;
 use crate::ast::var::VarDef;
@@ -333,10 +334,75 @@ pub fn parse_instrument(input: &str) -> IResult<&str, InstrumentDef> {
     ))
 }
 
+/// この構文の説明と例文（文法チュートリアルの素材。`lsp::tutorial` が集める）
+/// Syntax docs for this parser (tutorial material collected by `lsp::tutorial`).
+pub const DOCS: &[SyntaxDoc] = &[
+    SyntaxDoc {
+        id: "instrument",
+        title_ja: "楽器定義 (instrument)",
+        title_en: "Instrument definition (instrument)",
+        desc_ja: &[
+            "device と MIDI チャンネル（1〜16）の組に名前を付ける。",
+            "記法: instrument 名前 { device デバイス名  channel 番号 }",
+            "cc 別名 CC番号 で CC に別名を付け、clip_cc で 楽器.別名 として使う。",
+        ],
+        desc_en: &[
+            "Names a pair of a device and a MIDI channel (1-16).",
+            "Syntax: instrument NAME { device DEVICE  channel N }",
+            "cc ALIAS NUMBER names a CC; clip_cc uses it as INSTRUMENT.ALIAS.",
+        ],
+        example: "instrument bass {\n\tdevice my_synth\n\tchannel 1\n\tcc cutoff 74\n}\n\ninstrument lead {\n\tdevice my_synth\n\tchannel 2\n}",
+        render: ExampleRender::Live,
+        list: None,
+    },
+    SyntaxDoc {
+        id: "instrument.gate_velocity",
+        title_ja: "Gate 比率と velocity の既定値",
+        title_en: "Default gate ratio and velocity",
+        desc_ja: &[
+            "gate_normal / gate_staccato: Gate 比率 %（既定 80 / 40、100 でレガート）",
+            "velocity_normal / _accent / _ghost: 既定 velocity（既定 100 / 127 / 40）",
+            "accent / ghost はドラムの X / o で使う。値には変数も書ける。",
+        ],
+        desc_en: &[
+            "gate_normal / gate_staccato: gate ratio % (default 80 / 40; 100 = legato)",
+            "velocity_normal / _accent / _ghost: default velocity (100 / 127 / 40)",
+            "accent / ghost apply to drum hits X / o. Values may be variables.",
+        ],
+        example: "instrument pad {\n\tdevice my_synth\n\tchannel 3\n\tgate_normal 100\n\tgate_staccato 60\n\tvelocity_normal 90\n}",
+        render: ExampleRender::Live,
+        list: None,
+    },
+    SyntaxDoc {
+        id: "instrument.note",
+        title_ja: "固定ノート (note)",
+        title_en: "Fixed note (note)",
+        desc_ja: &[
+            "note 音名オクターブ で、常にその音を鳴らす楽器（ドラム等）にする。",
+            "複数のドラムをまとめるなら kit を使うと便利。",
+        ],
+        desc_en: &[
+            "note NOTE_OCTAVE makes an instrument that always plays that pitch (drums).",
+            "To group several drums, a kit is more convenient.",
+        ],
+        example: "instrument cowbell {\n\tdevice my_synth\n\tchannel 10\n\tnote gs3\n\tgate_normal 50\n}",
+        render: ExampleRender::Live,
+        list: None,
+    },
+];
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::domain::pitch::NoteName;
+
+    /// 構文ドキュメントの例文がパーサで最後まで解析できる
+    /// Every syntax-doc example parses fully.
+    #[test]
+    fn docs_examples_parse() {
+        assert!(!DOCS.is_empty());
+        crate::parser::assert_docs_parse(DOCS);
+    }
 
     #[test]
     fn test_full_instrument() {

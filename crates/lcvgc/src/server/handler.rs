@@ -10,6 +10,7 @@ use crate::lsp::diagnostic::DiagnosticProvider;
 use crate::lsp::goto_def::GotoDefinitionProvider;
 use crate::lsp::hover::HoverProvider;
 use crate::lsp::symbols::DocumentSymbolProvider;
+use crate::lsp::tutorial::{self, Lang};
 
 use crate::midi;
 
@@ -338,6 +339,11 @@ async fn handle_request_inner(evaluator: &Arc<Mutex<Evaluator>>, request: Reques
                 .collect();
             Response::lsp(LspResult::DocumentSymbols { items })
         }
+        // 文法チュートリアル: 各パーサの構文ドキュメントから本文を組み立てて返す
+        // Grammar tutorial: render the text from each parser's syntax docs
+        Request::Tutorial { lang } => Response::lsp(LspResult::Tutorial {
+            text: tutorial::render(Lang::from_code(lang.as_deref())),
+        }),
         // MIDI 入力購読系は接続レイヤ (`server::handle_connection`) で処理する。
         // 出力集約チャネルと購読ハンドルのライフタイムが接続スコープに紐づくため、
         // ステートレスな本ハンドラでは扱えない。万一ここへ到達したら設計不整合
@@ -838,5 +844,42 @@ mod tests {
             rx.try_recv().is_err(),
             "LspDocumentSymbols handler must not emit DeviceEvent"
         );
+    }
+
+    /// tutorial リクエストで lang=ja なら日本語のチュートリアル本文が返ることを検証する
+    /// Verifies that a tutorial request with lang=ja returns the Japanese tutorial
+    #[tokio::test]
+    async fn handle_tutorial_ja() {
+        let ev = Arc::new(Mutex::new(Evaluator::new(120.0)));
+        let req = Request::Tutorial {
+            lang: Some("ja".into()),
+        };
+        let resp = handle_request(&ev, req).await;
+        assert!(resp.success);
+        match resp.lsp.unwrap() {
+            super::super::protocol::LspResult::Tutorial { text } => {
+                assert!(text.contains("lcvgc DSL チュートリアル"));
+                assert_eq!(
+                    text,
+                    crate::lsp::tutorial::render(crate::lsp::tutorial::Lang::Ja)
+                );
+            }
+            _ => panic!("Expected Tutorial"),
+        }
+    }
+
+    /// tutorial リクエストで lang を省略すると英語のチュートリアル本文が返ることを検証する
+    /// Verifies that a tutorial request without lang returns the English tutorial
+    #[tokio::test]
+    async fn handle_tutorial_defaults_to_english() {
+        let ev = Arc::new(Mutex::new(Evaluator::new(120.0)));
+        let resp = handle_request(&ev, Request::Tutorial { lang: None }).await;
+        assert!(resp.success);
+        match resp.lsp.unwrap() {
+            super::super::protocol::LspResult::Tutorial { text } => {
+                assert!(text.contains("lcvgc DSL tutorial"));
+            }
+            _ => panic!("Expected Tutorial"),
+        }
     }
 }

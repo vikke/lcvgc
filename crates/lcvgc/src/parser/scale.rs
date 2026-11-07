@@ -4,6 +4,7 @@ use nom::{
     IResult,
 };
 
+use crate::ast::doc::{ExampleRender, KeywordList, SyntaxDoc};
 use crate::ast::scale::{ScaleDef, ScaleType};
 use crate::parser::common::{note_name, ws1};
 
@@ -48,6 +49,29 @@ pub fn parse_scale(input: &str) -> IResult<&str, ScaleDef> {
     let (input, _) = ws1(input)?;
     scale_token(input)
 }
+
+/// この構文の説明と例文（文法チュートリアルの素材。`lsp::tutorial` が集める）
+/// Syntax docs for this parser (tutorial material collected by `lsp::tutorial`).
+pub const DOCS: &[SyntaxDoc] = &[SyntaxDoc {
+    id: "scale",
+    title_ja: "スケール",
+    title_en: "Scale",
+    desc_ja: &[
+        "曲全体のスケールを設定する。記法: scale <ルート音>_<種別>",
+        "ルート音と種別は _ でつないで 1 語で書く（scale c minor は不可）。",
+        "再生には影響せず、LSP 補完のヒントとして使われる。",
+        "clip ごとに [scale ...] で上書きできる。",
+    ],
+    desc_en: &[
+        "Sets the global scale. Syntax: scale <root>_<type>",
+        "Join root and type with _ as one word (scale c minor is an error).",
+        "It does not affect playback; it is a hint for LSP completion.",
+        "A clip can override it with [scale ...].",
+    ],
+    example: "scale c_minor",
+    render: ExampleRender::Live,
+    list: Some(KeywordList::ScaleTypes),
+}];
 
 #[cfg(test)]
 mod tests {
@@ -167,5 +191,13 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// 構文ドキュメントの例文がパーサで最後まで解析できる
+    /// Every syntax-doc example parses fully.
+    #[test]
+    fn docs_examples_parse() {
+        assert!(!DOCS.is_empty());
+        crate::parser::assert_docs_parse(DOCS);
     }
 }

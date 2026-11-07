@@ -1,3 +1,5 @@
+use crate::ast::doc::{ExampleRender, SyntaxDoc};
+
 /// 省略記法ノートのオクターブ・音価キャリーオーバー状態を管理する構造体。
 /// デフォルト値: octave=4, duration=4（4分音符）。
 ///
@@ -141,6 +143,46 @@ impl Default for CarryOverState {
         Self::new()
     }
 }
+
+/// この構文の説明と例文（文法チュートリアルの素材。`lsp::tutorial` が集める）
+/// Syntax docs for this parser (tutorial material collected by `lsp::tutorial`).
+pub const DOCS: &[SyntaxDoc] = &[
+    SyntaxDoc {
+        id: "clip_shorthand.note",
+        title_ja: "省略記法（オクターブ・音価の引き継ぎ）",
+        title_en: "Shorthand (carrying octave and length)",
+        desc_ja: &[
+            "オクターブと音価は省略すると直前の値を引き継ぐ（clip 先頭は 4, 4）。",
+            "c は両方引き継ぎ、c:3 はオクターブだけ、c::2 は音価だけ変える。",
+            "同じ楽器名の行が続くと連結され、引き継ぎも行をまたいで続く。",
+        ],
+        desc_en: &[
+            "Omitted octave/length carry over from the previous note (start: 4, 4).",
+            "c carries both, c:3 changes the octave, c::2 changes only the length.",
+            "Consecutive lines of one instrument are joined; carry-over continues.",
+        ],
+        example:
+            "clip shorthand_demo [bars 2] {\n\tbass c:3:8 c eb f g::2\n\tbass ab::8 g f eb c::2\n}",
+        render: ExampleRender::Live,
+        list: None,
+    },
+    SyntaxDoc {
+        id: "clip_shorthand.chord",
+        title_ja: "コード名の省略記法",
+        title_en: "Shorthand for chord names",
+        desc_ja: &[
+            "コード名も単音と同じ規則で引き継ぐ（:: でオクターブ省略）。",
+            "単音とコード名を混ぜても、引き継ぎは一貫して続く。",
+        ],
+        desc_en: &[
+            "Chord names follow the same carry-over rules (:: skips the octave).",
+            "Carry-over stays consistent when notes and chords are mixed.",
+        ],
+        example: "clip shorthand_chord_demo [bars 2] {\n\tlead cm7:4:2 fm7\n\tlead g7::1\n}",
+        render: ExampleRender::Live,
+        list: None,
+    },
+];
 
 #[cfg(test)]
 mod tests {
@@ -313,5 +355,13 @@ mod tests {
                 dotted: false
             }
         );
+    }
+
+    /// 構文ドキュメントの例文がパーサで最後まで解析できる
+    /// Every syntax-doc example parses fully.
+    #[test]
+    fn docs_examples_parse() {
+        assert!(!DOCS.is_empty());
+        crate::parser::assert_docs_parse(DOCS);
     }
 }
