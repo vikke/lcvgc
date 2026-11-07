@@ -31,6 +31,14 @@
         "hooks": [
           {
             "type": "command",
+            "if": "Bash(*git*commit*)",
+            "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/pre-commit-doc-check.sh\"",
+            "timeout": 60,
+            "statusMessage": "仕様書の更新漏れチェック (make doc-check)"
+          },
+          {
+            "type": "command",
+            "if": "Bash(*git*commit*)",
             "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/pre-commit-version-check.sh\""
           }
         ]
