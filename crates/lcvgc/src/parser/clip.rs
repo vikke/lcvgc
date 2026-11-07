@@ -848,7 +848,7 @@ pub const DOCS: &[SyntaxDoc] = &[
             "A note is name:octave:length (details in later sections)",
             "Re-evaluating a clip swaps it in at the next 4-bar grid boundary",
         ],
-        example: "clip bass_a [bars 1] {\n\tbass c:3:8 c eb f::4 g::2\n}",
+        example: "clip bass_a [bars 1] {\n\tbass c:3:8 c eb f g::2\n}",
         render: ExampleRender::Live,
         list: None,
     },

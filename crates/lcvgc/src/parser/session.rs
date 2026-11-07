@@ -102,7 +102,7 @@ pub const DOCS: &[SyntaxDoc] = &[SyntaxDoc {
         "[repeat N] repeats N times; without it, the scene plays once.",
         "[loop] stays on that scene and keeps repeating it.",
     ],
-    example: "session my_song {\n\tverse [repeat 4]\n\tverse [loop]\n}",
+    example: "session my_song {\n\tintro [repeat 2]\n\tverse [repeat 4]\n\tbuildup [loop]\n}",
     render: ExampleRender::Live,
     list: None,
 }];

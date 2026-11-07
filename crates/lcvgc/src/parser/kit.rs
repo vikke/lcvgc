@@ -306,7 +306,7 @@ pub const DOCS: &[SyntaxDoc] = &[
             "velocity_normal / velocity_accent / velocity_ghost override",
             "the default velocity of x / X / o hits (defaults if omitted).",
         ],
-        example: "kit tr808 {\n\tdevice my_synth\n\tkick { channel 10, note c2, gate_normal 50, gate_staccato 20 }\n\tsnare { channel 10, note d2, velocity_accent 120, velocity_ghost 30 }\n\thihat { channel 10, note fs2, gate_normal 30 }\n}",
+        example: "kit tr808_tight {\n\tdevice my_synth\n\tkick { channel 10, note c2, gate_normal 50, gate_staccato 20 }\n\tsnare { channel 10, note d2, velocity_accent 120, velocity_ghost 30 }\n\thihat { channel 10, note fs2, gate_normal 30 }\n}",
         render: ExampleRender::Live,
         list: None,
     },

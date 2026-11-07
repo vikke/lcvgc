@@ -179,7 +179,9 @@ pub fn render_sections(sections: &[Section], lang: Lang) -> String {
     for doc in sections.iter().flat_map(|s| s.docs.iter()) {
         lines.extend(render_doc(doc, lang));
     }
-    let mut text = lines.join("\n");
+    // 各構文の後ろの空行が末尾に残らないよう、最後は改行 1 つにそろえる
+    // Trim the trailing blank line left after the last doc; end with one newline
+    let mut text = lines.join("\n").trim_end().to_string();
     text.push('\n');
     text
 }
@@ -413,6 +415,30 @@ mod tests {
             let text = render(lang);
             let (rest, _) = parser::parse_source(&text).expect("tutorial should parse");
             assert!(rest.trim().is_empty(), "rest = {:?}", rest);
+        }
+    }
+
+    #[test]
+    fn every_section_has_docs() {
+        for s in SECTIONS {
+            assert!(!s.docs.is_empty(), "parser::{}::DOCS is empty", s.module);
+        }
+    }
+
+    #[test]
+    fn doc_ids_are_unique() {
+        let mut seen = BTreeSet::new();
+        for doc in SECTIONS.iter().flat_map(|s| s.docs.iter()) {
+            assert!(seen.insert(doc.id), "duplicate SyntaxDoc id: {}", doc.id);
+        }
+    }
+
+    #[test]
+    fn rendered_tutorial_ends_with_single_newline() {
+        for lang in [Lang::Ja, Lang::En] {
+            let text = render(lang);
+            assert!(text.ends_with('\n'));
+            assert!(!text.ends_with("\n\n"), "trailing blank line");
         }
     }
 }
