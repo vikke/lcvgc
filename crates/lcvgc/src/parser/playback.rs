@@ -7,6 +7,7 @@ use nom::{
     IResult,
 };
 
+use crate::ast::doc::{ExampleRender, SyntaxDoc};
 use crate::ast::playback::*;
 use crate::parser::common::{identifier, parse_u32};
 
@@ -148,11 +149,107 @@ pub fn parse_unmute(input: &str) -> IResult<&str, UnmuteCommand> {
 
 /// この構文の説明と例文（文法チュートリアルの素材。`lsp::tutorial` が集める）
 /// Syntax docs for this parser (tutorial material collected by `lsp::tutorial`).
-pub const DOCS: &[crate::ast::doc::SyntaxDoc] = &[];
+pub const DOCS: &[SyntaxDoc] = &[
+    SyntaxDoc {
+        id: "playback.play",
+        title_ja: "シーン再生 (play)",
+        title_en: "Playing a scene (play)",
+        desc_ja: &[
+            "play シーン名 で 1 回再生して止まる。",
+            "[repeat N] で N 回繰り返し、[loop] で次の play まで無限ループ。",
+        ],
+        desc_en: &[
+            "play SCENE plays the scene once and stops.",
+            "[repeat N] repeats N times; [loop] loops until the next play.",
+        ],
+        example: "play verse\nplay verse [repeat 4]\nplay verse [loop]",
+        render: ExampleRender::Commented,
+        list: None,
+    },
+    SyntaxDoc {
+        id: "playback.play_session",
+        title_ja: "セッション再生 (play session)",
+        title_en: "Playing a session (play session)",
+        desc_ja: &[
+            "play session セッション名 でセッションを先頭から再生する。",
+            "[repeat N] / [loop] でセッション全体を繰り返す。",
+        ],
+        desc_en: &[
+            "play session NAME plays the session from the beginning.",
+            "[repeat N] / [loop] repeats the whole session.",
+        ],
+        example:
+            "play session my_song\nplay session my_song [repeat 2]\nplay session my_song [loop]",
+        render: ExampleRender::Commented,
+        list: None,
+    },
+    SyntaxDoc {
+        id: "playback.stop",
+        title_ja: "停止 (stop)",
+        title_en: "Stopping (stop)",
+        desc_ja: &[
+            "stop で全体を停止する（位相はリセットされ、次の play は頭から）。",
+            "stop 名前 は再生中の scene / session 名と一致したときだけ停止する。",
+            "一致しなければ何もしない（no-op）。",
+        ],
+        desc_en: &[
+            "stop stops everything (the phase is reset; the next play starts over).",
+            "stop NAME stops only if the playing scene / session has that name.",
+            "Otherwise it does nothing (no-op).",
+        ],
+        example: "stop\nstop verse\nstop my_song",
+        render: ExampleRender::Commented,
+        list: None,
+    },
+    SyntaxDoc {
+        id: "playback.pause_resume",
+        title_ja: "一時停止と再開 (pause / resume)",
+        title_en: "Pause and resume (pause / resume)",
+        desc_ja: &[
+            "pause で時間を凍結し、resume でその位置から再開する。",
+            "scene / session 名を付けると、再生中の名前と一致したときだけ全体を操作する。",
+            "clip 名を付けると、その clip だけを凍結・再開する。",
+        ],
+        desc_en: &[
+            "pause freezes time; resume continues from that point.",
+            "With a scene / session name, it acts only if that one is playing.",
+            "With a clip name, only that clip is frozen / resumed.",
+        ],
+        example: "pause\nresume\npause verse\nresume verse\npause drums_a\nresume drums_a",
+        render: ExampleRender::Commented,
+        list: None,
+    },
+    SyntaxDoc {
+        id: "playback.mute",
+        title_ja: "クリップのミュート (mute / unmute)",
+        title_en: "Muting a clip (mute / unmute)",
+        desc_ja: &[
+            "mute clip名 で時間を進めたまま音だけ止める（位相は維持）。",
+            "unmute clip名 で拍を合わせたまま即座に鳴り始める。",
+            "clip 名は必須。scene / session 全体には stop / pause を使う。",
+        ],
+        desc_en: &[
+            "mute CLIP silences a clip while time keeps going (phase is kept).",
+            "unmute CLIP brings it back in right away, still on the beat.",
+            "A clip name is required; use stop / pause for a whole scene / session.",
+        ],
+        example: "mute drums_a\nunmute drums_a",
+        render: ExampleRender::Commented,
+        list: None,
+    },
+];
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 構文ドキュメントの例文がパーサで最後まで解析できる
+    /// Every syntax-doc example parses fully.
+    #[test]
+    fn docs_examples_parse() {
+        assert!(!DOCS.is_empty());
+        crate::parser::assert_docs_parse(DOCS);
+    }
 
     // --- play scene tests ---
 

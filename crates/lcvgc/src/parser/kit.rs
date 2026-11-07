@@ -6,6 +6,7 @@ use nom::{
     IResult,
 };
 
+use crate::ast::doc::{ExampleRender, SyntaxDoc};
 use crate::ast::kit::{KitDef, KitInstrument, KitInstrumentNote};
 use crate::ast::unresolved::UnresolvedKitInstrumentVarRefs;
 use crate::domain::channel::MidiChannel;
@@ -270,11 +271,58 @@ pub fn parse_kit(input: &str) -> IResult<&str, KitDef> {
 
 /// この構文の説明と例文（文法チュートリアルの素材。`lsp::tutorial` が集める）
 /// Syntax docs for this parser (tutorial material collected by `lsp::tutorial`).
-pub const DOCS: &[crate::ast::doc::SyntaxDoc] = &[];
+pub const DOCS: &[SyntaxDoc] = &[
+    SyntaxDoc {
+        id: "kit",
+        title_ja: "キット (kit)",
+        title_en: "Kit (kit)",
+        desc_ja: &[
+            "ドラム系の楽器をまとめて定義する。device はキット単位で指定する。",
+            "記法: 楽器名 { channel チャンネル, note 音名オクターブ }",
+            "シャープは fs2 のような s 形式を推奨（f#2 も可）。",
+            "区切りはカンマでも改行でもよい。",
+        ],
+        desc_en: &[
+            "Defines drum instruments together. The device is set per kit.",
+            "Syntax: name { channel CH, note NOTE+OCTAVE }",
+            "Write sharps in the s form like fs2 (f#2 is also accepted).",
+            "Properties are separated by commas or newlines.",
+        ],
+        example: "kit tr808 {\n\tdevice my_synth\n\tkick { channel 10, note c2 }\n\tsnare { channel 10, note d2 }\n\thihat { channel 10, note fs2 }\n}",
+        render: ExampleRender::Live,
+        list: None,
+    },
+    SyntaxDoc {
+        id: "kit.options",
+        title_ja: "キットの gate / velocity",
+        title_en: "Kit gate / velocity",
+        desc_ja: &[
+            "gate_normal / gate_staccato で通常・スタッカート時のゲート長を指定する。",
+            "velocity_normal / velocity_accent / velocity_ghost は",
+            "x / X / o ヒットの既定ベロシティを上書きする（省略時は既定値）。",
+        ],
+        desc_en: &[
+            "gate_normal / gate_staccato set the gate for normal / staccato notes.",
+            "velocity_normal / velocity_accent / velocity_ghost override",
+            "the default velocity of x / X / o hits (defaults if omitted).",
+        ],
+        example: "kit tr808 {\n\tdevice my_synth\n\tkick { channel 10, note c2, gate_normal 50, gate_staccato 20 }\n\tsnare { channel 10, note d2, velocity_accent 120, velocity_ghost 30 }\n\thihat { channel 10, note fs2, gate_normal 30 }\n}",
+        render: ExampleRender::Live,
+        list: None,
+    },
+];
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 構文ドキュメントの例文がパーサで最後まで解析できる
+    /// Every syntax-doc example parses fully.
+    #[test]
+    fn docs_examples_parse() {
+        assert!(!DOCS.is_empty());
+        crate::parser::assert_docs_parse(DOCS);
+    }
 
     #[test]
     fn test_full_kit_with_multiple_instruments() {
