@@ -152,10 +152,88 @@ pub fn parse_source(input: &str) -> IResult<&str, Vec<Block>> {
     Ok((remaining, blocks))
 }
 
+/// テスト用: 構文ドキュメントの例文が `parse_source` で最後まで解析できることを検証する
+///
+/// 各 `SyntaxDoc::example` について、解析が成功し、残りが空白だけで、
+/// ブロックが 1 つ以上得られることを確かめる。各パーサのテストから自分の `DOCS` を渡して使う。
+///
+/// Test helper: asserts that every `SyntaxDoc::example` parses fully with
+/// `parse_source` (success, only whitespace left, at least one block).
+///
+/// # Arguments
+/// * `docs` - 検証する構文ドキュメント / docs to verify
+///
+/// # Panics
+/// 解析に失敗した、読み残しがある、またはブロックが 1 つも無い場合、
+/// その `id` を含むメッセージで panic する。
+/// Panics with the doc `id` if parsing fails, input remains, or no block is found.
+#[cfg(test)]
+pub(crate) fn assert_docs_parse(docs: &[crate::ast::doc::SyntaxDoc]) {
+    for doc in docs {
+        match parse_source(doc.example) {
+            Ok((rest, blocks)) => {
+                assert!(
+                    rest.trim().is_empty(),
+                    "SyntaxDoc `{}`: example was not fully parsed; rest = {:?}",
+                    doc.id,
+                    rest
+                );
+                assert!(
+                    !blocks.is_empty(),
+                    "SyntaxDoc `{}`: example contains no block",
+                    doc.id
+                );
+            }
+            Err(e) => panic!("SyntaxDoc `{}`: example failed to parse: {:?}", doc.id, e),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::ast::*;
+
+    // --- assert_docs_parse（構文ドキュメントの例文検証ヘルパ）のテスト ---
+
+    /// テスト用の SyntaxDoc を作る / builds a SyntaxDoc for tests
+    fn doc(id: &'static str, example: &'static str) -> crate::ast::doc::SyntaxDoc {
+        crate::ast::doc::SyntaxDoc {
+            id,
+            title_ja: "t",
+            title_en: "t",
+            desc_ja: &[],
+            desc_en: &[],
+            example,
+            render: crate::ast::doc::ExampleRender::Live,
+            list: None,
+        }
+    }
+
+    #[test]
+    fn assert_docs_parse_accepts_complete_examples() {
+        assert_docs_parse(&[
+            doc("tempo", "tempo 120"),
+            doc("multi", "// comment\ntempo 120\nscale c_minor\n"),
+        ]);
+    }
+
+    #[test]
+    fn assert_docs_parse_accepts_empty_docs() {
+        assert_docs_parse(&[]);
+    }
+
+    #[test]
+    #[should_panic(expected = "bad")]
+    fn assert_docs_parse_rejects_unparsable_example() {
+        assert_docs_parse(&[doc("bad", "tempo 120\nthis is not dsl")]);
+    }
+
+    #[test]
+    #[should_panic(expected = "blank")]
+    fn assert_docs_parse_rejects_example_without_blocks() {
+        assert_docs_parse(&[doc("blank", "// only a comment\n")]);
+    }
 
     #[test]
     fn test_parse_single_tempo() {

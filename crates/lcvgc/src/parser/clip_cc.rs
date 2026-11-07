@@ -254,6 +254,10 @@ pub fn parse_cc_time(input: &str) -> IResult<&str, CcAutomation> {
     Ok((input, CcAutomation::Time(CcTimeValues { target, segments })))
 }
 
+/// この構文の説明と例文（文法チュートリアルの素材。`lsp::tutorial` が集める）
+/// Syntax docs for this parser (tutorial material collected by `lsp::tutorial`).
+pub const DOCS: &[crate::ast::doc::SyntaxDoc] = &[];
+
 #[cfg(test)]
 mod tests {
     use super::*;

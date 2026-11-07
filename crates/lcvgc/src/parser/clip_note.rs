@@ -191,6 +191,10 @@ pub fn parse_note_event(input: &str) -> IResult<&str, NoteEvent> {
     }
 }
 
+/// この構文の説明と例文（文法チュートリアルの素材。`lsp::tutorial` が集める）
+/// Syntax docs for this parser (tutorial material collected by `lsp::tutorial`).
+pub const DOCS: &[crate::ast::doc::SyntaxDoc] = &[];
+
 #[cfg(test)]
 mod tests {
     use super::*;

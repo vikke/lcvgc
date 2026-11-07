@@ -110,6 +110,10 @@ pub fn parse_articulation(input: &str) -> IResult<&str, Articulation> {
     Ok((rest, suffix.articulation))
 }
 
+/// この構文の説明と例文（文法チュートリアルの素材。`lsp::tutorial` が集める）
+/// Syntax docs for this parser (tutorial material collected by `lsp::tutorial`).
+pub const DOCS: &[crate::ast::doc::SyntaxDoc] = &[];
+
 #[cfg(test)]
 mod tests {
     use super::*;

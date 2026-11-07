@@ -33,3 +33,6 @@ pub mod span_parser;
 /// ドキュメントシンボルプロバイダ
 /// Document symbol provider
 pub mod symbols;
+/// 文法チュートリアルの組み立て
+/// Grammar tutorial rendering
+pub mod tutorial;
