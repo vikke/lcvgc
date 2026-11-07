@@ -1,5 +1,6 @@
 use nom::{bytes::complete::tag, character::complete::char, IResult};
 
+use crate::ast::doc::{ExampleRender, SyntaxDoc};
 use crate::ast::session::*;
 use crate::parser::common::{identifier, parse_u32, ws, ws1};
 
@@ -85,7 +86,26 @@ pub fn parse_session(input: &str) -> IResult<&str, SessionDef> {
 
 /// この構文の説明と例文（文法チュートリアルの素材。`lsp::tutorial` が集める）
 /// Syntax docs for this parser (tutorial material collected by `lsp::tutorial`).
-pub const DOCS: &[crate::ast::doc::SyntaxDoc] = &[];
+pub const DOCS: &[SyntaxDoc] = &[SyntaxDoc {
+    id: "session",
+    title_ja: "セッション（曲の構成）",
+    title_en: "Session (song structure)",
+    desc_ja: &[
+        "scene を再生する順番を並べて、曲全体の構成を書く。",
+        "記法: session <名前> { <scene名> [repeat N] ... }",
+        "[repeat N] で N 回繰り返す。省略すると 1 回。",
+        "[loop] を付けると、その scene で止まって繰り返し続ける。",
+    ],
+    desc_en: &[
+        "Lists scenes in playback order to describe the whole song.",
+        "Syntax: session <name> { <scene> [repeat N] ... }",
+        "[repeat N] repeats N times; without it, the scene plays once.",
+        "[loop] stays on that scene and keeps repeating it.",
+    ],
+    example: "session my_song {\n\tverse [repeat 4]\n\tverse [loop]\n}",
+    render: ExampleRender::Live,
+    list: None,
+}];
 
 #[cfg(test)]
 mod tests {
@@ -158,5 +178,13 @@ mod tests {
         for entry in &session.entries {
             assert_eq!(entry.repeat, SessionRepeat::Once);
         }
+    }
+
+    /// 構文ドキュメントの例文がパーサで最後まで解析できる
+    /// Every syntax-doc example parses fully.
+    #[test]
+    fn docs_examples_parse() {
+        assert!(!DOCS.is_empty());
+        crate::parser::assert_docs_parse(DOCS);
     }
 }

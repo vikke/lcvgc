@@ -7,6 +7,7 @@ use nom::{
     IResult,
 };
 
+use crate::ast::doc::{ExampleRender, SyntaxDoc};
 use crate::ast::tempo::Tempo;
 use crate::parser::common::ws1;
 
@@ -37,7 +38,42 @@ pub fn parse_tempo(input: &str) -> IResult<&str, Tempo> {
 
 /// この構文の説明と例文（文法チュートリアルの素材。`lsp::tutorial` が集める）
 /// Syntax docs for this parser (tutorial material collected by `lsp::tutorial`).
-pub const DOCS: &[crate::ast::doc::SyntaxDoc] = &[];
+pub const DOCS: &[SyntaxDoc] = &[
+    SyntaxDoc {
+        id: "tempo",
+        title_ja: "テンポ（絶対値）",
+        title_en: "Tempo (absolute)",
+        desc_ja: &[
+            "曲全体のテンポ（BPM）を設定する。記法: tempo <BPM>",
+            "eval するとすぐに反映される。",
+        ],
+        desc_en: &[
+            "Sets the global tempo (BPM). Syntax: tempo <BPM>",
+            "Takes effect as soon as it is evaluated.",
+        ],
+        example: "tempo 120",
+        render: ExampleRender::Live,
+        list: None,
+    },
+    SyntaxDoc {
+        id: "tempo.relative",
+        title_ja: "テンポ（相対値）",
+        title_en: "Tempo (relative)",
+        desc_ja: &[
+            "現在のテンポから増減する。記法: tempo +<N> / tempo -<N>",
+            "符号と数値の間には空白を挟んでもよい（改行は不可）。",
+            "scene 内に書くと、ループごとにテンポを変えられる。",
+        ],
+        desc_en: &[
+            "Raises or lowers the current tempo. Syntax: tempo +<N> / tempo -<N>",
+            "Spaces may appear between the sign and the number (no newline).",
+            "Inside a scene, it changes the tempo on every loop.",
+        ],
+        example: "tempo +5\ntempo -5",
+        render: ExampleRender::Live,
+        list: None,
+    },
+];
 
 #[cfg(test)]
 mod tests {
@@ -104,5 +140,13 @@ mod tests {
         if let Ok((_, tempo)) = result {
             assert_ne!(tempo, Tempo::Relative(5));
         }
+    }
+
+    /// 構文ドキュメントの例文がパーサで最後まで解析できる
+    /// Every syntax-doc example parses fully.
+    #[test]
+    fn docs_examples_parse() {
+        assert!(!DOCS.is_empty());
+        crate::parser::assert_docs_parse(DOCS);
     }
 }
